@@ -12,7 +12,7 @@ click the dot beside a slider and you get a keyframe on the actual rig.
 from __future__ import annotations
 
 import bpy
-from bpy.props import EnumProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringProperty
 from bpy.types import Panel, PropertyGroup
 
 from .. import runtime
@@ -173,6 +173,69 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         layout.operator("kinema.set_tcp", text="Move TCP to Active Bone", icon="EMPTY_ARROWS")
 
 
+class KINEMA_PT_ik(KinemaPanelBase, Panel):
+    bl_idname = "KINEMA_PT_ik"
+    bl_parent_id = "KINEMA_PT_main"
+    bl_label = "Inverse Kinematics"
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from .. import handlers
+
+        layout = self.layout
+        rig = active_rig(context)
+        ik_bone = rig.get(builder.PROP_IK_BONE)
+
+        if not ik_bone or ik_bone not in rig.pose.bones:
+            layout.operator("kinema.add_ik", text="Add IK Target", icon="CON_KINEMATIC")
+            layout.label(text="Adds a keyframable control at the tool.", icon="BLANK1")
+            return
+
+        column = layout.column(align=True)
+        column.prop(rig, "kinema_ik_enabled", toggle=True,
+                    icon="PLAY" if rig.kinema_ik_enabled else "PAUSE")
+        column.prop(rig, "kinema_solver_mode", text="")
+
+        row = layout.row(align=True)
+        row.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
+        row.operator("kinema.remove_ik", text="", icon="X")
+
+        layout.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
+
+        elapsed = handlers.last_solve_ms(rig)
+        solver = manager_state(rig)
+        box = layout.box()
+        info = box.column(align=True)
+        if elapsed is not None:
+            budget = _solve_budget_ms()
+            icon = "CHECKMARK" if elapsed <= budget else "ERROR"
+            info.label(text=f"Last solve: {elapsed:.1f} ms", icon=icon)
+            if elapsed > budget:
+                info.label(text="Over budget; live updates paused", icon="BLANK1")
+        if solver is not None and solver.last_result is not None:
+            result = solver.last_result
+            info.label(text=result.summary, icon="BLANK1")
+        if solver is not None and solver.pyroki_error:
+            info.label(text="PyRoki unavailable for this rig:", icon="INFO")
+            info.label(text=solver.pyroki_error[:46], icon="BLANK1")
+
+
+def manager_state(rig):
+    from ..solver import manager
+
+    return manager._cache.get(rig.name)
+
+
+def _solve_budget_ms() -> float:
+    from ..prefs import get_prefs
+
+    prefs = get_prefs()
+    return float(prefs.solve_timeout_ms) if prefs else 33.0
+
+
 class KINEMA_PT_status(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_status"
     bl_parent_id = "KINEMA_PT_main"
@@ -196,12 +259,39 @@ class KINEMA_PT_status(KinemaPanelBase, Panel):
         layout.operator("kinema.check_dependencies", text="Re-check", icon="FILE_REFRESH")
 
 
-classes = (KinemaSceneProps, KINEMA_PT_main, KINEMA_PT_joints, KINEMA_PT_tcp, KINEMA_PT_status)
+classes = (
+    KinemaSceneProps,
+    KINEMA_PT_main,
+    KINEMA_PT_joints,
+    KINEMA_PT_tcp,
+    KINEMA_PT_ik,
+    KINEMA_PT_status,
+)
 
 
 def register_props() -> None:
     bpy.types.Scene.kinema = PointerProperty(type=KinemaSceneProps)
+    # Registered on Object rather than kept as raw custom properties so the
+    # panel can draw a real checkbox and dropdown, and so the values round-trip
+    # through a saved .blend.
+    bpy.types.Object.kinema_ik_enabled = BoolProperty(
+        name="Live IK",
+        description="Solve continuously as the IK target moves",
+        default=False,
+    )
+    bpy.types.Object.kinema_solver_mode = EnumProperty(
+        name="Solver",
+        description="Which IK backend drives this rig",
+        items=[
+            ("PYROKI", "PyRoki", "Limit- and singularity-aware nonlinear solver"),
+            ("NUMPY", "NumPy", "Lightweight damped least squares"),
+            ("OFF", "Off", "No IK; pose the joints directly"),
+        ],
+        default="PYROKI",
+    )
 
 
 def unregister_props() -> None:
     del bpy.types.Scene.kinema
+    del bpy.types.Object.kinema_ik_enabled
+    del bpy.types.Object.kinema_solver_mode

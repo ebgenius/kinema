@@ -35,7 +35,7 @@ def _online_ready(operator: Operator) -> bool:
     return False
 
 
-def _build(operator: Operator, urdf, resolver, options) -> set[str]:
+def _build(operator: Operator, urdf, resolver, options, source=None) -> set[str]:
     """Shared tail: URDF -> model -> rig, with errors reported to the UI."""
     try:
         model = kinematics.model_from_urdf(urdf, mesh_resolver=resolver)
@@ -50,6 +50,13 @@ def _build(operator: Operator, urdf, resolver, options) -> set[str]:
         operator.report({"WARNING"}, f"'{model.name}' has no movable joints")
 
     result = builder.build_rig(model, options)
+
+    # Record where this came from: the solver reloads the description later to
+    # build PyRoki's robot model, and a saved .blend must still know.
+    if source is not None and result.armature_object is not None:
+        kind, value = source
+        result.armature_object[builder.PROP_SOURCE_KIND] = kind
+        result.armature_object[builder.PROP_SOURCE] = value
 
     for warning in result.warnings[:3]:
         operator.report({"WARNING"}, warning)
@@ -178,7 +185,7 @@ class KINEMA_OT_import_catalog(Operator, KinemaImportSettings):
 
         # yourdfpy already knows how to resolve this description's own meshes.
         resolver = getattr(urdf, "_filename_handler", None)
-        return _build(self, urdf, resolver, self._options())
+        return _build(self, urdf, resolver, self._options(), source=("catalog", key))
 
 
 class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
@@ -225,7 +232,7 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
         finally:
             window.cursor_set("DEFAULT")
 
-        return _build(self, urdf, resolver, self._options())
+        return _build(self, urdf, resolver, self._options(), source=("file", str(path)))
 
     @staticmethod
     def _load_xacro(path: Path, resolver):

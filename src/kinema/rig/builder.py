@@ -59,12 +59,27 @@ PROP_JOINT_TYPE = "kinema_joint_type"
 PROP_LOWER = "kinema_lower"
 PROP_UPPER = "kinema_upper"
 PROP_AXIS = "kinema_axis"
+#: The URDF link this joint moves, and the constant transform from the bone's
+#: rest frame to that link's rest frame. PyRoki targets *links*, but Kinema's
+#: bones are oriented on joint axes, so the two frames differ by a fixed
+#: rotation. Storing it means IK still works after the .blend is reopened
+#: somewhere the original URDF is not available.
+PROP_CHILD_LINK = "kinema_child_link"
+PROP_LINK_CORRECTION = "kinema_link_correction"
 
 #: Marks the armature object itself as a Kinema rig.
 PROP_IS_RIG = "kinema_rig"
 PROP_ROBOT_NAME = "kinema_robot"
 PROP_TCP_BONE = "kinema_tcp_bone"
 PROP_TCP_LINK = "kinema_tcp_link"
+#: Where this rig came from, so the solver can reload the description it needs.
+#: ("catalog", <robot_descriptions key>) or ("file", <path to the URDF>).
+PROP_SOURCE_KIND = "kinema_source_kind"
+PROP_SOURCE = "kinema_source"
+#: IK state, all stored on the rig so it survives save/reload.
+PROP_IK_BONE = "kinema_ik_bone"
+PROP_IK_ENABLED = "kinema_ik_enabled"
+PROP_SOLVER_MODE = "kinema_solver_mode"
 
 
 @dataclass
@@ -95,6 +110,11 @@ class RigBuildResult:
 # --------------------------------------------------------------------------
 def _to_matrix(array: np.ndarray) -> Matrix:
     return Matrix([[float(v) for v in row] for row in array])
+
+
+def _np4(matrix) -> np.ndarray:
+    """mathutils.Matrix -> a plain 4x4 NumPy array."""
+    return np.array([[matrix[r][c] for c in range(4)] for r in range(4)])
 
 
 def _auto_bone_length(model: RobotModel) -> float:
@@ -233,6 +253,7 @@ def _setup_pose_bones(
 ) -> None:
     pose = armature_object.pose
     joint_by_name = {j.name: j for j in model.joints}
+    link_frames = model.link_frames()
     shapes = widgets.ensure_widgets()
 
     for joint_name, bone_name in result.joint_bones.items():
@@ -264,6 +285,12 @@ def _setup_pose_bones(
         if joint.has_limits:
             bone[PROP_LOWER] = float(joint.lower)
             bone[PROP_UPPER] = float(joint.upper)
+
+        # bone rest frame -> URDF link rest frame, so the solver can turn a
+        # bone-space goal into the link-space goal PyRoki expects.
+        bone[PROP_CHILD_LINK] = joint.child_link
+        correction = np.linalg.inv(_np4(bone.matrix_local)) @ link_frames[joint.child_link]
+        bone[PROP_LINK_CORRECTION] = [float(v) for v in correction.flatten()]
 
         if options.enforce_limits and joint.has_limits:
             if joint.is_revolute:

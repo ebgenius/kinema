@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -49,19 +50,32 @@ def load_addon_module(dotted: str):
     """
     if HAVE_BPY:
         return importlib.import_module(f"{EXTENSION_ID}.{dotted}")
+    return importlib.import_module(f"{OFFLINE_PACKAGE}.{dotted}")
 
-    path = REPO_ROOT.joinpath("src", "kinema", *dotted.split(".")).with_suffix(".py")
-    name = f"kinema_standalone_{dotted.replace('.', '_')}"
-    if name in sys.modules:
-        return sys.modules[name]
 
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+#: Synthetic package standing in for the add-on outside Blender.
+OFFLINE_PACKAGE = "kinema_offline"
+
+
+def _install_offline_package() -> None:
+    """Make ``src/kinema`` importable without running its ``__init__``.
+
+    The real package's ``__init__`` imports ``bpy``, so it cannot execute here.
+    But loading individual files standalone breaks any module using a relative
+    import (``from .base import ...``). The fix is a stub package object whose
+    ``__path__`` points at the source tree: submodules then import normally and
+    their relative imports resolve, while the bpy-importing ``__init__`` is
+    never run.
+    """
+    if OFFLINE_PACKAGE in sys.modules:
+        return
+    package = types.ModuleType(OFFLINE_PACKAGE)
+    package.__path__ = [str(REPO_ROOT / "src" / "kinema")]
+    sys.modules[OFFLINE_PACKAGE] = package
+
+
+if not HAVE_BPY:
+    _install_offline_package()
 
 
 @pytest.fixture(scope="session")

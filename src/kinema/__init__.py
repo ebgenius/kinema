@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import bpy
 
-from . import prefs, runtime
-from .ops import import_dae, import_robot, pose
+from . import handlers, prefs, runtime
+from .ops import ik, import_dae, import_robot, pose
 from .ui import panel
 
 # panel first: ops/pose imports helpers from it, and registration order
 # decides which classes exist when Blender resolves parent panels.
-_MODULES = (prefs, panel, import_dae, import_robot, pose)
+_MODULES = (prefs, panel, import_dae, import_robot, pose, ik)
 
 
 def _warm_up_solver() -> None:
@@ -52,12 +52,15 @@ def register() -> None:
         if hasattr(module, "register_props"):
             module.register_props()
 
+    handlers.register_handlers()
     bpy.app.timers.register(_deferred_start, first_interval=0.1)
 
 
 def unregister() -> None:
     if bpy.app.timers.is_registered(_deferred_start):
         bpy.app.timers.unregister(_deferred_start)
+
+    handlers.unregister_handlers()
 
     for module in reversed(_MODULES):
         if hasattr(module, "unregister_props"):
