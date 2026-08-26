@@ -14,10 +14,12 @@ from __future__ import annotations
 import bpy
 
 from . import prefs, runtime
-from .ops import import_dae
+from .ops import import_dae, import_robot, pose
 from .ui import panel
 
-_MODULES = (prefs, import_dae, panel)
+# panel first: ops/pose imports helpers from it, and registration order
+# decides which classes exist when Blender resolves parent panels.
+_MODULES = (prefs, panel, import_dae, import_robot, pose)
 
 
 def _warm_up_solver() -> None:

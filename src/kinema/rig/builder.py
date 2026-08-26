@@ -64,6 +64,7 @@ PROP_AXIS = "kinema_axis"
 PROP_IS_RIG = "kinema_rig"
 PROP_ROBOT_NAME = "kinema_robot"
 PROP_TCP_BONE = "kinema_tcp_bone"
+PROP_TCP_LINK = "kinema_tcp_link"
 
 
 @dataclass
@@ -412,6 +413,7 @@ def build_rig(
 
     if result.tcp_link:
         armature_object[PROP_TCP_BONE] = TCP_BONE
+        armature_object[PROP_TCP_LINK] = result.tcp_link
 
     if options.import_visuals:
         _attach_visuals(armature_object, model, collection, result)
