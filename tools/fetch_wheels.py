@@ -51,7 +51,16 @@ PLATFORM_TAGS: dict[str, tuple[str, ...]] = {
         "manylinux_2_17_x86_64",
         "manylinux2014_x86_64",
     ),
-    "macos-arm64": ("macosx_11_0_arm64",),
+    # Several macOS baselines: projects raise their minimum over time, and
+    # SciPy's cp313 arm64 wheels are not built for macosx_11_0 at all. pip
+    # accepts every tag and picks whichever the package actually publishes.
+    "macos-arm64": (
+        "macosx_15_0_arm64",
+        "macosx_14_0_arm64",
+        "macosx_13_0_arm64",
+        "macosx_12_0_arm64",
+        "macosx_11_0_arm64",
+    ),
 }
 
 #: Every runtime import, named explicitly. Grouped by why it is here.
@@ -92,6 +101,11 @@ def download(platform: str, dest: Path) -> None:
 
     print(f"  downloading {len(PACKAGES)} packages for {platform} ({tags[0]})")
     result = subprocess.run(cmd, capture_output=True, text=True)
+    if "No module named pip" in (result.stderr or ""):
+        raise SystemExit(
+            "fetch_wheels: this interpreter has no pip. "
+            "Run `uv sync --group dev` (pip is a declared dev dependency)."
+        )
     if result.returncode != 0:
         # pip fails the whole batch if one package has no matching wheel; retry
         # individually so the offender is named rather than hidden.

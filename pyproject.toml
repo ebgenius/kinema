@@ -33,6 +33,12 @@ dev = [
     "debugpy",                  # IDE-agnostic DAP debugging inside Blender
     "pytest",
     "ruff",
+    # tools/fetch_wheels.py shells out to `pip download`; uv's venvs have no
+    # pip of their own, and uv has no download subcommand to use instead.
+    "pip",
+    # Ground truth for the MJCF reader's tests. Never bundled: the wheel is
+    # ~50 MB per platform, for a parser we only need the kinematic subset of.
+    "mujoco",
 ]
 
 [tool.uv]

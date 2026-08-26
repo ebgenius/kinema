@@ -1,10 +1,12 @@
 # Kinema
 
-**Animation-ready robot rigs in Blender.** Import any of 190+ real robots and get a single
+**Animation-ready robot rigs in Blender.** Import any of 186 real robots and get a single
 clean armature you can actually animate — with IK that understands singularities, joint
 limits and multi-turn joints.
 
-> Status: early development. M0 (feasibility), M1 (extension skeleton) and M2 (COLLADA import) are complete.
+> Status: working end to end. Import (URDF, xacro, MJCF, or the 186-robot
+> catalog), rig, pose, solve and bake all function, and the built extension
+> installs and runs from a clean Blender profile.
 
 ## Why this exists
 
@@ -87,12 +89,25 @@ files contain non-ASCII bytes that fail to decode under it.
 ### Building
 
 ```bash
+uv run python tools/fetch_wheels.py        # all three platforms (~346 MB)
 uv run python tools/dev.py validate
 uv run python tools/dev.py build           # per-platform zips into dist/
 ```
 
 `--split-platforms` is the default and is not optional in practice: a combined zip would
-carry three copies of `jaxlib` and exceed the extensions platform's size limit.
+carry three copies of `jaxlib` and exceed the extensions platform's size limit. Current
+output, all comfortably under the ~200 MB ceiling:
+
+| Platform | Zip |
+|---|---|
+| `linux-x64` | 143.9 MB |
+| `windows-x64` | 118.8 MB |
+| `macos-arm64` | 102.0 MB |
+
+Verified by installing the built zip into a clean Blender profile
+(`BLENDER_USER_RESOURCES` pointed at an empty directory): all ten dependencies resolve
+from the bundled wheels, a UR5e imports, PyRoki solves at 0.0001 mm in ~5 ms, and the
+baked .blend still animates after the extension is removed entirely.
 
 [uv]: https://docs.astral.sh/uv/
 [debugpy]: https://github.com/microsoft/debugpy
@@ -115,6 +130,23 @@ subpackage, which depends on `viser` (a web 3D visualiser — pointless inside B
 Robot descriptions are downloaded on first use. `robot_descriptions` normally shells out to
 a `git` binary, which most Blender artists do not have; Kinema replaces that one function
 with an HTTPS tarball fetch (`src/kinema/catalog/fetch.py`).
+
+## Known limitations
+
+- **Ball joints are rejected.** A 3-DoF spherical joint has no honest single-axis bone
+  equivalent. One catalog robot (Cassie) is affected; everything else parses.
+- **PyRoki reads URDF only.** MJCF rigs are bridged by rendering the parsed kinematic
+  tree back out as a minimal URDF, which works but is one more moving part.
+- **Windows long paths.** The bundled wheels unpack to deeply nested directories —
+  `jax/_src/internal_test_util/export_back_compat_test_data/…`. On a Windows profile
+  without long-path support the install fails partway with `WinError 206`. Enable
+  `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled`, or keep
+  Blender's config directory shallow.
+- **The first IK solve compiles.** JAX JITs the solver on first use, roughly 14 s. It is
+  paid up front when the IK target is created, behind a wait cursor, and never again for
+  that rig; warm solves are ~5–20 ms.
+- **MuJoCo's OBJ meshes print MTL errors** on import. MJCF carries its own colours, so
+  the missing .mtl files are harmless console noise from Blender's OBJ importer.
 
 ## License
 

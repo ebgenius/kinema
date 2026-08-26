@@ -57,6 +57,29 @@ def cache_root() -> Path:
     )
 
 
+def is_cached(description_key: str) -> bool:
+    """True if a description is already on disk, so no network is needed.
+
+    The cache directory is named after the *repository*, not the description --
+    ``ur5e_description`` lives in ``Universal_Robots_ROS2_Description``, and
+    several descriptions often share one repository. Checking for a directory
+    named after the description key therefore never matches, which made Blender
+    demand online access even for robots already downloaded.
+    """
+    os.environ.setdefault("GIT_PYTHON_REFRESH", "quiet")
+    try:
+        from robot_descriptions._descriptions import DESCRIPTIONS
+        from robot_descriptions._repositories import REPOSITORIES
+    except ImportError:
+        return False
+
+    entry = DESCRIPTIONS.get(description_key)
+    repository = REPOSITORIES.get(getattr(entry, "repository", None)) if entry else None
+    if repository is None:
+        return False
+    return (cache_root() / repository.cache_path).is_dir()
+
+
 def tarball_url(repo_url: str, commit: str) -> str:
     """Map a git clone URL plus commit to a source tarball URL."""
     parsed = urlparse(repo_url)

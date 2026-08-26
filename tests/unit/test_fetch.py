@@ -89,3 +89,33 @@ class TestFetchDescription:
             AssertionError("should not download over an existing clone")))
         assert fetch.fetch_description("https://github.com/o/r.git", "sha",
                                        "some_robot") == str(target)
+
+
+class TestIsCached:
+    """A description's cache directory is named after its *repository*.
+
+    ur5e_description lives in Universal_Robots_ROS2_Description, and several
+    descriptions share one repository. Looking for a directory named after the
+    description key never matches, which made Blender demand online access even
+    for robots already on disk.
+    """
+
+    def test_reports_cached_when_the_repository_directory_exists(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("ROBOT_DESCRIPTIONS_CACHE", str(tmp_path))
+        pytest.importorskip("robot_descriptions")
+        from robot_descriptions._descriptions import DESCRIPTIONS
+        from robot_descriptions._repositories import REPOSITORIES
+
+        entry = DESCRIPTIONS["ur5e_description"]
+        repo = REPOSITORIES[entry.repository]
+        assert repo.cache_path != "ur5e_description", "test premise no longer holds"
+
+        assert not fetch.is_cached("ur5e_description")
+        (tmp_path / repo.cache_path).mkdir(parents=True)
+        assert fetch.is_cached("ur5e_description")
+
+    def test_unknown_description_is_not_cached(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ROBOT_DESCRIPTIONS_CACHE", str(tmp_path))
+        assert not fetch.is_cached("no_such_description")

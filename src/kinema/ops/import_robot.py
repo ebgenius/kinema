@@ -224,8 +224,7 @@ class KINEMA_OT_import_catalog(Operator, KinemaImportSettings):
         # Only hit the network when the description is not already cached.
         from ..catalog import fetch
 
-        cached = (fetch.cache_root() / key).exists()
-        if not cached and not _online_ready(self):
+        if not fetch.is_cached(key) and not _online_ready(self):
             return {"CANCELLED"}
 
         window = context.window
