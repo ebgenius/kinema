@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!-- Exercises two things Kinema must not mishandle:
+     a continuous joint (unbounded: clamping it would break multi-turn spin)
+     and a mimic joint (must not become a control that does nothing). -->
+<robot name="mimicbot">
+  <link name="base"/><link name="wheel"/><link name="finger_a"/><link name="finger_b"/>
+  <joint name="spin" type="continuous">
+    <parent link="base"/><child link="wheel"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/><axis xyz="0 1 0"/>
+  </joint>
+  <joint name="grip" type="prismatic">
+    <parent link="base"/><child link="finger_a"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="0" upper="0.04" effort="5" velocity="1"/>
+  </joint>
+  <joint name="grip_mirror" type="prismatic">
+    <parent link="base"/><child link="finger_b"/>
+    <origin xyz="-0.1 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-0.04" upper="0" effort="5" velocity="1"/>
+    <mimic joint="grip" multiplier="-1.0" offset="0.0"/>
+  </joint>
+</robot>

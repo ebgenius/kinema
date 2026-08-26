@@ -73,9 +73,9 @@ class TestFetchDescription:
         called: list[str] = []
         monkeypatch.setattr(fetch, "_download",
                             lambda url, dest, progress: called.append(url))
-        # _download is a no-op here, so extraction fails -- we only assert that
-        # a stale stamp gets as far as attempting the download.
-        with pytest.raises(Exception):
+        # _download is stubbed out, so no archive exists to open; the point is
+        # only that a stale stamp got as far as attempting a download.
+        with pytest.raises((OSError, fetch.FetchError)):
             fetch.fetch_description("https://github.com/o/r.git", "newsha", "some_robot")
         assert called, "stale commit stamp did not trigger a refetch"
 

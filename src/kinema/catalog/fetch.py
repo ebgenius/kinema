@@ -31,8 +31,8 @@ import os
 import shutil
 import tarfile
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 from urllib.parse import urlparse
 
 #: Written into a completed cache directory so a partial download is never
