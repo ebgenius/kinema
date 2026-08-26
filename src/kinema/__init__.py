@@ -14,9 +14,10 @@ from __future__ import annotations
 import bpy
 
 from . import prefs, runtime
+from .ops import import_dae
 from .ui import panel
 
-_MODULES = (prefs, panel)
+_MODULES = (prefs, import_dae, panel)
 
 
 def _warm_up_solver() -> None:

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit name="millimeter" meter="0.001"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="tri-mesh" name="tri"><mesh>
+      <source id="tri-pos">
+        <float_array id="tri-pos-array" count="9">0 0 0 2000 0 0 0 0 3000</float_array>
+        <technique_common><accessor source="#tri-pos-array" count="3" stride="3">
+          <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+        </accessor></technique_common>
+      </source>
+      <vertices id="tri-vtx"><input semantic="POSITION" source="#tri-pos"/></vertices>
+      <triangles count="1"><input semantic="VERTEX" source="#tri-vtx" offset="0"/><p>0 1 2</p></triangles>
+    </mesh></geometry>
+  </library_geometries>
+  <library_visual_scenes><visual_scene id="Scene" name="Scene">
+    <node id="n" name="n" type="NODE"><instance_geometry url="#tri-mesh"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>

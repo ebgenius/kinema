@@ -4,7 +4,7 @@
 clean armature you can actually animate — with IK that understands singularities, joint
 limits and multi-turn joints.
 
-> Status: early development. M0 (feasibility) and M1 (extension skeleton) are complete.
+> Status: early development. M0 (feasibility), M1 (extension skeleton) and M2 (COLLADA import) are complete.
 
 ## Why this exists
 
