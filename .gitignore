@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Bundled wheels are fetched by tools/fetch_wheels.py, never committed (~112 MB).
+/src/kinema/wheels/*.whl
+
+# Build output
+/dist/
+*.zip
+
+# Vendored third-party source is fetched by tools/vendor.py, not committed.
+/src/kinema/vendor/pyroki/
+/src/kinema/vendor/jaxls/
+
+.vscode/
+.idea/

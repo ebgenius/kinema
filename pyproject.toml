@@ -1,0 +1,52 @@
+[project]
+name = "kinema"
+version = "0.1.0"
+description = "Animation-ready robot rigs in Blender: import any robot, get a clean armature with correct IK."
+readme = "README.md"
+requires-python = "==3.13.*"          # must match Blender 5.2 LTS (Python 3.13.13)
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Eugenio Bernardi" }]
+
+# NOTE: this project is never pip-installed. Runtime dependencies ship to users as
+# bundled wheels (see tools/fetch_wheels.py + blender_manifest.toml) or as vendored
+# source under src/kinema/vendor/. The list below exists so the dev venv mirrors what
+# Blender will have at runtime, giving the IDE and type-checker something real to see.
+dependencies = [
+    "jax",
+    "jaxlib",
+    "jaxlie",
+    "jax-dataclasses",
+    "jaxtyping",
+    "loguru",
+    "lxml",
+    "pycollada",
+    "robot-descriptions",
+    "scipy",
+    "trimesh",            # deliberately WITHOUT [easy]: the extras add ~90 MB
+    "xacrodoc",
+    "yourdfpy",
+]
+
+[dependency-groups]
+dev = [
+    "fake-bpy-module-latest",   # bpy stubs for autocomplete / type checking
+    "debugpy",                  # IDE-agnostic DAP debugging inside Blender
+    "pytest",
+    "ruff",
+]
+
+[tool.uv]
+# brentyi/jaxls is NOT on PyPI -- the PyPI name "jaxls" is an unrelated
+# "JAX Language Server" package. The real one is vendored; see tools/vendor.py.
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["src/kinema/vendor"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
