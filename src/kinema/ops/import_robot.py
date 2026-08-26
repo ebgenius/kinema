@@ -4,8 +4,10 @@ Two entry points, because they answer two different questions:
 
 * **Import from Catalog** -- "I want a UR5e." Picks from the 186-robot
   robot_descriptions catalog and downloads on demand.
-* **Import URDF File** -- "I want *my* robot." Reads a local URDF or xacro,
-  resolving ``package://`` references by searching the file's own tree.
+* **Import URDF File** -- "I want *my* robot." Reads a local URDF, xacro or
+  MJCF, resolving ``package://`` references by searching the file's own tree.
+
+Both formats end at the same place: a RobotModel handed to the rig builder.
 """
 
 from __future__ import annotations
@@ -21,6 +23,22 @@ from ..catalog import index as catalog
 from ..rig import builder, kinematics
 
 _URDF_SUFFIXES = {".urdf", ".xacro", ".xml"}
+
+
+def _looks_like_mjcf(path: Path) -> bool:
+    """True if the file's root element is <mujoco>.
+
+    MJCF and URDF both commonly use .xml, so the extension decides nothing.
+    Only the opening bytes are read -- some MJCF scenes are large.
+    """
+    if path.suffix.lower() in (".urdf", ".xacro"):
+        return False
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4096).decode("utf-8", "ignore")
+    except OSError:
+        return False
+    return "<mujoco" in head
 
 
 def _online_ready(operator: Operator) -> bool:
@@ -69,6 +87,39 @@ def _build(operator: Operator, urdf, resolver, options, source=None) -> set[str]
         f"{len(result.mesh_objects)} meshes, TCP at '{result.tcp_link}'",
     )
     bpy.context.scene.kinema.last_import = model.name
+    return {"FINISHED"}
+
+
+def _build_mjcf(operator, context, path, options, source) -> set[str]:
+    """Shared tail for MJCF: parse -> model -> rig."""
+    from ..io import mjcf
+
+    window = context.window
+    window.cursor_set("WAIT")
+    try:
+        model = mjcf.model_from_mjcf(path)
+    except mjcf.MjcfError as exc:
+        operator.report({"ERROR"}, str(exc))
+        return {"CANCELLED"}
+    except Exception as exc:  # noqa: BLE001
+        operator.report({"ERROR"}, f"Could not parse {Path(path).name}: {exc}")
+        return {"CANCELLED"}
+    finally:
+        window.cursor_set("DEFAULT")
+
+    result = builder.build_rig(model, options)
+    if result.armature_object is not None:
+        kind, value = source
+        result.armature_object[builder.PROP_SOURCE_KIND] = kind
+        result.armature_object[builder.PROP_SOURCE] = value
+    for warning in result.warnings[:3]:
+        operator.report({"WARNING"}, warning)
+    operator.report(
+        {"INFO"},
+        f"{model.name}: {len(result.joint_bones)} joints, "
+        f"{len(result.mesh_objects)} meshes, TCP at '{result.tcp_link}'",
+    )
+    context.scene.kinema.last_import = model.name
     return {"FINISHED"}
 
 
@@ -135,11 +186,15 @@ def _catalog_items(self, context):
     Built fresh on each invoke: the list is small, and caching Blender enum
     item strings is a well-known way to get garbage-collected labels.
     """
-    entries = catalog.search(urdf_only=True)
+    entries = catalog.search(supported_only=True)
     if not entries:
         return [("", "Catalog unavailable", "robot_descriptions could not be loaded")]
     return [
-        (entry.key, entry.label, f"{entry.key} — {entry.description}")
+        (
+            entry.key,
+            entry.label,
+            f"{entry.key} · {entry.format_label} — {entry.description}",
+        )
         for entry in entries
     ]
 
@@ -175,13 +230,22 @@ class KINEMA_OT_import_catalog(Operator, KinemaImportSettings):
 
         window = context.window
         window.cursor_set("WAIT")
+        mjcf_file = None
         try:
-            urdf = catalog.load_urdf(key)
+            if entry.has_urdf:
+                urdf = catalog.load_urdf(key)
+            else:
+                mjcf_file = catalog.mjcf_path(key)
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, f"Could not load '{key}': {exc}")
             return {"CANCELLED"}
         finally:
             window.cursor_set("DEFAULT")
+
+        if mjcf_file is not None:
+            return _build_mjcf(
+                self, context, mjcf_file, self._options(), ("catalog-mjcf", key)
+            )
 
         # yourdfpy already knows how to resolve this description's own meshes.
         resolver = getattr(urdf, "_filename_handler", None)
@@ -195,7 +259,9 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
     bl_options = {"REGISTER", "UNDO"}
 
     filename_ext = ".urdf"
-    filter_glob: StringProperty(default="*.urdf;*.xacro;*.xml", options={"HIDDEN"})
+    filter_glob: StringProperty(
+        default="*.urdf;*.xacro;*.xml", options={"HIDDEN"}
+    )
     __annotations__.update(import_settings())
 
     def execute(self, context: bpy.types.Context) -> set[str]:
@@ -203,6 +269,13 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
         if not path.is_file():
             self.report({"ERROR"}, f"No such file: {path}")
             return {"CANCELLED"}
+
+        # An .xml here is almost always MJCF; a URDF would be .urdf. Sniff the
+        # root tag rather than trusting the extension either way.
+        if _looks_like_mjcf(path):
+            return _build_mjcf(
+                self, context, path, self._options(), ("mjcf", str(path))
+            )
 
         try:
             import yourdfpy
@@ -222,7 +295,7 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
             else:
                 urdf = yourdfpy.URDF.load(
                     str(path),
-                    build_scene_graph=False,
+                    build_scene_graph=True,
                     load_meshes=False,
                     filename_handler=lambda name: resolver(name),
                 )
@@ -244,7 +317,7 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
         with doc.temp_urdf_file_path() as urdf_path:
             return yourdfpy.URDF.load(
                 urdf_path,
-                build_scene_graph=False,
+                build_scene_graph=True,
                 load_meshes=False,
                 filename_handler=lambda name: resolver(name),
             )

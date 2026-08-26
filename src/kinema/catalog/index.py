@@ -56,8 +56,12 @@ class CatalogEntry:
 
     @property
     def is_supported(self) -> bool:
-        """Kinema builds rigs from URDF; MJCF-only entries need the MJCF reader."""
-        return self.has_urdf
+        """Kinema reads both formats, so anything with either can be rigged."""
+        return self.has_urdf or self.has_mjcf
+
+    @property
+    def format_label(self) -> str:
+        return "URDF" if self.has_urdf else "MJCF"
 
 
 def _load_table() -> dict:
@@ -106,13 +110,13 @@ def search(
     text: str = "",
     *,
     tag: str = "",
-    urdf_only: bool = True,
+    supported_only: bool = True,
 ) -> list[CatalogEntry]:
     """Filter the catalog by free text and tag."""
     needle = text.strip().lower()
     results = []
     for entry in all_entries():
-        if urdf_only and not entry.is_supported:
+        if supported_only and not entry.is_supported:
             continue
         if tag and tag not in entry.tags:
             continue
@@ -147,3 +151,17 @@ def load_urdf(key: str, progress=None):
     from robot_descriptions.loaders.yourdfpy import load_robot_description
 
     return load_robot_description(key)
+
+
+def mjcf_path(key: str, progress=None) -> str:
+    """Download (if needed) and return the MJCF file path for a description."""
+    import importlib
+
+    from .fetch import install_git_free_loader
+
+    install_git_free_loader(progress=progress)
+    module = importlib.import_module(f"robot_descriptions.{key}")
+    path = getattr(module, "MJCF_PATH", None)
+    if not path:
+        raise RuntimeError(f"'{key}' has no MJCF file")
+    return str(path)

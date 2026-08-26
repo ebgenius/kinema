@@ -151,6 +151,18 @@ def _load_source_urdf(rig):
             from ..catalog.index import load_urdf
 
             return load_urdf(source)
+
+        if kind in ("mjcf", "catalog-mjcf"):
+            # PyRoki only reads URDF, so re-parse the MJCF and render the
+            # kinematic tree back out as one. Without this a third of the
+            # catalog would be stuck on the NumPy fallback.
+            from ..catalog.index import mjcf_path
+            from ..io.mjcf import model_from_mjcf
+            from .urdf_bridge import urdf_from_model
+
+            path = mjcf_path(source) if kind == "catalog-mjcf" else source
+            return urdf_from_model(model_from_mjcf(path))
+
         import os
 
         if not os.path.isfile(source):
@@ -161,7 +173,7 @@ def _load_source_urdf(rig):
 
         resolver = make_mesh_resolver(source)
         return yourdfpy.URDF.load(
-            source, build_scene_graph=False, load_meshes=False,
+            source, build_scene_graph=True, load_meshes=False,
             filename_handler=lambda name: resolver(name),
         )
     except Exception:  # noqa: BLE001

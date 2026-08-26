@@ -160,6 +160,23 @@ class TestLiveSolving:
         assert result.backend == "NumPy"
 
 
+    def test_pyroki_backend_is_used_by_default(self, rig, builder, handlers, manager):
+        """Regression: loading the URDF with build_scene_graph=False left PyRoki
+        unable to find the base link, so every rig silently fell back to NumPy
+        while still reporting success."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        solver = manager.get_solver(rig, ik_name)
+
+        handlers.solve_rig(rig, force=True)
+        assert solver.pyroki_error is None, (
+            f"PyRoki unavailable for a local URDF rig: {solver.pyroki_error}"
+        )
+        assert solver.last_result.backend == "PyRoki"
+
+
 class TestSolveBudget:
     def test_first_solve_is_not_timed(self, rig, builder, handlers, manager):
         """Regression: the first PyRoki solve includes JAX's JIT compile -- tens

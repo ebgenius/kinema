@@ -60,11 +60,14 @@ class TestSearch:
         assert arms
         assert all("arm" in e.tags for e in arms)
 
-    def test_urdf_only_is_the_default(self):
-        """Kinema builds rigs from URDF; MJCF-only entries cannot be imported yet."""
-        assert all(e.has_urdf for e in catalog.search())
-        everything = catalog.search(urdf_only=False)
-        assert len(everything) > len(catalog.search())
+    def test_supported_formats_are_the_default(self):
+        """Kinema reads URDF and MJCF, so the picker should offer both."""
+        results = catalog.search()
+        assert all(e.is_supported for e in results)
+        assert any(e.has_urdf for e in results)
+        assert any(e.has_mjcf and not e.has_urdf for e in results), (
+            "MJCF-only robots should be importable"
+        )
 
     def test_nonsense_query_returns_nothing(self):
         assert catalog.search("zzzz-no-such-robot") == []
@@ -78,8 +81,15 @@ def test_available_tags_are_ordered_sensibly(entries):
     assert known == [t for t in catalog.KNOWN_TAGS if t in tags]
 
 
-def test_mjcf_only_entry_is_marked_unsupported(entries):
+def test_mjcf_only_entries_are_supported_and_labelled(entries):
+    """60 of the catalog's 186 robots ship MJCF only -- roughly a third of the
+    total, so treating them as unimportable would be a large hole."""
     mjcf_only = [e for e in entries if e.has_mjcf and not e.has_urdf]
-    if not mjcf_only:
-        pytest.skip("catalog has no MJCF-only entries")
-    assert not mjcf_only[0].is_supported
+    assert len(mjcf_only) > 20
+    assert all(e.is_supported for e in mjcf_only)
+    assert mjcf_only[0].format_label == "MJCF"
+
+
+def test_urdf_entries_are_labelled_urdf(entries):
+    urdf = [e for e in entries if e.has_urdf]
+    assert urdf and urdf[0].format_label == "URDF"
