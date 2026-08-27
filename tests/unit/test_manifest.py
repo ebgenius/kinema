@@ -30,6 +30,36 @@ def _load_fetch_wheels():
     return module
 
 
+def wheel_tags(name: str) -> tuple[str, str, str, str]:
+    """``(dist, python_tag, abi_tag, platform_tag)`` from a wheel filename.
+
+    PEP 427 puts an *optional* build tag between the version and the python
+    tag, so a wheel name has five segments or six. The trailing three are the
+    only reliable anchor: unpacking into a fixed five raises ValueError on a
+    perfectly legal ``pkg-1.0.0-1-py3-none-any.whl``.
+    """
+    parts = name[: -len(".whl")].split("-")
+    python_tag, abi_tag, platform_tag = parts[-3:]
+    return parts[0], python_tag, abi_tag, platform_tag
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("jax-0.11.1-py3-none-any.whl", ("jax", "py3", "none", "any")),
+        ("six-1.17.0-py2.py3-none-any.whl", ("six", "py2.py3", "none", "any")),
+        (
+            "jaxlib-0.11.1-cp313-cp313-manylinux_2_27_x86_64.whl",
+            ("jaxlib", "cp313", "cp313", "manylinux_2_27_x86_64"),
+        ),
+        # The build tag none of our dependencies uses today.
+        ("pkg-1.0.0-1-py3-none-any.whl", ("pkg", "py3", "none", "any")),
+    ],
+)
+def test_wheel_name_parsing_tolerates_a_build_tag(name, expected):
+    assert wheel_tags(name) == expected
+
+
 @pytest.fixture(scope="module")
 def manifest() -> dict:
     return tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -72,8 +102,8 @@ def test_every_compiled_package_covers_every_platform(manifest, wheel_names):
 
     compiled: dict[str, list[str]] = {}
     for name in wheel_names:
-        dist, _, python_tag, _, platform_tag = name[: -len(".whl")].split("-")
-        if platform_tag == "any" and python_tag.startswith("py"):
+        dist, python_tag, abi_tag, platform_tag = wheel_tags(name)
+        if platform_tag == "any" and abi_tag == "none" and python_tag.startswith("py"):
             continue  # pure Python: one wheel serves every platform
         compiled.setdefault(dist.lower().replace("_", "-"), []).append(platform_tag)
 
@@ -96,7 +126,7 @@ def test_no_wheel_requires_a_newer_glibc_than_blender(wheel_names):
     too_new = [
         name
         for name in wheel_names
-        for tag in name[: -len(".whl")].split("-")[-1].split(".")
+        for tag in wheel_tags(name)[3].split(".")
         if tag.startswith("manylinux_2_") and int(tag.split("_")[2]) > cap
     ]
     assert not too_new, f"wheels requiring glibc newer than 2.{cap}: {too_new}"
