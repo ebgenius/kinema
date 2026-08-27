@@ -11,6 +11,9 @@ __pycache__/
 /dist/
 *.zip
 
+# Documentation site build output (mkdocs build).
+/site/
+
 # Vendored third-party source is fetched by tools/vendor.py, not committed.
 /src/kinema/vendor/pyroki/
 /src/kinema/vendor/jaxls/

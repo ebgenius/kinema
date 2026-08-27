@@ -28,6 +28,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+# Documentation site (docs/, mkdocs.yml). Deliberately NOT in [project.dependencies]:
+# that list mirrors what Blender has at runtime and feeds tools/fetch_wheels.py.
+docs = ["mkdocs-material"]
 dev = [
     "fake-bpy-module-latest",   # bpy stubs for autocomplete / type checking
     "debugpy",                  # IDE-agnostic DAP debugging inside Blender

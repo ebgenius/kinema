@@ -4,6 +4,9 @@
 clean armature you can actually animate — with IK that understands singularities, joint
 limits and multi-turn joints.
 
+**📖 [Documentation](https://ebgenius.github.io/kinema/)** — install, tutorials, and a
+robotics primer written for Blender artists. This README covers building Kinema itself.
+
 > Status: working end to end. Import (URDF, xacro, MJCF, or the 186-robot
 > catalog), rig, pose, solve and bake all function, and the built extension
 > installs and runs from a clean Blender profile.

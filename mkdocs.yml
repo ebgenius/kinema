@@ -1,0 +1,95 @@
+site_name: Kinema
+site_description: Animation-ready robot rigs in Blender — import any robot, get a clean armature with correct IK.
+site_url: https://ebgenius.github.io/kinema/
+site_author: Eugenio Bernardi
+
+repo_url: https://github.com/ebgenius/kinema
+repo_name: ebgenius/kinema
+edit_uri: edit/github-page/docs/
+
+copyright: GPL-3.0-or-later — vendored PyRoki and jaxls remain MIT
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences
+  # Renders :material-*: shortcodes as inline SVG; without it they stay literal text.
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+# With --strict these become build errors, so a moved page or a renamed heading
+# fails CI instead of shipping a dead link.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ebgenius/kinema
+      name: Kinema on GitHub
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: getting-started/install.md
+      - Your first robot: getting-started/first-robot.md
+  - Tutorials:
+      - Pose a robot by hand: tutorials/pose-fk.md
+      - Animate with an IK target: tutorials/animate-ik.md
+      - Bake and hand off: tutorials/bake.md
+      - Import your own robot: tutorials/import-your-own.md
+  - Concepts:
+      - Links, joints and DoF: concepts/links-and-joints.md
+      - URDF, xacro and MJCF: concepts/formats.md
+      - The tool centre point: concepts/tcp.md
+      - Forward and inverse kinematics: concepts/ik.md
+  - Reference:
+      - The Kinema sidebar: reference/sidebar.md
+      - Preferences: reference/preferences.md
+      - Robot catalog: reference/catalog.md
+  - Troubleshooting: troubleshooting.md
