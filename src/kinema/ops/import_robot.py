@@ -255,7 +255,10 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
     bl_idname = "kinema.import_urdf"
     bl_label = "Import URDF"
     bl_description = "Build a Kinema rig from a local URDF or xacro file"
-    bl_options = {"REGISTER", "UNDO"}
+    # See KINEMA_OT_import_dae for why REGISTER is off: the redo panel would
+    # re-import every mesh on each slider drag, and ImportHelper already draws
+    # these settings in the file browser before the import runs.
+    bl_options = {"UNDO"}
 
     filename_ext = ".urdf"
     filter_glob: StringProperty(
