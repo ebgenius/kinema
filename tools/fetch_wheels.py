@@ -4,7 +4,7 @@ Blender extensions ship their Python dependencies as unmodified wheels bundled
 in the extension zip; installing packages at runtime is forbidden by the
 extension guidelines. This script materialises that payload.
 
-Three things here are load-bearing and easy to get wrong:
+Four things here are load-bearing and easy to get wrong:
 
 1. **``--no-deps`` with an explicit package list.** ``yourdfpy`` depends on
    ``trimesh[easy]``, and those extras drag in embreex (37 MB), Pillow,
@@ -19,6 +19,12 @@ Three things here are load-bearing and easy to get wrong:
 
 3. **cp313 only.** Blender 5.2 LTS embeds CPython 3.13.13. A wheel built for
    any other ABI silently fails to load at install time.
+
+4. **Platform tags are matched literally.** pip does not treat
+   ``--platform manylinux_2_28_x86_64`` as "2.28 or older" -- see
+   ``PLATFORM_TAGS``. A missing tag does not error; pip quietly resolves an
+   older release of that one package, which ``check_version_skew`` then
+   catches before the manifest is written.
 
 Usage::
 
@@ -43,13 +49,25 @@ MANIFEST = ADDON_DIR / "blender_manifest.toml"
 PYTHON_VERSION = "3.13"
 ABI = "cp313"
 
+#: Highest glibc a bundled Linux wheel may require, as ``manylinux_2_<MINOR>``.
+#: Blender's own Linux builds target glibc 2.28, so a wheel above that baseline
+#: would load in this venv and fail on a supported host. Raise this only
+#: alongside Blender's own requirement.
+MAX_GLIBC_MINOR = 28
+
 #: Blender platform id -> pip ``--platform`` tags to try, most specific first.
 PLATFORM_TAGS: dict[str, tuple[str, ...]] = {
     "windows-x64": ("win_amd64",),
+    # pip expands macOS and the legacy manylinux2014/2010 aliases into their
+    # compatible older tags, but PEP 600 ``manylinux_2_<MINOR>`` tags match
+    # literally: --platform manylinux_2_28_x86_64 does NOT accept a wheel
+    # tagged manylinux_2_27_x86_64. Every minor in the supported range has to
+    # be named. Naming only 2_28/2_17 shipped Linux jaxlib 0.7.0 -- the newest
+    # release still tagged manylinux2014 -- against jax 0.11.1, and the version
+    # skew surfaced to users as "solver unavailable" at the first import.
     "linux-x64": (
-        "manylinux_2_28_x86_64",
-        "manylinux_2_17_x86_64",
-        "manylinux2014_x86_64",
+        *(f"manylinux_2_{minor}_x86_64" for minor in range(MAX_GLIBC_MINOR, 16, -1)),
+        "manylinux2014_x86_64",  # legacy alias of manylinux_2_17
     ),
     # Several macOS baselines: projects raise their minimum over time, and
     # SciPy's cp313 arm64 wheels are not built for macosx_11_0 at all. pip
@@ -118,6 +136,44 @@ def download(platform: str, dest: Path) -> None:
         raise SystemExit("fetch_wheels: could not resolve the full payload")
 
 
+def check_version_skew(wheel_names: list[str]) -> None:
+    """Fail if one package resolved to different versions on different platforms.
+
+    A pure-Python wheel is shared by all three platforms, so a package with a
+    compiled component is the only kind that can split -- and when it splits
+    across *versions* rather than just tags, the payload is incoherent. That is
+    how Linux ended up with jaxlib 0.7.0 under jax 0.11.1: jaxlib had no wheel
+    matching the platform tags being asked for, so pip walked back through
+    releases until one did, silently, while the other platforms stayed current.
+    The extension installs cleanly and only fails at the first ``import jax``.
+    """
+    versions: dict[str, dict[str, list[str]]] = {}
+    for name in wheel_names:
+        dist, version = name.split("-")[:2]
+        versions.setdefault(dist.lower().replace("_", "-"), {}).setdefault(
+            version, []
+        ).append(name)
+
+    skewed = {dist: v for dist, v in versions.items() if len(v) > 1}
+    if not skewed:
+        return
+
+    lines = ["fetch_wheels: the same package resolved to several versions:"]
+    for dist, by_version in sorted(skewed.items()):
+        lines.append(f"  {dist}:")
+        for version, names in sorted(by_version.items()):
+            for name in sorted(names):
+                lines.append(f"    {version:<12} {name}")
+    lines += [
+        "",
+        "Either a stale wheel from an earlier run is still in the directory, or",
+        "a platform has no wheel matching its tags in PLATFORM_TAGS and pip fell",
+        "back to an older release. Check the package's tags on PyPI, then re-run",
+        "with --clean to rebuild the whole payload.",
+    ]
+    raise SystemExit("\n".join(lines))
+
+
 def write_manifest(wheel_names: list[str]) -> None:
     entries = "\n".join(f'  "./wheels/{n}",' for n in sorted(wheel_names))
     block = f"wheels = [\n{entries}\n]"
@@ -154,6 +210,7 @@ def main() -> int:
     names = [w.name for w in WHEEL_DIR.glob("*.whl")]
     if not names:
         raise SystemExit("fetch_wheels: no wheels downloaded")
+    check_version_skew(names)
     write_manifest(names)
 
     total_mb = sum(w.stat().st_size for w in WHEEL_DIR.glob("*.whl")) / 1e6
