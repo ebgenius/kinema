@@ -89,7 +89,7 @@ files contain non-ASCII bytes that fail to decode under it.
 ### Building
 
 ```bash
-uv run python tools/fetch_wheels.py        # all three platforms (~346 MB)
+uv run python tools/fetch_wheels.py        # all three platforms (~341 MB)
 uv run python tools/dev.py validate
 uv run python tools/dev.py build           # per-platform zips into dist/
 ```
@@ -100,7 +100,7 @@ output, all comfortably under the ~200 MB ceiling:
 
 | Platform | Zip |
 |---|---|
-| `linux-x64` | 143.9 MB |
+| `linux-x64` | 138.7 MB |
 | `windows-x64` | 118.8 MB |
 | `macos-arm64` | 102.0 MB |
 
