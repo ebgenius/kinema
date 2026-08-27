@@ -197,6 +197,8 @@ class KINEMA_OT_build_robot(Operator):
             return {"CANCELLED"}
 
         self._stage = "FETCH"
+        self._torn_down = False
+        self._timer = None
         self._shared = _Shared()
         self._cancel = threading.Event()
         self._steps = None
@@ -337,6 +339,14 @@ class KINEMA_OT_build_robot(Operator):
         self._teardown(context)
         return {"FINISHED"}
 
+    def cancel(self, context: bpy.types.Context) -> None:
+        """Blender cancelled us from outside -- a file load, or quitting.
+
+        Without this the timer and the job lock would leak, and the next import
+        would be refused for the rest of the session.
+        """
+        self._abort(context)
+
     def _abort(self, context: bpy.types.Context) -> set[str]:
         self._cancel.set()
         if self._steps is not None:
@@ -347,6 +357,12 @@ class KINEMA_OT_build_robot(Operator):
         return {"CANCELLED"}
 
     def _teardown(self, context: bpy.types.Context) -> None:
+        # Idempotent: Blender may call cancel() after modal() already finished,
+        # and releasing the job lock twice would let two imports run at once.
+        if getattr(self, "_torn_down", False):
+            return
+        self._torn_down = True
+
         window_manager = context.window_manager
         if getattr(self, "_timer", None) is not None:
             window_manager.event_timer_remove(self._timer)
