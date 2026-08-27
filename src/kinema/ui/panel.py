@@ -16,6 +16,7 @@ from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringPropert
 from bpy.types import Panel, PropertyGroup
 
 from .. import runtime
+from ..ops.import_robot import SETTING_NAMES, import_settings
 from ..rig import builder
 
 CATEGORY = "Kinema"
@@ -40,7 +41,13 @@ def active_rig(context: bpy.types.Context) -> bpy.types.Object | None:
 
 
 class KinemaSceneProps(PropertyGroup):
-    """Scene-level state. Per-rig state lives on the armature object itself."""
+    """Scene-level state. Per-rig state lives on the armature object itself.
+
+    The import settings live here rather than on the catalog operator because
+    that operator no longer carries REGISTER -- its redo panel used to re-run
+    the entire import on every slider drag. Chosen before the import instead of
+    adjusted after it.
+    """
 
     last_import: StringProperty(
         name="Last Import",
@@ -52,6 +59,10 @@ class KinemaSceneProps(PropertyGroup):
         description="Filter the catalog by robot type",
         items=lambda self, context: _tag_items(),
     )
+    # Blender reads properties from a class's own __annotations__ and does not
+    # walk base classes, so the shared definitions are merged in rather than
+    # inherited. Same trick the import operators use.
+    __annotations__.update(import_settings())
 
 
 def _tag_items():
@@ -84,6 +95,13 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
         column.operator("kinema.import_catalog", text="Import from Catalog…",
                         icon="OUTLINER_OB_ARMATURE")
         column.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
+
+        header, body = layout.panel("kinema_import_options", default_closed=True)
+        header.label(text="Import Options")
+        if body is not None:
+            body.use_property_split = True
+            for name in SETTING_NAMES:
+                body.prop(context.scene.kinema, name)
 
         rig = active_rig(context)
         if rig is None:

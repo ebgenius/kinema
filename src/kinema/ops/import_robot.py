@@ -7,11 +7,29 @@ Two entry points, because they answer two different questions:
 * **Import URDF File** -- "I want *my* robot." Reads a local URDF, xacro or
   MJCF, resolving ``package://`` references by searching the file's own tree.
 
-Both formats end at the same place: a RobotModel handed to the rig builder.
+Both hand off to one modal worker, :class:`KINEMA_OT_build_robot`, because both
+are slow enough to freeze Blender if run straight through. A catalog import can
+download hundreds of megabytes, and a humanoid costs one Blender mesh-importer
+call per visual -- a couple of hundred of them. Run synchronously that is long
+enough for Windows to decide the process has hung and offer to kill it.
+
+So the work is split by what may touch ``bpy``:
+
+* **Download and parse** go to a worker thread (``io.loader``, which imports no
+  ``bpy`` at all).
+* **Armature and mesh building** stay on the main thread, because Blender's API
+  is not thread-safe, but run in short slices across modal timer ticks
+  (``rig.builder.build_rig_iter``).
+
+The modal timer is the load-bearing part. ``wm.progress_update`` draws a cursor
+but does not pump events; only returning to Blender's event loop keeps the
+window alive.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import bpy
@@ -20,25 +38,19 @@ from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 
 from ..catalog import index as catalog
-from ..rig import builder, kinematics
+from ..io import loader
+from ..rig import builder
 
-_URDF_SUFFIXES = {".urdf", ".xacro", ".xml"}
+#: How often the modal operator wakes up, and how long it works before handing
+#: control back. The gap between them is the responsiveness dial: 40 ms of work
+#: per 50 ms of wall clock keeps ~80% throughput with a 20 Hz UI floor. Setting
+#: them equal would halve throughput for nothing.
+_TIMER_INTERVAL = 0.01
+_TICK_BUDGET = 0.04
 
-
-def _looks_like_mjcf(path: Path) -> bool:
-    """True if the file's root element is <mujoco>.
-
-    MJCF and URDF both commonly use .xml, so the extension decides nothing.
-    Only the opening bytes are read -- some MJCF scenes are large.
-    """
-    if path.suffix.lower() in (".urdf", ".xacro"):
-        return False
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(4096).decode("utf-8", "ignore")
-    except OSError:
-        return False
-    return "<mujoco" in head
+#: One import at a time. The fetch hooks in ``catalog.fetch`` are process-global,
+#: and two concurrent builds would interleave objects in the scene.
+_JOB_LOCK = threading.Lock()
 
 
 def _online_ready(operator: Operator) -> bool:
@@ -53,82 +65,12 @@ def _online_ready(operator: Operator) -> bool:
     return False
 
 
-def _build(operator: Operator, urdf, resolver, options, source=None) -> set[str]:
-    """Shared tail: URDF -> model -> rig, with errors reported to the UI."""
-    try:
-        model = kinematics.model_from_urdf(urdf, mesh_resolver=resolver)
-    except kinematics.UnsupportedJointError as exc:
-        operator.report({"ERROR"}, str(exc))
-        return {"CANCELLED"}
-    except Exception as exc:  # noqa: BLE001
-        operator.report({"ERROR"}, f"Could not read robot: {exc}")
-        return {"CANCELLED"}
-
-    if not model.actuated_joints:
-        operator.report({"WARNING"}, f"'{model.name}' has no movable joints")
-
-    result = builder.build_rig(model, options)
-
-    # Record where this came from: the solver reloads the description later to
-    # build PyRoki's robot model, and a saved .blend must still know.
-    if source is not None and result.armature_object is not None:
-        kind, value = source
-        result.armature_object[builder.PROP_SOURCE_KIND] = kind
-        result.armature_object[builder.PROP_SOURCE] = value
-
-    for warning in result.warnings[:3]:
-        operator.report({"WARNING"}, warning)
-    if len(result.warnings) > 3:
-        operator.report({"WARNING"}, f"...and {len(result.warnings) - 3} more mesh warnings")
-
-    operator.report(
-        {"INFO"},
-        f"{model.name}: {len(result.joint_bones)} joints, "
-        f"{len(result.mesh_objects)} meshes, TCP at '{result.tcp_link}'",
-    )
-    bpy.context.scene.kinema.last_import = model.name
-    return {"FINISHED"}
-
-
-def _build_mjcf(operator, context, path, options, source) -> set[str]:
-    """Shared tail for MJCF: parse -> model -> rig."""
-    from ..io import mjcf
-
-    window = context.window
-    window.cursor_set("WAIT")
-    try:
-        model = mjcf.model_from_mjcf(path)
-    except mjcf.MjcfError as exc:
-        operator.report({"ERROR"}, str(exc))
-        return {"CANCELLED"}
-    except Exception as exc:  # noqa: BLE001
-        operator.report({"ERROR"}, f"Could not parse {Path(path).name}: {exc}")
-        return {"CANCELLED"}
-    finally:
-        window.cursor_set("DEFAULT")
-
-    result = builder.build_rig(model, options)
-    if result.armature_object is not None:
-        kind, value = source
-        result.armature_object[builder.PROP_SOURCE_KIND] = kind
-        result.armature_object[builder.PROP_SOURCE] = value
-    for warning in result.warnings[:3]:
-        operator.report({"WARNING"}, warning)
-    operator.report(
-        {"INFO"},
-        f"{model.name}: {len(result.joint_bones)} joints, "
-        f"{len(result.mesh_objects)} meshes, TCP at '{result.tcp_link}'",
-    )
-    context.scene.kinema.last_import = model.name
-    return {"FINISHED"}
-
-
 def import_settings() -> dict:
-    """Property annotations shared by both import operators.
+    """Property annotations shared by the import operators and the sidebar.
 
     Blender reads properties from a class's *own* ``__annotations__``; it does
     not walk base classes. So a mixin can share methods but not properties, and
-    each operator merges this dict into its own annotations instead.
+    each class merges this dict into its own annotations instead.
     """
     return {
         "bone_length": FloatProperty(
@@ -159,27 +101,297 @@ def import_settings() -> dict:
     }
 
 
-class KinemaImportSettings:
-    """Behaviour shared by both import operators (methods only -- see above)."""
+#: The four names in :func:`import_settings`, for copying between an operator,
+#: the scene property group, and a RigBuildOptions.
+SETTING_NAMES = ("bone_length", "enforce_limits", "import_visuals", "create_tcp")
 
-    def _options(self) -> builder.RigBuildOptions:
-        return builder.RigBuildOptions(
-            bone_length=self.bone_length or None,
-            enforce_limits=self.enforce_limits,
-            import_visuals=self.import_visuals,
-            create_tcp=self.create_tcp,
+
+def setting_values(source) -> dict:
+    """Read the import settings off an operator or the scene property group."""
+    return {name: getattr(source, name) for name in SETTING_NAMES}
+
+
+def _options_from(source) -> builder.RigBuildOptions:
+    values = setting_values(source)
+    return builder.RigBuildOptions(
+        bone_length=values["bone_length"] or None,
+        enforce_limits=values["enforce_limits"],
+        import_visuals=values["import_visuals"],
+        create_tcp=values["create_tcp"],
+    )
+
+
+def _human_bytes(count: int) -> str:
+    if count >= 1 << 20:
+        return f"{count / (1 << 20):.0f} MB"
+    return f"{count / 1024:.0f} KB"
+
+
+# --------------------------------------------------------------------------
+# the modal worker
+# --------------------------------------------------------------------------
+class _Shared:
+    """State handed from the worker thread to ``modal()``.
+
+    Guarded by a lock because the thread writes progress while the main thread
+    reads it. Nothing here is a ``bpy`` object -- the thread must never touch
+    one, and must never call ``Operator.report`` either; all reporting happens
+    in ``modal()``.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.fraction = 0.0
+        self.done = 0
+        self.total = 0
+        self.finished = False
+        self.result: loader.LoadResult | None = None
+
+    def progress(self, fraction: float, done: int, total: int) -> None:
+        with self.lock:
+            self.fraction, self.done, self.total = fraction, done, total
+
+    def snapshot(self) -> tuple[float, int, int, bool, loader.LoadResult | None]:
+        with self.lock:
+            return self.fraction, self.done, self.total, self.finished, self.result
+
+
+class KINEMA_OT_build_robot(Operator):
+    """Fetch, parse and build a robot without blocking Blender.
+
+    Not exposed in any menu: it is the shared engine behind the catalog picker
+    and the URDF file browser, both of which invoke it with the robot already
+    chosen.
+    """
+
+    bl_idname = "kinema.build_robot"
+    bl_label = "Build Robot Rig"
+    bl_description = "Download, parse and rig a robot description"
+    # UNDO so Ctrl+Z removes the rig; deliberately no REGISTER, because the redo
+    # panel would re-run the whole import on every parameter tweak.
+    bl_options = {"UNDO"}
+
+    # SKIP_SAVE throughout: these are passed in by the caller, and without it
+    # Blender restores the previous invocation's values over them.
+    robot_key: StringProperty(options={"SKIP_SAVE"})
+    filepath: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})
+    __annotations__.update(import_settings())
+
+    # -------------------------------------------------------- entry points
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        """The whole import in one call, blocking.
+
+        This is what a script or a background Blender gets. Interactive use goes
+        through ``invoke`` and the modal path instead.
+        """
+        return self._run_synchronously(context)
+
+    def invoke(self, context: bpy.types.Context, event) -> set[str]:
+        if bpy.app.background or context.window is None:
+            # No window means no modal handler and no TIMER events -- which is
+            # exactly how `dev.py test` runs Blender.
+            return self.execute(context)
+
+        if not _JOB_LOCK.acquire(blocking=False):
+            self.report({"WARNING"}, "Kinema: an import is already running")
+            return {"CANCELLED"}
+
+        self._stage = "FETCH"
+        self._shared = _Shared()
+        self._cancel = threading.Event()
+        self._steps = None
+        self._result = None
+        self._load: loader.LoadResult | None = None
+        self._label = self.robot_key or Path(self.filepath).name
+
+        self._thread = threading.Thread(
+            target=self._work, name="kinema-import", daemon=True
         )
+        self._thread.start()
 
-    def draw(self, context: bpy.types.Context) -> None:
-        layout = self.layout
-        layout.use_property_split = True
-        column = layout.column()
-        column.prop(self, "import_visuals")
-        column.prop(self, "create_tcp")
-        column.prop(self, "enforce_limits")
-        column.prop(self, "bone_length")
+        window_manager = context.window_manager
+        window_manager.progress_begin(0, 1000)
+        self._set_status(context, f"Kinema: fetching {self._label}… (Esc to cancel)")
+        self._timer = window_manager.event_timer_add(
+            _TIMER_INTERVAL, window=context.window
+        )
+        window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    # ---------------------------------------------------------------- worker
+    def _work(self) -> None:
+        """Runs on the worker thread. Must not touch bpy in any way."""
+        shared = self._shared
+        try:
+            if self.robot_key:
+                result = loader.load_catalog(
+                    self.robot_key,
+                    progress=shared.progress,
+                    should_cancel=self._cancel.is_set,
+                )
+            else:
+                result = loader.load_file(
+                    self.filepath, should_cancel=self._cancel.is_set
+                )
+        except Exception as exc:  # noqa: BLE001 - a thread must not raise into nothing
+            result = loader.LoadResult(error=f"{type(exc).__name__}: {exc}")
+        with shared.lock:
+            shared.result = result
+            shared.finished = True
+
+    # ----------------------------------------------------------------- modal
+    def modal(self, context: bpy.types.Context, event) -> set[str]:
+        if event.type == "ESC" and event.value == "PRESS":
+            self.report({"INFO"}, "Kinema: import cancelled")
+            return self._abort(context)
+        if event.type != "TIMER":
+            # Let the viewport keep working. A window that repaints but ignores
+            # the mouse reads as barely better than a frozen one.
+            return {"PASS_THROUGH"}
+
+        if self._stage == "FETCH":
+            return self._tick_fetch(context)
+        return self._tick_build(context)
+
+    def _tick_fetch(self, context: bpy.types.Context) -> set[str]:
+        fraction, done, total, finished, result = self._shared.snapshot()
+
+        if not finished:
+            context.window_manager.progress_update(int(max(fraction, 0.0) * 1000))
+            if total:
+                self._set_status(
+                    context,
+                    f"Kinema: downloading {self._label} — "
+                    f"{_human_bytes(done)} / {_human_bytes(total)} (Esc to cancel)",
+                )
+            elif done:
+                self._set_status(
+                    context,
+                    f"Kinema: downloading {self._label} — "
+                    f"{_human_bytes(done)} (Esc to cancel)",
+                )
+            return {"RUNNING_MODAL"}
+
+        self._thread.join(timeout=1.0)
+        if result is None or result.cancelled:
+            return self._abort(context)
+        if result.error:
+            self.report({"ERROR"}, result.error)
+            return self._abort(context)
+        if not result.model.actuated_joints:
+            self.report({"WARNING"}, f"'{result.model.name}' has no movable joints")
+
+        self._load = result
+        self._result = builder.RigBuildResult()
+        self._steps = builder.build_rig_iter(
+            result.model, _options_from(self), result=self._result
+        )
+        self._stage = "BUILD"
+        return {"RUNNING_MODAL"}
+
+    def _tick_build(self, context: bpy.types.Context) -> set[str]:
+        deadline = time.perf_counter() + _TICK_BUDGET
+        done = total = 0
+        while time.perf_counter() < deadline:
+            try:
+                done, total = next(self._steps)
+            except StopIteration as stop:
+                self._result = stop.value
+                return self._finish(context)
+            except Exception as exc:  # noqa: BLE001
+                self.report({"ERROR"}, f"Could not build rig: {exc}")
+                return self._abort(context)
+
+        if total:
+            context.window_manager.progress_update(int(done / total * 1000))
+            self._set_status(
+                context, f"Kinema: building {self._label} — mesh {done}/{total}"
+            )
+        return {"RUNNING_MODAL"}
+
+    # -------------------------------------------------------------- teardown
+    def _finish(self, context: bpy.types.Context) -> set[str]:
+        result, load = self._result, self._load
+
+        if load.source is not None and result.armature_object is not None:
+            # Record where this came from: the solver reloads the description
+            # later to build PyRoki's robot model, and a saved .blend must still
+            # know.
+            kind, value = load.source
+            result.armature_object[builder.PROP_SOURCE_KIND] = kind
+            result.armature_object[builder.PROP_SOURCE] = value
+
+        for warning in result.warnings[:3]:
+            self.report({"WARNING"}, warning)
+        if len(result.warnings) > 3:
+            self.report(
+                {"WARNING"}, f"...and {len(result.warnings) - 3} more mesh warnings"
+            )
+        self.report(
+            {"INFO"},
+            f"{load.model.name}: {len(result.joint_bones)} joints, "
+            f"{len(result.mesh_objects)} meshes, TCP at '{result.tcp_link}'",
+        )
+        context.scene.kinema.last_import = load.model.name
+
+        self._teardown(context)
+        return {"FINISHED"}
+
+    def _abort(self, context: bpy.types.Context) -> set[str]:
+        self._cancel.set()
+        if self._steps is not None:
+            self._steps.close()
+        if self._result is not None:
+            builder.discard_rig(self._result)
+        self._teardown(context)
+        return {"CANCELLED"}
+
+    def _teardown(self, context: bpy.types.Context) -> None:
+        window_manager = context.window_manager
+        if getattr(self, "_timer", None) is not None:
+            window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        window_manager.progress_end()
+        self._set_status(context, None)
+        if _JOB_LOCK.locked():
+            _JOB_LOCK.release()
+
+    @staticmethod
+    def _set_status(context: bpy.types.Context, text: str | None) -> None:
+        workspace = getattr(context, "workspace", None)
+        if workspace is not None:
+            workspace.status_text_set(text)
+
+    # ----------------------------------------------------------- background
+    def _run_synchronously(self, context: bpy.types.Context) -> set[str]:
+        """Whole import in one call, for background Blender and headless tests."""
+        if self.robot_key:
+            result = loader.load_catalog(self.robot_key)
+        else:
+            result = loader.load_file(self.filepath)
+        if result.error:
+            self.report({"ERROR"}, result.error)
+            return {"CANCELLED"}
+
+        rig = builder.build_rig(result.model, _options_from(self))
+        if result.source is not None and rig.armature_object is not None:
+            kind, value = result.source
+            rig.armature_object[builder.PROP_SOURCE_KIND] = kind
+            rig.armature_object[builder.PROP_SOURCE] = value
+        for warning in rig.warnings[:3]:
+            self.report({"WARNING"}, warning)
+        self.report(
+            {"INFO"},
+            f"{result.model.name}: {len(rig.joint_bones)} joints, "
+            f"{len(rig.mesh_objects)} meshes, TCP at '{rig.tcp_link}'",
+        )
+        context.scene.kinema.last_import = result.model.name
+        return {"FINISHED"}
 
 
+# --------------------------------------------------------------------------
+# entry points
+# --------------------------------------------------------------------------
 def _catalog_items(self, context):
     """Enum items for the catalog search popup.
 
@@ -199,16 +411,50 @@ def _catalog_items(self, context):
     ]
 
 
-class KINEMA_OT_import_catalog(Operator, KinemaImportSettings):
+def _hand_off(context: bpy.types.Context, **properties) -> None:
+    """Invoke the modal worker from a zero-delay timer.
+
+    ``invoke_search_popup`` and ``ImportHelper`` both route through
+    ``execute()``, which cannot legally return ``{'RUNNING_MODAL'}``. Running
+    the worker from a one-shot timer instead puts it on the main loop after the
+    popup or file browser has gone, which is also the only way its modal handler
+    attaches to a region that will still exist.
+
+    The window has to be captured here and overridden there: a timer callback
+    has no reliable window in ``bpy.context``, and ``modal_handler_add`` needs
+    one.
+    """
+    if bpy.app.background or context.window is None:
+        # No event loop to run the timer, so there is nothing to defer to.
+        # Calling without INVOKE_DEFAULT runs the worker's execute(), which
+        # does the whole import synchronously.
+        bpy.ops.kinema.build_robot(**properties)
+        return
+
+    window = context.window
+
+    def launch():
+        try:
+            with bpy.context.temp_override(window=window):
+                bpy.ops.kinema.build_robot("INVOKE_DEFAULT", **properties)
+        except RuntimeError as exc:
+            print(f"Kinema: could not start import: {exc}")
+        return None  # one-shot
+
+    bpy.app.timers.register(launch, first_interval=0.0)
+
+
+class KINEMA_OT_import_catalog(Operator):
     bl_idname = "kinema.import_catalog"
     bl_label = "Import Robot from Catalog"
     bl_description = "Pick a robot from the robot_descriptions catalog and build a rig"
-    bl_options = {"REGISTER", "UNDO"}
+    # No UNDO or REGISTER: this operator only picks. The worker it hands off to
+    # owns the undo step and must not get a redo panel.
+    bl_options = set()
     # Makes invoke_search_popup show a fuzzy-searchable list of every robot.
     bl_property = "robot_key"
 
     robot_key: EnumProperty(name="Robot", items=_catalog_items)
-    __annotations__.update(import_settings())
 
     def invoke(self, context: bpy.types.Context, event) -> set[str]:
         context.window_manager.invoke_search_popup(self)
@@ -216,8 +462,7 @@ class KINEMA_OT_import_catalog(Operator, KinemaImportSettings):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         key = self.robot_key
-        entry = catalog.get(key)
-        if entry is None:
+        if catalog.get(key) is None:
             self.report({"ERROR"}, f"Unknown robot '{key}'")
             return {"CANCELLED"}
 
@@ -227,38 +472,17 @@ class KINEMA_OT_import_catalog(Operator, KinemaImportSettings):
         if not fetch.is_cached(key) and not _online_ready(self):
             return {"CANCELLED"}
 
-        window = context.window
-        window.cursor_set("WAIT")
-        mjcf_file = None
-        try:
-            if entry.has_urdf:
-                urdf = catalog.load_urdf(key)
-            else:
-                mjcf_file = catalog.mjcf_path(key)
-        except Exception as exc:  # noqa: BLE001
-            self.report({"ERROR"}, f"Could not load '{key}': {exc}")
-            return {"CANCELLED"}
-        finally:
-            window.cursor_set("DEFAULT")
-
-        if mjcf_file is not None:
-            return _build_mjcf(
-                self, context, mjcf_file, self._options(), ("catalog-mjcf", key)
-            )
-
-        # yourdfpy already knows how to resolve this description's own meshes.
-        resolver = getattr(urdf, "_filename_handler", None)
-        return _build(self, urdf, resolver, self._options(), source=("catalog", key))
+        _hand_off(context, robot_key=key, **setting_values(context.scene.kinema))
+        return {"FINISHED"}
 
 
-class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
+class KINEMA_OT_import_urdf(Operator, ImportHelper):
     bl_idname = "kinema.import_urdf"
     bl_label = "Import URDF"
     bl_description = "Build a Kinema rig from a local URDF or xacro file"
-    # See KINEMA_OT_import_dae for why REGISTER is off: the redo panel would
-    # re-import every mesh on each slider drag, and ImportHelper already draws
-    # these settings in the file browser before the import runs.
-    bl_options = {"UNDO"}
+    # See KINEMA_OT_build_robot: the worker owns the undo step, and REGISTER
+    # here would give the file browser a redo panel that re-imports everything.
+    bl_options = set()
 
     filename_ext = ".urdf"
     filter_glob: StringProperty(
@@ -266,70 +490,28 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper, KinemaImportSettings):
     )
     __annotations__.update(import_settings())
 
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        column = layout.column()
+        for name in SETTING_NAMES:
+            column.prop(self, name)
+
     def execute(self, context: bpy.types.Context) -> set[str]:
         path = Path(self.filepath)
         if not path.is_file():
             self.report({"ERROR"}, f"No such file: {path}")
             return {"CANCELLED"}
 
-        # An .xml here is almost always MJCF; a URDF would be .urdf. Sniff the
-        # root tag rather than trusting the extension either way.
-        if _looks_like_mjcf(path):
-            return _build_mjcf(
-                self, context, path, self._options(), ("mjcf", str(path))
-            )
-
-        try:
-            import yourdfpy
-        except ImportError:
-            self.report({"ERROR"}, "yourdfpy is unavailable; check Kinema's dependencies")
-            return {"CANCELLED"}
-
-        from ..io.resolve import make_mesh_resolver
-
-        resolver = make_mesh_resolver(path)
-
-        window = context.window
-        window.cursor_set("WAIT")
-        try:
-            if path.suffix.lower() == ".xacro" or path.name.endswith(".urdf.xacro"):
-                urdf = self._load_xacro(path, resolver)
-            else:
-                urdf = yourdfpy.URDF.load(
-                    str(path),
-                    build_scene_graph=True,
-                    load_meshes=False,
-                    filename_handler=lambda name: resolver(name),
-                )
-        except Exception as exc:  # noqa: BLE001
-            self.report({"ERROR"}, f"Could not parse {path.name}: {exc}")
-            return {"CANCELLED"}
-        finally:
-            window.cursor_set("DEFAULT")
-
-        return _build(self, urdf, resolver, self._options(), source=("file", str(path)))
-
-    @staticmethod
-    def _load_xacro(path: Path, resolver):
-        """Render a xacro to URDF first; many ROS descriptions ship only xacro."""
-        import yourdfpy
-        from xacrodoc import XacroDoc
-
-        doc = XacroDoc.from_file(str(path), resolve_packages=True)
-        with doc.temp_urdf_file_path() as urdf_path:
-            return yourdfpy.URDF.load(
-                urdf_path,
-                build_scene_graph=True,
-                load_meshes=False,
-                filename_handler=lambda name: resolver(name),
-            )
+        _hand_off(context, filepath=str(path), **setting_values(self))
+        return {"FINISHED"}
 
 
 def menu_draw(self, context: bpy.types.Context) -> None:
     self.layout.operator(KINEMA_OT_import_urdf.bl_idname, text="Robot URDF (.urdf/.xacro)")
 
 
-classes = (KINEMA_OT_import_catalog, KINEMA_OT_import_urdf)
+classes = (KINEMA_OT_build_robot, KINEMA_OT_import_catalog, KINEMA_OT_import_urdf)
 
 
 def register_props() -> None:

@@ -140,12 +140,32 @@ class RigSolver:
 _cache: dict[str, RigSolver] = {}
 
 
-def _load_source_urdf(rig):
-    """Reload the description this rig was built from, if we still can."""
+def _load_source_urdf(rig, *, allow_download: bool = False):
+    """Reload the description this rig was built from, if we still can.
+
+    ``allow_download`` defaults to False, and every caller so far leaves it
+    there. This runs from ``pyroki()``, which is reached from a depsgraph
+    handler and from panel draws -- neither of which may start a download.
+    Without the guard, opening a saved .blend and nudging an IK target could
+    silently begin fetching hundreds of megabytes on the main thread and then
+    quietly degrade to the NumPy solver when it failed.
+
+    Raises SolverError with a readable reason; the panel shows it. Returns None
+    only when the rig records no source at all.
+    """
     kind = rig.get(builder.PROP_SOURCE_KIND)
     source = rig.get(builder.PROP_SOURCE)
     if not kind or not source:
         return None
+
+    if kind in ("catalog", "catalog-mjcf") and not allow_download:
+        from ..catalog import fetch
+
+        if not fetch.is_cached(source):
+            raise SolverError(
+                f"'{source}' is not downloaded; re-import this robot to fetch it"
+            )
+
     try:
         if kind == "catalog":
             from ..catalog.index import load_urdf
@@ -166,7 +186,7 @@ def _load_source_urdf(rig):
         import os
 
         if not os.path.isfile(source):
-            return None
+            raise SolverError(f"the description file is missing: {source}")
         import yourdfpy
 
         from ..io.resolve import make_mesh_resolver
@@ -176,8 +196,13 @@ def _load_source_urdf(rig):
             source, build_scene_graph=True, load_meshes=False,
             filename_handler=lambda name: resolver(name),
         )
-    except Exception:  # noqa: BLE001
-        return None
+    except SolverError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Was a bare `return None`, which reported every failure as the same
+        # opaque "description not available". _build_pyroki's caller funnels
+        # this into _pyroki_failed, which the sidebar already displays.
+        raise SolverError(f"could not reload the robot description: {exc}") from exc
 
 
 def _link_target_for(rig, tcp_bone_name: str) -> tuple[str, np.ndarray] | None:
