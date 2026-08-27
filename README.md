@@ -137,7 +137,29 @@ subpackage, which depends on `viser` (a web 3D visualiser — pointless inside B
 
 Robot descriptions are downloaded on first use. `robot_descriptions` normally shells out to
 a `git` binary, which most Blender artists do not have; Kinema replaces that one function
-with an HTTPS tarball fetch (`src/kinema/catalog/fetch.py`).
+with an HTTPS fetch (`src/kinema/catalog/fetch.py`).
+
+Downloads run on a worker thread and rig building is spread across modal timer ticks, so
+the import never blocks Blender's event loop and can be cancelled with Esc.
+
+### Per-robot downloads
+
+`mujoco_menagerie` is 1.64 GB and backs 49 of the 186 catalog robots, so a naive fetch pulls
+the whole Menagerie to get one quadruped. Description modules only call `os.path.join` at
+import time, so the directory a robot needs is derivable offline; GitHub's tree API plus the
+raw CDN then fetch just that. A Unitree Go2 costs **31 MB instead of 1.7 GB**.
+
+The cache layout is unchanged — the repository-named directory stays and only one
+subdirectory inside it is populated — so paths still resolve, an existing full checkout is
+reused rather than re-fetched, and a second robot from the same repository is added
+incrementally. Sparse fetching is opt-in per repository (`SPARSE_REPOSITORIES`), because a
+subtree referencing shared assets outside itself would fetch cleanly and then fail at
+mesh-load time with only a warning.
+
+Kinema shares `~/.cache/robot_descriptions` with robot_descriptions itself and honours
+`ROBOT_DESCRIPTIONS_CACHE`; the *Robot Cache* preference sets the same variable. Sharing is
+one-way: Kinema reuses an existing git clone, but plain robot_descriptions sees no `.git` in
+Kinema's cache and will re-clone.
 
 ## Known limitations
 
@@ -155,6 +177,13 @@ with an HTTPS tarball fetch (`src/kinema/catalog/fetch.py`).
   that rig; warm solves are ~5–20 ms.
 - **MuJoCo's OBJ meshes print MTL errors** on import. MJCF carries its own colours, so
   the missing .mtl files are harmless console noise from Blender's OBJ importer.
+- **One import at a time.** The fetch hooks are process-global, so a second import while
+  one is running is refused rather than queued.
+- **Meshes assemble then snap.** They are parented and placed in a single pass after the
+  last one loads, because doing it per-chunk would cost a depsgraph evaluation each time.
+  On a big robot the parts visibly pile at the origin for a second before landing.
+- **Changing the cache location mid-session** only affects robots not yet imported: a
+  description module resolves `REPOSITORY_PATH` once, at first import.
 
 ## License
 
