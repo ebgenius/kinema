@@ -20,7 +20,11 @@ class KINEMA_OT_import_dae(Operator, ImportHelper):
     bl_idname = "kinema.import_dae"
     bl_label = "Import COLLADA"
     bl_description = "Import a COLLADA .dae mesh (restores support removed in Blender 5.0)"
-    bl_options = {"REGISTER", "UNDO"}
+    # No REGISTER: with it, Blender's redo panel re-runs execute() on every
+    # tweak, and every tweak here means re-parsing the file. ImportHelper draws
+    # these settings in the file browser before the import, so the redo panel
+    # adds nothing but a way to accidentally re-import.
+    bl_options = {"UNDO"}
 
     filename_ext = ".dae"
     filter_glob: StringProperty(default="*.dae", options={"HIDDEN"})

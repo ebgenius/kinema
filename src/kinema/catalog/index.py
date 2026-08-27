@@ -137,30 +137,59 @@ def available_tags() -> list[str]:
     return ordered + sorted(present - set(ordered))
 
 
-def load_urdf(key: str, progress=None):
+def load_urdf(key: str, progress=None, should_cancel=None):
     """Download (if needed) and parse one description into a ``yourdfpy.URDF``.
 
     Raises RuntimeError if the description is not available offline and Blender
     is in offline mode. The extension declares the ``network`` permission, and
     the guidelines require honouring ``bpy.app.online_access`` before using it.
+
+    Touches no ``bpy``, so this runs whole on the import worker thread.
     """
-    from .fetch import install_git_free_loader
+    from . import fetch
 
-    install_git_free_loader(progress=progress)
+    fetch.install_git_free_loader()
 
+    # Resolved before the real import, not during it: the probe in
+    # package_subtree imports the same module, and doing that from inside
+    # clone_to_cache would be re-entrant.
+    subtree = fetch.package_subtree(key)
+
+    with fetch.hooks(progress=progress, should_cancel=should_cancel,
+                     subtree=subtree, label=subtree or key):
+        return _load_urdf_now(key)
+
+
+def _load_urdf_now(key: str):
     from robot_descriptions.loaders.yourdfpy import load_robot_description
 
-    return load_robot_description(key)
+    # load_meshes defaults to True, which parses every visual through
+    # trimesh/pycollada -- work that is then thrown away, because the meshes are
+    # re-imported through Blender's own importers in rig.builder. On a humanoid
+    # that is a full redundant parse of every file. The local-file path already
+    # passes load_meshes=False; this makes the catalog path agree.
+    #
+    # build_scene_graph must stay on: yourdfpy only computes ``base_link`` when
+    # it is set, and ``kinematics.model_from_urdf`` reads it.
+    return load_robot_description(key, build_scene_graph=True, load_meshes=False)
 
 
-def mjcf_path(key: str, progress=None) -> str:
-    """Download (if needed) and return the MJCF file path for a description."""
+def mjcf_path(key: str, progress=None, should_cancel=None) -> str:
+    """Download (if needed) and return the MJCF file path for a description.
+
+    Touches no ``bpy``, so this runs whole on the import worker thread.
+    """
     import importlib
 
-    from .fetch import install_git_free_loader
+    from . import fetch
 
-    install_git_free_loader(progress=progress)
-    module = importlib.import_module(f"robot_descriptions.{key}")
+    fetch.install_git_free_loader()
+    subtree = fetch.package_subtree(key)  # before the import; see load_urdf
+
+    with fetch.hooks(progress=progress, should_cancel=should_cancel,
+                     subtree=subtree, label=subtree or key):
+        module = importlib.import_module(f"robot_descriptions.{key}")
+
     path = getattr(module, "MJCF_PATH", None)
     if not path:
         raise RuntimeError(f"'{key}' has no MJCF file")

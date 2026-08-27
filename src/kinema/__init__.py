@@ -36,6 +36,12 @@ def _warm_up_solver() -> None:
 
 
 def _deferred_start() -> None:
+    preferences = prefs.get_prefs()
+    if preferences is not None:
+        # Same reason as _warm_up_solver: preferences are not reliably readable
+        # during register(), and this has to land before the first description
+        # module resolves its REPOSITORY_PATH.
+        prefs.apply_cache_dir(preferences.cache_dir)
     _warm_up_solver()
     return None  # unregister the timer
 

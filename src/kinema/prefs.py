@@ -2,11 +2,40 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import AddonPreferences
 
 from . import runtime
+
+#: Whatever ``ROBOT_DESCRIPTIONS_CACHE`` held before Kinema loaded, captured
+#: once at import. Clearing the preference restores this rather than deleting
+#: it -- a roboticist who set the variable deliberately must get it back.
+_ORIGINAL_CACHE_ENV = os.environ.get("ROBOT_DESCRIPTIONS_CACHE")
+
+
+def apply_cache_dir(value: str) -> None:
+    """Project the cache preference onto ``ROBOT_DESCRIPTIONS_CACHE``.
+
+    The preference cannot simply be read by ``catalog.fetch.cache_root()``:
+    that runs on the download worker thread, and ``bpy.context.preferences`` is
+    main-thread-only. An environment variable is the one channel both
+    ``fetch.cache_root()`` and ``robot_descriptions._cache`` already read, and
+    reading ``os.environ`` from a thread is safe.
+
+    Main thread only -- called from the property's update callback and once at
+    startup.
+    """
+    path = bpy.path.abspath(value).strip() if value else ""
+    if path:
+        os.environ["ROBOT_DESCRIPTIONS_CACHE"] = str(Path(path))
+    elif _ORIGINAL_CACHE_ENV is not None:
+        os.environ["ROBOT_DESCRIPTIONS_CACHE"] = _ORIGINAL_CACHE_ENV
+    else:
+        os.environ.pop("ROBOT_DESCRIPTIONS_CACHE", None)
 
 
 class KinemaPreferences(AddonPreferences):
@@ -42,8 +71,14 @@ class KinemaPreferences(AddonPreferences):
     )
     cache_dir: StringProperty(
         name="Robot Cache",
-        description="Where downloaded robot descriptions are stored (blank = default)",
+        description=(
+            "Where downloaded robot descriptions are stored (blank = "
+            "~/.cache/robot_descriptions). A description remembers its location "
+            "from the moment it is first loaded, so changing this mid-session "
+            "only affects robots not yet imported"
+        ),
         subtype="DIR_PATH", default="",
+        update=lambda self, context: apply_cache_dir(self.cache_dir),
     )
     debug_logging: BoolProperty(
         name="Debug Logging",
