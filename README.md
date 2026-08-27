@@ -89,10 +89,18 @@ files contain non-ASCII bytes that fail to decode under it.
 ### Building
 
 ```bash
+uv run python tools/vendor.py              # vendored solver source, at the pinned commits
 uv run python tools/fetch_wheels.py        # all three platforms (~341 MB)
 uv run python tools/dev.py validate
 uv run python tools/dev.py build           # per-platform zips into dist/
 ```
+
+`vendor/` and `wheels/` are both gitignored, so a fresh clone has neither and the first
+two commands are not optional. They are one-time setup rather than per-build steps —
+re-run `vendor.py` only when its pins move, and `fetch_wheels.py` only when the payload
+should change. `dev.py build` refuses to run if either directory is missing, stale
+against its pin, or holds one package at two versions; `vendor.py --check` reports the
+vendored state on its own, offline.
 
 `--split-platforms` is the default and is not optional in practice: a combined zip would
 carry three copies of `jaxlib` and exceed the extensions platform's size limit. Current
