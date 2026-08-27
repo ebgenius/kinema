@@ -7,6 +7,10 @@
     uv run python tools/dev.py validate   # blender --command extension validate
     uv run python tools/dev.py build      # build per-platform extension zips
 
+``build`` refuses to run unless ``tools/vendor.py`` and ``tools/fetch_wheels.py``
+have populated ``vendor/`` and ``wheels/`` -- both are gitignored, so a fresh
+clone has neither and the zip would otherwise be built without a solver in it.
+
 ``link`` installs the add-on as a live link rather than a copy, so editing a
 file under ``src/kinema/`` and toggling the extension off/on in Blender picks
 the change up immediately -- no rebuild, no reinstall.
@@ -25,6 +29,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ADDON_SRC = REPO_ROOT / "src" / "kinema"
+VENDOR_DIR = ADDON_SRC / "vendor"
+WHEEL_DIR = ADDON_SRC / "wheels"
 BOOTSTRAP = REPO_ROOT / "tools" / "dev_bootstrap.py"
 DIST_DIR = REPO_ROOT / "dist"
 
@@ -205,7 +211,57 @@ def cmd_validate(args: argparse.Namespace) -> int:
     )
 
 
+def preflight() -> None:
+    """Refuse to build a payload that is missing pieces.
+
+    ``blender --command extension build`` zips whatever is on disk. A missing
+    ``vendor/`` or ``wheels/`` is a smaller zip, not an error, and ``validate``
+    only parses the manifest -- so both pass. Both directories are gitignored,
+    so a fresh clone has neither, and an extension built without them installs
+    cleanly and fails at the first solve, in front of a user.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    import fetch_wheels
+    import vendor
+
+    problems: list[str] = []
+
+    for pkg in vendor.PACKAGES:
+        recorded = vendor.recorded_commit(VENDOR_DIR / pkg.name)
+        if recorded is None:
+            problems.append(f"vendored {pkg.name} is missing from {VENDOR_DIR}")
+        elif recorded != pkg.commit:
+            problems.append(
+                f"vendored {pkg.name} is at {recorded[:10]}, "
+                f"pinned at {pkg.commit[:10]}"
+            )
+
+    wheels = sorted(w.name for w in WHEEL_DIR.glob("*.whl"))
+    if not wheels:
+        problems.append(f"no bundled wheels in {WHEEL_DIR}")
+    else:
+        # The payload can also be present but incoherent -- one package at two
+        # versions because a platform tag went unmatched and pip fell back.
+        try:
+            fetch_wheels.check_version_skew(wheels)
+        except SystemExit as exc:
+            problems.append(str(exc))
+
+    if problems:
+        raise SystemExit(
+            "dev.py build: the add-on tree is incomplete\n\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n\nRun, from the repo root:\n"
+            "  uv run python tools/vendor.py\n"
+            "  uv run python tools/fetch_wheels.py"
+        )
+
+
 def cmd_build(args: argparse.Namespace) -> int:
+    if args.skip_preflight:
+        print("skipping preflight: the zips may be incomplete")
+    else:
+        preflight()
     blender = find_blender()
     DIST_DIR.mkdir(exist_ok=True)
     cmd = [str(blender), "--command", "extension", "build",
@@ -250,6 +306,8 @@ def main() -> int:
     build = sub.add_parser("build", help="build extension zips")
     build.add_argument("--single", action="store_true",
                        help="one combined zip instead of per-platform zips")
+    build.add_argument("--skip-preflight", action="store_true",
+                       help="build even if vendor/ or wheels/ are incomplete")
 
     args = parser.parse_args()
     handlers = {
