@@ -329,17 +329,26 @@ def _setup_pose_bones(
 # --------------------------------------------------------------------------
 # visual meshes
 # --------------------------------------------------------------------------
-def _attach_visuals(
+def _attach_visuals_iter(
     armature_object: bpy.types.Object,
     model: RobotModel,
     collection: bpy.types.Collection,
     result: RigBuildResult,
-) -> None:
+):
+    """Load every link's visual geometry, yielding ``(done, total)`` per visual.
+
+    This is the seam that lets an operator spread mesh loading over several
+    modal ticks. Mesh import cannot leave the main thread -- ``bpy`` is not
+    thread-safe -- so keeping Blender's event loop alive means returning to it
+    periodically, and that means the work has to be resumable.
+    """
     link_frames = model.link_frames()
     owner_of_link = model.nearest_actuated_ancestor()
 
     pending: list[tuple[bpy.types.Object, Matrix, str]] = []
     material_cache: dict[tuple, bpy.types.Material] = {}
+    total = sum(len(link.visuals) for link in model.links.values())
+    done = 0
 
     for link_name, link in model.links.items():
         if not link.visuals:
@@ -351,6 +360,7 @@ def _attach_visuals(
             label = visual.name or (
                 link_name if index == 0 else f"{link_name}.{index:03d}"
             )
+            done += 1
             try:
                 if visual.mesh_path:
                     objects = mesh_io.load_mesh(
@@ -363,6 +373,9 @@ def _attach_visuals(
                     )
             except mesh_io.MeshLoadError as exc:
                 result.warnings.append(str(exc))
+                # Yield before continuing: a robot whose meshes are all missing
+                # would otherwise run the whole loop inside one tick.
+                yield done, total
                 continue
 
             # world = link frame * <visual origin> * <mesh scale>
@@ -378,11 +391,17 @@ def _attach_visuals(
                     )
                 pending.append((obj, world, bone_name))
                 result.mesh_objects.append(obj)
+            yield done, total
 
     # Two passes: assign every parent, refresh once, then place. Setting
     # matrix_world solves for the local transform using the parent's current
     # matrix, so the depsgraph has to be up to date -- but only once, not per
     # object, which matters on a 200-mesh humanoid.
+    #
+    # Deliberately not yielded: splitting this would mean one depsgraph
+    # evaluation per chunk instead of one for the whole rig, which is the cost
+    # the two-pass structure exists to avoid. It may overrun a caller's tick
+    # budget, and that is the right trade.
     for obj, _, bone_name in pending:
         obj.parent = armature_object
         obj.parent_type = "BONE"
@@ -416,8 +435,33 @@ def build_rig(
     options: RigBuildOptions | None = None,
 ) -> RigBuildResult:
     """Create the armature and geometry for ``model`` in the current scene."""
+    steps = build_rig_iter(model, options)
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value
+
+
+def build_rig_iter(
+    model: RobotModel,
+    options: RigBuildOptions | None = None,
+    result: RigBuildResult | None = None,
+):
+    """Generator form of :func:`build_rig`, for building across modal ticks.
+
+    Yields ``(done, total)`` visuals and returns the :class:`RigBuildResult`
+    (via ``StopIteration.value``). Pass ``result`` to keep a handle on the
+    partial rig while it is being built, so a cancelled build can delete what
+    already exists.
+
+    Only mesh loading is chunked. Bone construction is not: it toggles Edit
+    Mode, and leaving the file in Edit Mode across a tick -- while the operator
+    is passing events through and the user still has control -- is a real
+    corruption path. It touches no files and is fast.
+    """
     options = options or RigBuildOptions()
-    result = RigBuildResult()
+    result = result if result is not None else RigBuildResult()
 
     _ensure_object_mode()
 
@@ -443,7 +487,7 @@ def build_rig(
         armature_object[PROP_TCP_LINK] = result.tcp_link
 
     if options.import_visuals:
-        _attach_visuals(armature_object, model, collection, result)
+        yield from _attach_visuals_iter(armature_object, model, collection, result)
 
     # Bones in front of geometry, which is what you want when the controls are
     # small dials buried inside a robot's own casing.
@@ -452,6 +496,26 @@ def build_rig(
 
     _activate(armature_object)
     return result
+
+
+def discard_rig(result: RigBuildResult) -> None:
+    """Delete a partially built rig, for a cancelled or failed build.
+
+    Meshes first, then the armature, then the collection: removing a collection
+    that still owns objects orphans them in ``bpy.data`` rather than freeing
+    them.
+    """
+    for obj in list(result.mesh_objects):
+        if obj is not None and obj.name in bpy.data.objects:
+            bpy.data.objects.remove(obj, do_unlink=True)
+    armature_object = result.armature_object
+    if armature_object is not None and armature_object.name in bpy.data.objects:
+        armature = armature_object.data
+        bpy.data.objects.remove(armature_object, do_unlink=True)
+        if armature is not None and armature.users == 0:
+            bpy.data.armatures.remove(armature)
+    if result.collection is not None and result.collection.name in bpy.data.collections:
+        bpy.data.collections.remove(result.collection)
 
 
 def is_kinema_rig(obj: bpy.types.Object | None) -> bool:

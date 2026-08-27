@@ -214,6 +214,90 @@ class TestVisuals:
         assert result.mesh_objects == []
 
 
+class TestResumableBuild:
+    """build_rig_iter is what lets the import operator stay responsive.
+
+    build_rig is a thin drain of it, so the two must not be able to disagree.
+    """
+
+    def test_yields_once_per_visual(self, kin, builder, arm3_urdf, clean_scene):
+        model = kin.model_from_urdf(arm3_urdf)
+        expected = sum(len(link.visuals) for link in model.links.values())
+        steps = list(builder.build_rig_iter(model, builder.RigBuildOptions()))
+
+        assert len(steps) == expected
+        assert [done for done, _ in steps] == list(range(1, expected + 1))
+        assert all(total == expected for _, total in steps)
+
+    def test_draining_it_matches_build_rig(self, kin, builder, arm3_urdf, clean_scene):
+        model = kin.model_from_urdf(arm3_urdf)
+        steps = builder.build_rig_iter(model, builder.RigBuildOptions())
+        while True:
+            try:
+                next(steps)
+            except StopIteration as stop:
+                chunked = stop.value
+                break
+        chunked_counts = (
+            len(chunked.joint_bones),
+            len(chunked.mesh_objects),
+            chunked.tcp_link,
+            sorted(bone.name for bone in chunked.armature_object.pose.bones),
+        )
+        builder.discard_rig(chunked)
+
+        direct = builder.build_rig(kin.model_from_urdf(arm3_urdf),
+                                   builder.RigBuildOptions())
+        assert (
+            len(direct.joint_bones),
+            len(direct.mesh_objects),
+            direct.tcp_link,
+            sorted(bone.name for bone in direct.armature_object.pose.bones),
+        ) == chunked_counts
+
+    def test_caller_supplied_result_tracks_the_partial_rig(
+        self, kin, builder, arm3_urdf, clean_scene
+    ):
+        """The operator needs a handle on what exists in order to cancel."""
+        model = kin.model_from_urdf(arm3_urdf)
+        result = builder.RigBuildResult()
+        steps = builder.build_rig_iter(model, builder.RigBuildOptions(), result=result)
+
+        next(steps)  # one visual in
+        assert result.armature_object is not None
+        assert len(result.mesh_objects) >= 1
+        steps.close()
+
+    def test_discard_removes_a_partial_rig(
+        self, kin, builder, arm3_urdf, clean_scene
+    ):
+        import bpy
+
+        model = kin.model_from_urdf(arm3_urdf)
+        result = builder.RigBuildResult()
+        steps = builder.build_rig_iter(model, builder.RigBuildOptions(), result=result)
+        next(steps)
+        steps.close()
+
+        collection_name = result.collection.name
+        builder.discard_rig(result)
+
+        assert collection_name not in bpy.data.collections
+        assert not [o for o in bpy.data.objects if o.get(builder.PROP_IS_RIG)]
+
+    def test_no_visuals_still_returns_a_result(
+        self, kin, builder, arm3_urdf, clean_scene
+    ):
+        """A zero-yield generator must not break the drain loop."""
+        model = kin.model_from_urdf(arm3_urdf)
+        steps = builder.build_rig_iter(
+            model, builder.RigBuildOptions(import_visuals=False)
+        )
+        with pytest.raises(StopIteration) as stop:
+            next(steps)
+        assert stop.value.value.armature_object is not None
+
+
 class TestRigIdentification:
     def test_rig_is_detectable(self, arm3_rig, builder):
         _, result = arm3_rig
