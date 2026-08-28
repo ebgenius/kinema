@@ -245,6 +245,26 @@ class TestChunkReader:
         assert reader.read(100) == b"abc"
         assert reader.read(1) == b""
 
+    def test_read_all_reports_progress(self):
+        """read(-1) used to drain the iterator without accounting for it."""
+        seen = []
+        with fetch.hooks(progress=lambda f, d, t: seen.append(d)):
+            reader = fetch._ChunkReader(iter([b"a" * 10] * 3), 30, fetch._hooks)
+            assert reader.read(-1) == b"a" * 30
+        assert seen == [10, 20, 30]
+
+    def test_read_all_honours_cancel(self):
+        """...and could not be cancelled, so a big download ran to completion."""
+        with fetch.hooks(should_cancel=lambda: True):
+            reader = fetch._ChunkReader(iter([b"a" * 10] * 3), 30, fetch._hooks)
+            with pytest.raises(fetch.FetchCancelled):
+                reader.read(-1)
+
+    def test_read_all_returns_what_is_already_buffered(self):
+        reader = fetch._ChunkReader(iter([b"abcdef"]), 6, fetch.FetchHooks())
+        assert reader.read(2) == b"ab"
+        assert reader.read(-1) == b"cdef"
+
 
 class TestSelectBlobs:
     MENAGERIE = [

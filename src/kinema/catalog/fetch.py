@@ -558,11 +558,12 @@ class _ChunkReader:
         self._hooks = hooks_
 
     def read(self, size: int = -1) -> bytes:
-        if size is None or size < 0:
-            for chunk in self._chunks:
-                self._buffer.extend(chunk)
-            size = len(self._buffer)
-        while len(self._buffer) < size:
+        # One loop for both the sized and read-everything cases. Draining the
+        # iterator separately for size < 0 meant that path neither reported
+        # bytes nor honoured a cancel, and kept a second copy of the accounting
+        # that could drift from this one.
+        read_all = size is None or size < 0
+        while read_all or len(self._buffer) < size:
             self._hooks.check_cancelled()
             try:
                 chunk = next(self._chunks)
@@ -571,6 +572,9 @@ class _ChunkReader:
             self._buffer.extend(chunk)
             self._done += len(chunk)
             self._hooks.report(self._done, self._total)
+
+        if read_all:
+            size = len(self._buffer)
         taken = bytes(self._buffer[:size])
         del self._buffer[: len(taken)]
         return taken
