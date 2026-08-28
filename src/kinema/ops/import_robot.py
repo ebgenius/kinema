@@ -177,6 +177,14 @@ class KINEMA_OT_build_robot(Operator):
     filepath: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})
     __annotations__.update(import_settings())
 
+    # Modal state, defaulted at class level so the teardown guards hold even on
+    # an instance that never went modal -- execute() returns before invoke()
+    # initialises any of this, and Blender may still call cancel().
+    _torn_down = False
+    _timer = None
+    _steps = None
+    _result = None
+
     # -------------------------------------------------------- entry points
     def execute(self, context: bpy.types.Context) -> set[str]:
         """The whole import in one call, blocking.
@@ -197,8 +205,7 @@ class KINEMA_OT_build_robot(Operator):
             return {"CANCELLED"}
 
         self._stage = "FETCH"
-        self._torn_down = False
-        self._timer = None
+        self._torn_down = False  # explicit, in case Blender reuses the instance
         self._shared = _Shared()
         self._cancel = threading.Event()
         self._steps = None
@@ -348,6 +355,15 @@ class KINEMA_OT_build_robot(Operator):
         self._abort(context)
 
     def _abort(self, context: bpy.types.Context) -> set[str]:
+        # Once torn down, nothing here may touch the scene again. A finished
+        # import calls _teardown from _finish and keeps its rig; a cancel()
+        # arriving afterwards -- Blender closing the window, or loading a file
+        # -- would otherwise delete that finished rig and free datablocks that
+        # are already gone. Guarded here rather than in cancel() so the rule
+        # holds for every caller, including the destructive step below.
+        if self._torn_down:
+            return {"CANCELLED"}
+
         self._cancel.set()
         if self._steps is not None:
             self._steps.close()
@@ -357,14 +373,13 @@ class KINEMA_OT_build_robot(Operator):
         return {"CANCELLED"}
 
     def _teardown(self, context: bpy.types.Context) -> None:
-        # Idempotent: Blender may call cancel() after modal() already finished,
-        # and releasing the job lock twice would let two imports run at once.
-        if getattr(self, "_torn_down", False):
+        # Releasing the job lock twice would let two imports run at once.
+        if self._torn_down:
             return
         self._torn_down = True
 
         window_manager = context.window_manager
-        if getattr(self, "_timer", None) is not None:
+        if self._timer is not None:
             window_manager.event_timer_remove(self._timer)
             self._timer = None
         window_manager.progress_end()
