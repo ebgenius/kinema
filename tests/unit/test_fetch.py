@@ -246,25 +246,69 @@ class TestChunkReader:
 
 
 class TestSelectBlobs:
-    def test_takes_the_subtree_and_top_level_files_only(self):
-        blobs = [
-            fetch._Blob("unitree_go2/go2.xml", 10),
-            fetch._Blob("unitree_go2/assets/base.obj", 20),
-            fetch._Blob("unitree_g1/g1.xml", 30),
-            fetch._Blob("LICENSE", 5),
-            fetch._Blob("README.md", 5),
-        ]
-        chosen = {b.path for b in fetch._select_blobs(blobs, "unitree_go2")}
-        assert chosen == {
+    MENAGERIE = [
+        fetch._Blob("unitree_go2/go2.xml", 10),
+        fetch._Blob("unitree_go2/assets/base.obj", 20),
+        fetch._Blob("unitree_g1/g1.xml", 30),
+        fetch._Blob("LICENSE", 5),
+        fetch._Blob("README.md", 5),
+    ]
+
+    def test_separates_the_subtree_from_the_repository_furniture(self):
+        matched, top_level = fetch._select_blobs(self.MENAGERIE, "unitree_go2")
+        assert {b.path for b in matched} == {
             "unitree_go2/go2.xml",
             "unitree_go2/assets/base.obj",
-            "LICENSE",
-            "README.md",
         }
+        assert {b.path for b in top_level} == {"LICENSE", "README.md"}
+
+    def test_a_missing_subtree_matches_nothing(self):
+        """The two lists are returned separately precisely for this case.
+
+        Concatenated, a bogus subtree still yields LICENSE and README, so the
+        caller's emptiness check could never fire and the failure surfaced much
+        later as a FileNotFoundError from the move.
+        """
+        matched, top_level = fetch._select_blobs(self.MENAGERIE, "no_such_robot")
+        assert matched == []
+        assert top_level, "premise: every repository has top-level files"
 
     def test_prefix_does_not_match_a_sibling_with_the_same_start(self):
         blobs = [fetch._Blob("go2_extra/x", 1), fetch._Blob("go2/y", 1)]
-        assert {b.path for b in fetch._select_blobs(blobs, "go2")} == {"go2/y"}
+        matched, _ = fetch._select_blobs(blobs, "go2")
+        assert {b.path for b in matched} == {"go2/y"}
+
+
+class TestSparseGuard:
+    def test_a_missing_subtree_fails_before_any_request(self, monkeypatch, tmp_path):
+        """Fail fast, rather than after downloading the top-level files."""
+        monkeypatch.setattr(
+            fetch, "_tree_blobs",
+            lambda owner, repo, commit: TestSelectBlobs.MENAGERIE,
+        )
+
+        def no_requests(*args, **kwargs):
+            raise AssertionError("must not download for a subtree that is absent")
+
+        monkeypatch.setattr(fetch, "_fetch_blob", no_requests)
+        with pytest.raises(fetch.FetchError, match="matched no files"):
+            fetch._fetch_sparse(
+                "https://github.com/o/r.git", "sha", tmp_path / "repo", "no_such_robot"
+            )
+
+    def test_falling_back_to_the_whole_repository_is_announced(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """A silent fallback turns a 30 MB robot into a 1.6 GB one unexplained."""
+        monkeypatch.setenv("ROBOT_DESCRIPTIONS_CACHE", str(tmp_path))
+        monkeypatch.setattr(fetch, "_fetch_sparse", lambda *a: (_ for _ in ()).throw(
+            fetch.FetchError("tree API returned 403")))
+        monkeypatch.setattr(fetch, "_fetch_whole", lambda *a: None)
+
+        fetch.fetch_description("https://github.com/o/r.git", "sha", "repo",
+                                subtree="unitree_go2")
+        out = capsys.readouterr().out
+        assert "unitree_go2" in out and "403" in out
 
 
 class TestFetchDescription:
