@@ -422,19 +422,24 @@ def _tree_blobs(owner: str, repo: str, commit: str) -> list[_Blob]:
     ]
 
 
-def _select_blobs(blobs: list[_Blob], subtree: str) -> list[_Blob]:
-    """Files under ``subtree``, plus the repository's own top-level files.
+def _select_blobs(
+    blobs: list[_Blob], subtree: str
+) -> tuple[list[_Blob], list[_Blob]]:
+    """Split into (files under ``subtree``, the repository's top-level files).
 
-    The top-level files are LICENSE, README and similar -- a few hundred KB, not
-    referenced by any model, but their absence makes a cache directory look
-    corrupt to anyone who opens it.
+    Returned separately rather than concatenated so the caller can tell "this
+    subtree does not exist" from "this subtree is empty apart from the repo's
+    own furniture". Merged, the two are indistinguishable: every repository has
+    a LICENSE and a README, so a non-empty result proved nothing about the
+    subtree and the caller's emptiness check could never fire.
+
+    The top-level files are a few hundred KB and referenced by no model, but
+    their absence makes a cache directory look corrupt to anyone who opens it.
     """
     prefix = subtree.rstrip("/") + "/"
-    return [
-        blob
-        for blob in blobs
-        if blob.path.startswith(prefix) or "/" not in blob.path
-    ]
+    matched = [blob for blob in blobs if blob.path.startswith(prefix)]
+    top_level = [blob for blob in blobs if "/" not in blob.path]
+    return matched, top_level
 
 
 def _fetch_blob(session, owner: str, repo: str, commit: str, blob: _Blob, into: Path):
@@ -455,12 +460,14 @@ def _fetch_sparse(repo_url: str, commit: str, target: Path, subtree: str) -> Non
     disturb the first, so this stages the new directory and moves it into place
     rather than replacing ``target`` wholesale.
     """
-    requests = _requests()
-
     _, owner, repo = _owner_repo(repo_url)
-    blobs = _select_blobs(_tree_blobs(owner, repo, commit), subtree)
-    if not blobs:
+    matched, top_level = _select_blobs(_tree_blobs(owner, repo, commit), subtree)
+    if not matched:
+        # Fail before spending any requests. Downloading the top-level files
+        # first and only discovering the problem at the move below would waste
+        # a round of requests and report it as a FileNotFoundError.
         raise FetchError(f"'{subtree}' matched no files in {owner}/{repo}")
+    blobs = matched + top_level
 
     total = sum(blob.size for blob in blobs)
     done = 0
@@ -470,7 +477,7 @@ def _fetch_sparse(repo_url: str, commit: str, target: Path, subtree: str) -> Non
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=target.parent, prefix=".kinema-sparse-"))
     try:
-        with requests.Session() as session:
+        with _requests().Session() as session:
             with ThreadPoolExecutor(max_workers=_SPARSE_WORKERS) as pool:
                 futures = [
                     pool.submit(_fetch_blob, session, owner, repo, commit, blob, staging)
@@ -647,10 +654,16 @@ def fetch_description(
             return str(target)
         except FetchCancelled:
             raise
-        except (FetchError, OSError):
+        except (FetchError, OSError) as exc:
             # The tree API is unavailable, rate-limited, or the layout is not
-            # what we expected. The whole repository always works.
-            pass
+            # what we expected. The whole repository always works -- but say so,
+            # loudly. Silence here means a robot that should have cost 30 MB
+            # quietly costs 1.6 GB instead, with nothing to explain the wait.
+            print(
+                f"Kinema: sparse fetch of '{subtree}' from {cache_path} failed "
+                f"({exc}); falling back to the whole repository, which is much "
+                f"larger."
+            )
 
     _fetch_whole(repo_url, commit, target)
     return str(target)
