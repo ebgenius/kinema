@@ -298,6 +298,63 @@ class TestResumableBuild:
         assert stop.value.value.armature_object is not None
 
 
+class TestImportTeardown:
+    """A late cancel must not eat a finished import.
+
+    Blender calls cancel() on a modal operator it tears down from outside --
+    closing the window, loading a file. If that lands after modal() already
+    returned FINISHED, _abort would otherwise discard_rig() the completed
+    result and free datablocks that are already gone.
+    """
+
+    @pytest.fixture
+    def ops(self, addon):
+        return importlib.import_module(f"{addon.__name__}.ops.import_robot")
+
+    def test_abort_is_a_no_op_once_torn_down(self, ops, kin, builder, arm3_urdf,
+                                             clean_scene):
+        import bpy
+
+        model = kin.model_from_urdf(arm3_urdf)
+        finished = builder.build_rig(model, builder.RigBuildOptions())
+        name = finished.armature_object.name
+
+        # Stand in for an operator that already finished and tore down. The
+        # real lifecycle is not reachable from a background Blender, which has
+        # no modal handlers at all.
+        class Stub:
+            _torn_down = True
+            _steps = None
+            _result = finished
+
+        assert ops.KINEMA_OT_build_robot._abort(Stub(), bpy.context) == {"CANCELLED"}
+        assert name in bpy.data.objects, "a late cancel deleted the finished rig"
+
+    def test_abort_still_discards_a_live_partial_build(self, ops, kin, builder,
+                                                      arm3_urdf, clean_scene):
+        """...while a real cancel must still clean up."""
+        import bpy
+        import threading
+
+        model = kin.model_from_urdf(arm3_urdf)
+        result = builder.RigBuildResult()
+        steps = builder.build_rig_iter(model, builder.RigBuildOptions(), result=result)
+        next(steps)
+        name = result.armature_object.name
+
+        class Stub:
+            _torn_down = False
+            _steps = steps
+            _result = result
+            _cancel = threading.Event()
+
+            def _teardown(self, context):
+                pass
+
+        assert ops.KINEMA_OT_build_robot._abort(Stub(), bpy.context) == {"CANCELLED"}
+        assert name not in bpy.data.objects
+
+
 class TestRigIdentification:
     def test_rig_is_detectable(self, arm3_rig, builder):
         _, result = arm3_rig
