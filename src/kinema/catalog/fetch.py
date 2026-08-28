@@ -58,7 +58,7 @@ import tarfile
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
@@ -442,11 +442,32 @@ def _select_blobs(
     return matched, top_level
 
 
-def _fetch_blob(session, owner: str, repo: str, commit: str, blob: _Blob, into: Path):
+#: One requests.Session per worker thread. A Session is not documented as
+#: thread-safe, but a bare ``requests.get`` per file would build a fresh
+#: connection pool and repeat the TLS handshake for every one of ~34 files on
+#: the same host. Per-thread sessions keep the connection reuse without sharing
+#: one object across threads. Freed when the pool's threads exit.
+_sessions = threading.local()
+
+
+def _session():
+    session = getattr(_sessions, "session", None)
+    if session is None:
+        session = _sessions.session = _requests().Session()
+    return session
+
+
+def _fetch_blob(
+    owner: str, repo: str, commit: str, blob: _Blob, into: Path, hooks_: FetchHooks
+) -> int:
+    # Checked here, not only in the collecting loop: a cancelled job must stop
+    # workers from starting new downloads, not merely stop reporting them.
+    hooks_.check_cancelled()
+
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/{commit}/{blob.path}"
     destination = into / Path(*PurePosixPath(blob.path).parts)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    response = session.get(url, timeout=60)
+    response = _session().get(url, timeout=60)
     if response.status_code != 200:
         raise FetchError(f"could not download {blob.path}: HTTP {response.status_code}")
     destination.write_bytes(response.content)
@@ -477,16 +498,26 @@ def _fetch_sparse(repo_url: str, commit: str, target: Path, subtree: str) -> Non
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=target.parent, prefix=".kinema-sparse-"))
     try:
-        with _requests().Session() as session:
-            with ThreadPoolExecutor(max_workers=_SPARSE_WORKERS) as pool:
-                futures = [
-                    pool.submit(_fetch_blob, session, owner, repo, commit, blob, staging)
-                    for blob in blobs
-                ]
-                for future in futures:
-                    hooks_.check_cancelled()
+        with ThreadPoolExecutor(max_workers=_SPARSE_WORKERS) as pool:
+            futures = [
+                pool.submit(_fetch_blob, owner, repo, commit, blob, staging, hooks_)
+                for blob in blobs
+            ]
+            try:
+                # as_completed, not submission order: waiting on futures in the
+                # order they were queued blocks on the first one even when the
+                # other thirty have already landed, so progress arrives in
+                # lumps and a cancel sits behind the slowest early file.
+                for future in as_completed(futures):
                     done += future.result()
                     hooks_.report(done, total)
+            except BaseException:
+                # Drop whatever has not started. Leaving this to the `with`
+                # block would call shutdown(wait=True), which runs the entire
+                # remaining queue before the exception surfaces -- so Esc looked
+                # like a hang until the whole download finished anyway.
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
 
         target.mkdir(parents=True, exist_ok=True)
         # Move the subtree into place, then the top-level files beside it.

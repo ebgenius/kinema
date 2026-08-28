@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+import time
 
 import pytest
 
@@ -295,6 +296,64 @@ class TestSparseGuard:
             fetch._fetch_sparse(
                 "https://github.com/o/r.git", "sha", tmp_path / "repo", "no_such_robot"
             )
+
+    def test_cancel_stops_the_pool_instead_of_draining_it(
+        self, monkeypatch, tmp_path
+    ):
+        """Esc must stop work, not merely stop reporting it.
+
+        The pool's `with` block calls shutdown(wait=True), which runs every
+        queued download before the exception surfaces -- so a cancel looked
+        like a hang for the length of the whole fetch.
+        """
+        import threading
+
+        blobs = [fetch._Blob(f"sub/f{i}", 100) for i in range(24)]
+        monkeypatch.setattr(fetch, "_tree_blobs", lambda o, r, c: blobs)
+
+        lock = threading.Lock()
+        finished: list[str] = []
+
+        def slow_blob(owner, repo, commit, blob, into, hooks_):
+            hooks_.check_cancelled()
+            time.sleep(0.2)
+            with lock:
+                finished.append(blob.path)
+            return 100
+
+        monkeypatch.setattr(fetch, "_fetch_blob", slow_blob)
+
+        with fetch.hooks(should_cancel=lambda: True):
+            with pytest.raises(fetch.FetchCancelled):
+                fetch._fetch_sparse(
+                    "https://github.com/o/r.git", "sha", tmp_path / "repo", "sub"
+                )
+
+        assert len(finished) < len(blobs), (
+            f"cancel drained the queue: {len(finished)}/{len(blobs)} downloaded"
+        )
+
+    def test_progress_does_not_wait_on_submission_order(self, monkeypatch, tmp_path):
+        """A slow first file must not hold back the ones already finished."""
+        blobs = [fetch._Blob(f"sub/f{i}", 100) for i in range(6)]
+        monkeypatch.setattr(fetch, "_tree_blobs", lambda o, r, c: blobs)
+
+        def blob_zero_is_slow(owner, repo, commit, blob, into, hooks_):
+            time.sleep(0.5 if blob.path == "sub/f0" else 0.0)
+            (into / "sub").mkdir(parents=True, exist_ok=True)
+            (into / "sub" / blob.path.split("/")[-1]).write_bytes(b"x")
+            return 100
+
+        monkeypatch.setattr(fetch, "_fetch_blob", blob_zero_is_slow)
+
+        seen: list[int] = []
+        with fetch.hooks(progress=lambda f, d, t: seen.append(d)):
+            fetch._fetch_sparse(
+                "https://github.com/o/r.git", "sha", tmp_path / "repo", "sub"
+            )
+        # Every other file finishes long before f0, so progress must have
+        # advanced well past the first report before f0 lands.
+        assert seen[:2] == [0, 100] and len(seen) == len(blobs) + 1
 
     def test_falling_back_to_the_whole_repository_is_announced(
         self, monkeypatch, tmp_path, capsys
