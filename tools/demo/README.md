@@ -1,24 +1,37 @@
 # Demo and IK measurement
 
-Produces `kinema-ik.gif`, the side-by-side comparison used on the extension
-listing, and the measurements behind it. Everything here is reproducible; the
-point is that the claim in the GIF can be checked rather than taken on trust.
+Two GIFs for the extension listing, and the measurements behind them. Everything
+here is reproducible; the point is that the claims can be checked rather than
+taken on trust.
+
+| Asset | Shows |
+|---|---|
+| `kinema-ik.gif` | UR5e, side by side against Blender's built-in IK, on a two-turn tool spin |
+| `kinema-nullspace.gif` | Franka Panda, 7 DoF, reconfiguring 90° around a fixed tool pose |
 
 ```bash
-# measure (writes measurements.csv)
+# 1. the comparison
 blender --background --python tools/dev_bootstrap.py \
         --python tools/demo/sweep.py -- measurements.csv LEGACY
-
-# render 120 frames
 blender --background --python tools/dev_bootstrap.py \
         --python tools/demo/render_demo.py -- frames/
-
-# compose
 uv run --with pillow python tools/demo/make_gif.py frames/ kinema-ik.gif 2 720
+
+# 2. the null-space sweep
+blender --background --python tools/dev_bootstrap.py \
+        --python tools/demo/nullspace_demo.py -- nsframes/
+uv run --with pillow python tools/demo/make_gif_single.py nsframes/ \
+        kinema-nullspace.gif 2 620 "Same tool pose, 90 degrees of elbow swivel" \
+        "tool held to 0.0005 mm - Franka Panda, 7 DoF"
+
+# 3. feasibility numbers for both (branch count, null-space span)
+blender --background --python tools/dev_bootstrap.py \
+        --python tools/demo/branches.py
 ```
 
-Needs `ur5e_description` in the robot-descriptions cache. `dev_bootstrap.py`
-supplies `KINEMA_EXT_ID` and the dev site-packages, as for `dev.py test`.
+Needs `ur5e_description` and `panda_mj_description` in the robot-descriptions
+cache. `dev_bootstrap.py` supplies `KINEMA_EXT_ID` and the dev site-packages, as
+for `dev.py test`.
 
 ## What the GIF shows
 
@@ -80,6 +93,33 @@ frames 30 and 90 of 120 — exactly the half-turn and turn-and-a-half marks, whi
 is what makes this a property of the representation rather than a tuned result.
 Enabling or disabling Blender's IK limits changes nothing here, and both variants
 are measured.
+
+## Solution branches and the null space
+
+`branches.py` measures two things Blender's IK cannot express at all. It returns
+whichever single configuration its iterative solver lands on; there is no way to
+ask it for a different one.
+
+**Multiple branches for one pose.** Seeding PyRoki from 40 random configurations
+and keeping the distinct results finds **15 different solutions** for a single
+UR5e tool pose, every one converging to ~0.0001 mm. A 6R arm has at most eight
+*analytic* solutions — the extra ones are multi-turn variants, sitting at joint
+angles like −241° and +205°. Those exist only because Kinema carries the real
+±360° limits, and are exactly the configurations Blender's ±180° IK cannot
+represent. Same root cause as the wrist flip above.
+
+**Null-space sweep.** A 7-DoF arm has a one-dimensional family of configurations
+for any reachable tool pose. Biasing the seed along it and re-solving walks that
+family: on the Panda, **90.2° of arm motion while the tool holds to 0.0009 mm**.
+`nullspace_demo.py` renders it, with a static marker sphere placed once at the
+goal — if the tool drifts off the marker, the demo is lying.
+
+Both use only the public solve path (pose the arm at a seed, then solve). PyRoki's
+`rest_cost` biases toward the seed, so the seed is what selects the branch. No
+add-on code was added for either.
+
+The Panda's actuated set is 9 joints — 7 arm plus 2 gripper fingers. Only the
+arm joints take part in the redundancy, and `nullspace_demo.py` seeds accordingly.
 
 ## Things this does not show
 
