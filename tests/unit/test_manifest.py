@@ -16,6 +16,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = REPO_ROOT / "src" / "kinema" / "blender_manifest.toml"
+PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 
 def _load_fetch_wheels():
@@ -70,6 +71,20 @@ def wheel_names(manifest) -> list[str]:
     names = [Path(entry).name for entry in manifest["wheels"]]
     assert names, "manifest declares no wheels"
     return names
+
+
+def test_version_matches_pyproject(manifest):
+    """The two version fields are maintained by hand and must not drift.
+
+    The manifest's version is the one that ships, and it is what the extensions
+    platform keys a release on -- a release cut from a pyproject bump that never
+    reached the manifest would publish under the old number, silently.
+    """
+    pyproject = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    assert manifest["version"] == pyproject["project"]["version"], (
+        f"blender_manifest.toml is {manifest['version']} but pyproject.toml is "
+        f"{pyproject['project']['version']}; bump both"
+    )
 
 
 def test_no_version_skew_across_platforms(wheel_names):

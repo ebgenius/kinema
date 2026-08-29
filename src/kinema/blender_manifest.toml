@@ -7,7 +7,7 @@ tagline = "Animation-ready robot rigs with correct IK, from URDF or MJCF"
 maintainer = "Eugenio Bernardi"
 type = "add-on"
 
-website = "https://github.com/ebgenius/kinema"
+website = "https://ebgenius.github.io/kinema/"
 tags = ["Import-Export", "Rigging", "Animation"]
 
 blender_version_min = "5.2.0"
