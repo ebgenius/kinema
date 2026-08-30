@@ -6,7 +6,9 @@ import bpy
 from bpy.types import Operator
 from mathutils import Vector
 
+from .. import handlers
 from ..rig import builder
+from ..solver import manager
 from ..ui.panel import active_rig
 
 
@@ -149,6 +151,13 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
             pose_bone.lock_rotation = (True, True, True)
             pose_bone.lock_rotation_w = True
             pose_bone.lock_scale = (True, True, True)
+
+        # Re-parenting the TCP re-roots the IK chain, but the bone keeps its
+        # name, so get_solver's staleness check sees nothing wrong and would
+        # happily go on driving the old chain. The demos only escaped this by
+        # calling set_tcp before add_ik.
+        manager.invalidate(rig.name)
+        handlers.reset(rig.name)
 
 
 classes = (KINEMA_OT_reset_pose, KINEMA_OT_key_joints, KINEMA_OT_set_tcp)

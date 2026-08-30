@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A **Bones** list in the sidebar, one row per bone, that does the two things you reach for
+  once a rig is imported: aim the solver at a bone, and hang something off it.
+- **Attachments.** Pick an object or a collection in a bone's row and a linked copy rides
+  that bone — a gripper on the flange, a cable harness down the forearm. The copy shares
+  its mesh and materials with the source, so the same harness can dress six links and still
+  be edited in one place, and the source may live in any scene in the file. Offsets are
+  measured from the bone's **head**, not the tail Blender's own bone parenting uses, so the
+  attachment's plain location/rotation/scale *is* its offset from the joint — editable in
+  the sidebar or with G/R/S, and keyframable. *Detach* unparents and leaves the object
+  exactly where it appears on screen.
+- **A keyframable IK target bone.** The solver's tip is now a property on the rig rather
+  than the position of the TCP marker, so it can be changed from the panel without entering
+  Pose mode — and keyed, so a shot can hand the goal from the wrist to the elbow part-way
+  through. Aiming at a bone further up the chain is how you cut a gripper's joints out of a
+  redundant solve; that previously needed a script.
+
+### Fixed
+
+- *Move TCP to Active Bone* re-roots the IK chain, but the bone keeps its name, so the
+  cached solver was not rebuilt and went on driving the old chain. It now invalidates.
+
 ## [0.1.0] - 2026-08-29
 
 First release. Kinema turns a robot description into a single animation-ready Blender

@@ -254,6 +254,205 @@ class TestBake:
         assert np.linalg.norm(last - first) > 1e-3, "baked keys did not move the tool"
 
 
+def _add_ik_uncompiled(rig) -> None:
+    """Add an IK target without paying JAX's ~10 s JIT compile.
+
+    ``add_ik`` warms the solver up in whichever backend the rig is set to, so a
+    test that only cares which *chain* got built asks for NumPy and skips the
+    compile entirely. Twenty of those add up to minutes of wall clock and a lot
+    of resident memory, for a code path the test never inspects.
+    """
+    import bpy
+
+    rig.kinema_solver_mode = "NUMPY"
+    bpy.ops.kinema.add_ik()
+
+
+class TestIkTip:
+    """Aiming the solver at a bone other than the TCP, and keyframing which one."""
+
+    def test_default_targets_the_tcp(self, rig, builder, manager):
+        _add_ik_uncompiled(rig)
+        solver = manager.get_solver(rig)
+
+        assert rig.kinema_ik_tip == -1
+        assert solver.tip_bone == builder.TCP_BONE
+        assert solver.chain.dof == len(builder.joint_bones(rig))
+
+    def test_a_mid_chain_tip_shortens_the_chain(self, rig, builder, manager):
+        """The Panda case from the demos: cut the gripper joints out of the chain."""
+        _add_ik_uncompiled(rig)
+        full = manager.get_solver(rig).chain.dof
+
+        rig.kinema_ik_tip = 2  # joint3
+        solver = manager.get_solver(rig)
+
+        assert solver.tip_bone == "joint3"
+        assert solver.chain.dof == 3
+        assert solver.chain.dof < full
+        assert solver.chain.bone_names == ["joint1", "joint2", "joint3"]
+
+    def test_the_new_tip_is_what_reaches_the_goal(self, rig, builder, handlers):
+        """joint6, not the TCP, must be what lands on the goal.
+
+        Deliberately the last joint rather than a mid-chain one: its chain is
+        still the full six joints, so an arbitrary position *and* orientation
+        is actually achievable and the tolerance can be tight. A shorter chain
+        would trade position against orientation and prove nothing about which
+        frame the solver aimed at.
+        """
+        import bpy
+        from mathutils import Vector
+
+        bpy.ops.kinema.add_ik()
+        bpy.ops.kinema.set_ik_tip(index=5)  # joint6
+
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        tcp_name = rig.get(builder.PROP_TCP_BONE)
+        separation = np.linalg.norm(
+            _np4(rig.pose.bones["joint6"].matrix)[:3, 3]
+            - _np4(rig.pose.bones[tcp_name].matrix)[:3, 3]
+        )
+        assert separation > 1e-2, "tip and TCP coincide, so this proves nothing"
+
+        matrix = rig.pose.bones[ik_name].matrix.copy()
+        matrix.translation += Vector((0.0, 0.0, -0.05))
+        rig.pose.bones[ik_name].matrix = matrix
+        bpy.context.view_layer.update()
+        handlers.solve_rig(rig, force=True)
+        bpy.context.view_layer.update()
+
+        goal = _np4(rig.pose.bones[ik_name].matrix)[:3, 3]
+        assert np.linalg.norm(goal - _np4(rig.pose.bones["joint6"].matrix)[:3, 3]) < 5e-3
+        assert np.linalg.norm(goal - _np4(rig.pose.bones[tcp_name].matrix)[:3, 3]) > 1e-2
+
+    def test_a_short_chain_still_drives_its_own_tip(self, rig, builder, handlers):
+        """A 4-DoF chain cannot hit a full pose goal, but it must still try.
+
+        The claim here is only that the solver moved the *new* tip toward the
+        goal rather than the TCP -- position and orientation are being traded
+        off against each other, so no tight tolerance is meaningful.
+        """
+        import bpy
+        from mathutils import Vector
+
+        _add_ik_uncompiled(rig)
+        bpy.ops.kinema.set_ik_tip(index=3)  # joint4
+        # Off, so the only solve is the one this test asks for. Left on, the
+        # depsgraph handler solves inside view_layer.update() and "before" is
+        # measured after the fact -- the same trap tools/demo/README.md records.
+        rig.kinema_ik_enabled = False
+
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        tcp_name = rig.get(builder.PROP_TCP_BONE)
+        matrix = rig.pose.bones[ik_name].matrix.copy()
+        matrix.translation += Vector((0.0, 0.0, -0.05))
+        rig.pose.bones[ik_name].matrix = matrix
+        bpy.context.view_layer.update()
+
+        def error(bone_name):
+            goal = _np4(rig.pose.bones[ik_name].matrix)[:3, 3]
+            return np.linalg.norm(goal - _np4(rig.pose.bones[bone_name].matrix)[:3, 3])
+
+        before = error("joint4")
+        handlers.solve_rig(rig, force=True)
+        bpy.context.view_layer.update()
+
+        # No absolute tolerance: four joints against a six-dimensional goal are
+        # trading position off against orientation, so what "close enough"
+        # means is a property of the residual weights, not of this feature.
+        assert error("joint4") < before, "the solver did not move the tip toward the goal"
+        assert error("joint4") < error(tcp_name), "the solver was still chasing the TCP"
+
+    def test_out_of_range_falls_back_to_the_tcp(self, rig, builder, manager):
+        """A rig rebuilt with fewer joints must not leave the solver aimed at nothing."""
+        rig.kinema_ik_tip = 99
+        assert manager.tip_bone(rig) == builder.TCP_BONE
+
+    def test_the_tip_is_keyframable(self, rig, builder, manager):
+        """The whole reason the tip is an index and not a bone name.
+
+        Blender animates integers and does not animate strings, so this is what
+        lets a shot hand the goal from the wrist to the elbow part-way through.
+        """
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        scene = bpy.context.scene
+
+        scene.frame_set(1)
+        rig.kinema_ik_tip = -1
+        rig.keyframe_insert(data_path="kinema_ik_tip", frame=1)
+        scene.frame_set(10)
+        rig.kinema_ik_tip = 2
+        rig.keyframe_insert(data_path="kinema_ik_tip", frame=10)
+
+        scene.frame_set(1)
+        assert rig.kinema_ik_tip == -1
+        assert manager.get_solver(rig).tip_bone == builder.TCP_BONE
+
+        scene.frame_set(10)
+        assert rig.kinema_ik_tip == 2
+        assert manager.get_solver(rig).tip_bone == "joint3"
+
+    def test_changing_the_tip_alone_re_solves(self, rig, builder, handlers, manager):
+        """Regression: the handler skips when the goal matrix has not moved.
+
+        Moving the tip leaves the goal exactly where it was, so comparing the
+        matrix alone would call that "nothing happened" and go on driving the
+        old chain.
+        """
+        _add_ik_uncompiled(rig)
+        handlers.solve_rig(rig, force=True)
+
+        rig.kinema_ik_tip = 2
+        assert handlers.solve_rig(rig) is True, "a tip change did not re-solve"
+
+    def test_set_ik_tip_snaps_the_control(self, rig, builder):
+        """Switching the tip must not jerk the arm, same rule as snap_ik."""
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        ik_name = rig.get(builder.PROP_IK_BONE)
+
+        assert bpy.ops.kinema.set_ik_tip(index=2) == {"FINISHED"}
+        bpy.context.view_layer.update()
+
+        goal = _np4(rig.pose.bones[ik_name].matrix)[:3, 3]
+        tip = _np4(rig.pose.bones["joint3"].matrix)[:3, 3]
+        assert np.linalg.norm(goal - tip) < 1e-6
+
+    def test_set_ik_tip_rejects_a_bone_outside_the_chain(self, rig):
+        """An ERROR report from bpy.ops surfaces in Python as a RuntimeError."""
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        with pytest.raises(RuntimeError, match="not part of this rig's chain"):
+            bpy.ops.kinema.set_ik_tip(index=99)
+        assert rig.kinema_ik_tip == -1, "a rejected tip must not be written"
+
+
+class TestSetTcpInvalidates:
+    def test_moving_the_tcp_rebuilds_the_chain(self, rig, builder, manager):
+        """Regression: set_tcp re-roots the chain but the bone keeps its name,
+        so get_solver's staleness check saw nothing wrong and kept driving the
+        old chain. The demos only escaped it by calling set_tcp before add_ik."""
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        before = manager.get_solver(rig).chain.dof
+
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.object.mode_set(mode="POSE")
+        rig.data.bones.active = rig.data.bones["joint3"]
+        bpy.ops.kinema.set_tcp()
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        after = manager.get_solver(rig).chain.dof
+        assert after == 3
+        assert after < before
+
+
 class TestRemoveIk:
     def test_removes_the_bone_and_flags(self, rig, builder):
         import bpy

@@ -12,6 +12,7 @@ panel says which backend actually answered.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -37,7 +38,9 @@ class RigSolver:
     rig_name: str
     chain: chain_mod.Chain
     ik_bone: str
-    tcp_bone: str
+    #: The bone the solver aims at. Usually the TCP marker, but any joint bone
+    #: can be the tip -- see :func:`tip_bone`.
+    tip_bone: str
     #: bone-space goal -> URDF link-space goal, and the link PyRoki should hit.
     link_target: tuple[str, np.ndarray] | None = None
     _pyroki: pyroki_backend.PyrokiSolver | None = None
@@ -55,11 +58,23 @@ class RigSolver:
         """Build the PyRoki solver on first use, or explain why it is absent."""
         if self._pyroki is not None or self._pyroki_failed:
             return self._pyroki
+        cached = _pyroki_cache_get(self.rig_name, self.link_target)
+        # Length check, not trust: the cached mapping was derived from whatever
+        # chain reached this link first. Today that is always this same chain,
+        # but a mapping of the wrong width would silently scatter joint values
+        # into the wrong slots, and that is not a failure worth risking to save
+        # a rebuild.
+        if cached is not None and len(cached[1]) == self.chain.dof:
+            self._pyroki, self._chain_to_full = cached
+            return self._pyroki
         try:
             self._pyroki = self._build_pyroki(rig)
         except Exception as exc:  # noqa: BLE001 - always falls back to NumPy
             self._pyroki_failed = str(exc)
             return None
+        _pyroki_cache_put(
+            self.rig_name, self.link_target, self._pyroki, self._chain_to_full
+        )
         return self._pyroki
 
     def _build_pyroki(self, rig) -> pyroki_backend.PyrokiSolver:
@@ -139,6 +154,62 @@ class RigSolver:
 # --------------------------------------------------------------------------
 _cache: dict[str, RigSolver] = {}
 
+#: (rig name, URDF link) -> a built PyRoki solver and its chain->full mapping.
+#: Separate from ``_cache`` because moving the IK tip throws the RigSolver away
+#: but not the thing that was expensive to make: building a PyRoki solver
+#: reloads the description and pays a JAX compile, tens of seconds the first
+#: time. Keyed by link so switching the tip back and forth -- which a keyframed
+#: tip does on every scrub -- costs nothing after the first visit to each.
+_pyroki_cache: OrderedDict[
+    tuple[str, str], tuple[pyroki_backend.PyrokiSolver, np.ndarray]
+] = OrderedDict()
+
+#: How many compiled solvers to keep, least-recently-used evicted first.
+#:
+#: Small on purpose. Each entry pins a JAX-compiled kernel, which is tens of
+#: megabytes, and nothing else would ever drop them: rigs are keyed by name, so
+#: deleting a rig or opening a new file leaves entries behind that no longer
+#: describe anything. An unbounded cache here grew until the machine ran out of
+#: memory. Four covers the case this exists for -- an animator flipping between
+#: a couple of tips -- and anything beyond that pays one rebuild.
+_PYROKI_CACHE_LIMIT = 4
+
+
+def _pyroki_cache_get(rig_name: str, link_target) -> tuple | None:
+    if link_target is None:
+        return None
+    key = (rig_name, link_target[0])
+    entry = _pyroki_cache.get(key)
+    if entry is not None:
+        _pyroki_cache.move_to_end(key)
+    return entry
+
+
+def _pyroki_cache_put(rig_name: str, link_target, solver, chain_to_full) -> None:
+    if link_target is None or solver is None or chain_to_full is None:
+        return
+    _pyroki_cache[(rig_name, link_target[0])] = (solver, chain_to_full)
+    _pyroki_cache.move_to_end((rig_name, link_target[0]))
+    while len(_pyroki_cache) > _PYROKI_CACHE_LIMIT:
+        _pyroki_cache.popitem(last=False)
+
+
+def tip_bone(rig) -> str:
+    """The bone the solver aims at.
+
+    ``kinema_ik_tip`` is an index into the rig's joint bones, and it is a real
+    RNA property rather than a bone reference precisely so that it can be
+    keyframed: an animator can hand the goal from the wrist to the elbow
+    mid-shot. Out of range -- including the -1 default -- means "use the TCP
+    marker", which is the behaviour every rig had before the property existed.
+    """
+    index = getattr(rig, "kinema_ik_tip", -1)
+    if index >= 0:
+        joints = builder.joint_bones(rig)
+        if index < len(joints):
+            return joints[index].name
+    return rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+
 
 def _load_source_urdf(rig, *, allow_download: bool = False):
     """Reload the description this rig was built from, if we still can.
@@ -205,21 +276,24 @@ def _load_source_urdf(rig, *, allow_download: bool = False):
         raise SolverError(f"could not reload the robot description: {exc}") from exc
 
 
-def _link_target_for(rig, tcp_bone_name: str) -> tuple[str, np.ndarray] | None:
-    """Work out which URDF link the TCP rides, and the bone->link correction.
+def _link_target_for(rig, tip_bone_name: str) -> tuple[str, np.ndarray] | None:
+    """Work out which URDF link the tip rides, and the bone->link correction.
 
     The TCP bone hangs off a joint bone. That joint's child link is what PyRoki
     should aim at, and the correction chains the TCP bone's offset from the
     joint bone onto the joint bone's own bone->link correction::
 
         link_goal = tcp_goal · M_tcp⁻¹ · M_joint · C_joint
+
+    A joint bone can also be the tip in its own right, in which case the walk
+    starts on the bone itself and the correction reduces to that bone's own.
     """
     bones = rig.data.bones
-    tcp = bones.get(tcp_bone_name)
+    tcp = bones.get(tip_bone_name)
     if tcp is None:
         return None
 
-    node = tcp.parent
+    node = tcp
     while node is not None and builder.PROP_CHILD_LINK not in node:
         node = node.parent
     if node is None:
@@ -236,18 +310,18 @@ def _link_target_for(rig, tcp_bone_name: str) -> tuple[str, np.ndarray] | None:
     return str(node[builder.PROP_CHILD_LINK]), correction
 
 
-def build_solver(rig, ik_bone: str, tcp_bone: str | None = None) -> RigSolver | None:
+def build_solver(rig, ik_bone: str, tip: str | None = None) -> RigSolver | None:
     """Create the solver state for one rig, or None if it cannot be rigged."""
-    tcp_bone = tcp_bone or rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
-    chain = chain_mod.chain_from_rig(rig, tcp_bone)
+    tip = tip or tip_bone(rig)
+    chain = chain_mod.chain_from_rig(rig, tip)
     if chain is None:
         return None
     return RigSolver(
         rig_name=rig.name,
         chain=chain,
         ik_bone=ik_bone,
-        tcp_bone=tcp_bone,
-        link_target=_link_target_for(rig, tcp_bone),
+        tip_bone=tip,
+        link_target=_link_target_for(rig, tip),
     )
 
 
@@ -257,21 +331,38 @@ def get_solver(rig, ik_bone: str | None = None) -> RigSolver | None:
     if not ik_bone:
         return None
 
+    # The tip is compared, not just checked for existence: it is keyframable,
+    # so it can change between two solves with nothing else about the rig
+    # having moved, and a cached solver would then drive the wrong chain.
+    tip = tip_bone(rig)
     cached = _cache.get(rig.name)
-    if cached is not None and cached.ik_bone == ik_bone and cached.tcp_bone in rig.pose.bones:
+    if (
+        cached is not None
+        and cached.ik_bone == ik_bone
+        and cached.tip_bone == tip
+        and tip in rig.pose.bones
+    ):
         return cached
     # Anything that changes the rig's bones -- rebuilding it, or moving the
     # TCP -- calls invalidate(), so a stale entry here is not silently reused.
 
-    solver = build_solver(rig, ik_bone)
+    solver = build_solver(rig, ik_bone, tip)
     if solver is not None:
         _cache[rig.name] = solver
     return solver
 
 
 def invalidate(rig_name: str | None = None) -> None:
-    """Drop cached solvers -- after a rig rebuild, or on unregister."""
+    """Drop cached solvers -- after a rig rebuild, or on unregister.
+
+    The compiled PyRoki solvers go too. They are expensive to rebuild, but the
+    reasons to invalidate -- the bones changed underneath us -- are exactly the
+    reasons a compiled kernel for the old bones must not be reused.
+    """
     if rig_name is None:
         _cache.clear()
+        _pyroki_cache.clear()
     else:
         _cache.pop(rig_name, None)
+        for key in [k for k in _pyroki_cache if k[0] == rig_name]:
+            del _pyroki_cache[key]

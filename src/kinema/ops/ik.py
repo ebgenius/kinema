@@ -82,12 +82,13 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
 
         rig[builder.PROP_IK_BONE] = ik_name
 
-        # Snap the goal onto the tool's *current* pose before switching live IK
+        # Snap the goal onto the tip's *current* pose before switching live IK
         # on. A new bone starts at its rest position, so enabling the solver
         # first would immediately drag the arm back to the URDF rest pose and
-        # throw away whatever the user had posed.
+        # throw away whatever the user had posed. The tip is usually the TCP,
+        # but the rig may already be aimed at a bone further up the chain.
         context.view_layer.update()
-        pose_bone.matrix = rig.pose.bones[tcp_bone].matrix.copy()
+        pose_bone.matrix = rig.pose.bones[manager.tip_bone(rig)].matrix.copy()
         context.view_layer.update()
 
         manager.invalidate(rig.name)
@@ -171,16 +172,62 @@ class KINEMA_OT_snap_ik(KinemaRigOperator):
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
         ik_name = rig.get(builder.PROP_IK_BONE)
-        tcp_name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+        tip_name = manager.tip_bone(rig)
         if not ik_name or ik_name not in rig.pose.bones:
             self.report({"ERROR"}, "This rig has no IK target")
             return {"CANCELLED"}
+        if tip_name not in rig.pose.bones:
+            self.report({"ERROR"}, f"This rig has no bone named '{tip_name}'")
+            return {"CANCELLED"}
 
         context.view_layer.update()
-        rig.pose.bones[ik_name].matrix = rig.pose.bones[tcp_name].matrix.copy()
+        rig.pose.bones[ik_name].matrix = rig.pose.bones[tip_name].matrix.copy()
         context.view_layer.update()
         handlers.reset(rig.name)
-        self.report({"INFO"}, "IK target snapped to the tool")
+        self.report({"INFO"}, f"IK target snapped to '{tip_name}'")
+        return {"FINISHED"}
+
+
+class KINEMA_OT_set_ik_tip(KinemaRigOperator):
+    bl_idname = "kinema.set_ik_tip"
+    bl_label = "Set IK Target Bone"
+    bl_description = (
+        "Aim the solver at this bone. Everything above it in the chain stays "
+        "free; everything below it stops being solved"
+    )
+
+    #: Index into builder.joint_bones(rig); -1 restores the TCP marker.
+    index: IntProperty(name="Bone", default=-1, options={"SKIP_SAVE"})
+    snap: BoolProperty(
+        name="Snap the Control",
+        description="Move the IK control onto the new tip, so the arm does not jump",
+        default=True,
+        options={"SKIP_SAVE"},
+    )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        joints = builder.joint_bones(rig)
+        if self.index >= len(joints):
+            self.report({"ERROR"}, "That bone is not part of this rig's chain")
+            return {"CANCELLED"}
+
+        rig.kinema_ik_tip = self.index
+        tip_name = manager.tip_bone(rig)
+
+        # No manager.invalidate() here: get_solver compares the tip and rebuilds
+        # on its own, and invalidating would also throw away the compiled PyRoki
+        # kernels this rig has already paid for -- the exact thing that makes
+        # scrubbing a keyframed tip affordable.
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        if self.snap and ik_name and ik_name in rig.pose.bones:
+            if tip_name in rig.pose.bones:
+                context.view_layer.update()
+                rig.pose.bones[ik_name].matrix = rig.pose.bones[tip_name].matrix.copy()
+                context.view_layer.update()
+        handlers.reset(rig.name)
+
+        self.report({"INFO"}, f"IK now targets '{tip_name}'")
         return {"FINISHED"}
 
 
@@ -296,5 +343,6 @@ classes = (
     KINEMA_OT_add_ik,
     KINEMA_OT_remove_ik,
     KINEMA_OT_snap_ik,
+    KINEMA_OT_set_ik_tip,
     KINEMA_OT_bake_ik,
 )
