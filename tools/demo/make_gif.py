@@ -10,6 +10,9 @@ SRC = Path(sys.argv[1])
 OUT = Path(sys.argv[2])
 STEP = int(sys.argv[3]) if len(sys.argv) > 3 else 2
 WIDTH = int(sys.argv[4]) if len(sys.argv) > 4 else 720
+#: Palette size. 64 is indistinguishable from 128 on shaded grey robots once
+#: dithering is off; see the note by the quantise call below.
+COLORS = int(sys.argv[5]) if len(sys.argv) > 5 else 64
 
 LEFT_LABEL = "Kinema  (PyRoki)"
 RIGHT_LABEL = "Blender built-in IK"
@@ -54,8 +57,18 @@ def main():
         out.append(im)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    # Adaptive palette: a flat background and static camera keep this small.
-    quantised = [im.quantize(colors=128, method=Image.MEDIANCUT) for im in out]
+    # One palette for the whole animation, and no dithering.
+    #
+    # Pillow only honours `dither` when an explicit palette is passed -- with
+    # method=MEDIANCUT and no palette the argument is silently ignored, which is
+    # why lowering the colour count alone barely moves the file. Floyd-Steinberg
+    # sprays high-frequency noise over flat surfaces and noise is exactly what
+    # GIF's run-length coding cannot pack. A smooth-shaded render under a static
+    # camera has nothing subtle enough to need it, and a shared palette also
+    # spares every frame its own colour table.
+    palette = out[len(out) // 2].quantize(colors=COLORS, method=Image.MEDIANCUT)
+    quantised = [im.quantize(palette=palette, dither=Image.Dither.NONE)
+                 for im in out]
     quantised[0].save(OUT, save_all=True, append_images=quantised[1:],
                       duration=int(1000 / 24 * STEP), loop=0, optimize=True)
     mb = OUT.stat().st_size / 1e6

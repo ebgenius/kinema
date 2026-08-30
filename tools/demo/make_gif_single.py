@@ -11,6 +11,10 @@ STEP = int(sys.argv[3])
 WIDTH = int(sys.argv[4])
 TITLE = sys.argv[5]
 CAPTION = sys.argv[6]
+#: Palette size. A flat background and a static camera mean these frames carry
+#: far less colour than the default 128 implies, and halving it halves the file
+#: with no visible banding on shaded grey robots.
+COLORS = int(sys.argv[7]) if len(sys.argv) > 7 else 64
 
 
 def font(size):
@@ -38,7 +42,17 @@ for path in frames:
            fill=(240, 160, 90))
     out.append(im)
 
-q = [im.quantize(colors=128, method=Image.MEDIANCUT) for im in out]
+# One palette for the whole animation, and no dithering.
+#
+# Pillow only honours `dither` when an explicit palette is passed -- with
+# method=MEDIANCUT and no palette the argument is silently ignored, which is why
+# lowering the colour count alone barely moves the file. Floyd-Steinberg sprays
+# high-frequency noise over flat surfaces and noise is exactly what GIF's
+# run-length coding cannot pack. A smooth-shaded render under a static camera
+# has nothing subtle enough to need it, and a shared palette also spares every
+# frame its own colour table.
+palette = out[len(out) // 2].quantize(colors=COLORS, method=Image.MEDIANCUT)
+q = [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in out]
 q[0].save(OUT, save_all=True, append_images=q[1:],
           duration=int(1000 / 24 * STEP), loop=0, optimize=True)
 print(f"wrote {OUT}  {len(out)} frames  {size[0]}x{size[1]}  "

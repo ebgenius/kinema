@@ -4,10 +4,14 @@ Two GIFs for the extension listing, and the measurements behind them. Everything
 here is reproducible; the point is that the claims can be checked rather than
 taken on trust.
 
-| Asset | Shows |
-|---|---|
-| `kinema-ik.gif` | UR5e, side by side against Blender's built-in IK, on a two-turn tool spin |
-| `kinema-nullspace.gif` | Franka Panda, 7 DoF, reconfiguring 90° around a fixed tool pose |
+| Asset | Shows | Size |
+|---|---|---|
+| `kinema-ik.gif` | UR5e, side by side against Blender's built-in IK, on a two-turn tool spin | 0.44 MB |
+| `kinema-nullspace.gif` | Franka Panda, 7 DoF, reconfiguring 90° around a fixed tool pose | 1.03 MB |
+
+Both are quantised against a single shared palette with dithering off, which is
+what keeps them small — see the note in `make_gif.py`. Palette size is the last
+argument to either composer.
 
 ```bash
 # 1. the comparison
@@ -25,8 +29,9 @@ uv run --with pillow python tools/demo/make_gif_single.py nsframes/ \
         "tool held to 0.0005 mm - Franka Panda, 7 DoF"
 
 # 3. feasibility numbers for both (branch count, null-space span)
+#    optional trailing argument is the seed count, default 40
 blender --background --python tools/dev_bootstrap.py \
-        --python tools/demo/branches.py
+        --python tools/demo/branches.py -- 40
 ```
 
 Needs `ur5e_description` and `panda_mj_description` in the robot-descriptions
@@ -101,12 +106,23 @@ whichever single configuration its iterative solver lands on; there is no way to
 ask it for a different one.
 
 **Multiple branches for one pose.** Seeding PyRoki from 40 random configurations
-and keeping the distinct results finds **15 different solutions** for a single
-UR5e tool pose, every one converging to ~0.0001 mm. A 6R arm has at most eight
-*analytic* solutions — the extra ones are multi-turn variants, sitting at joint
-angles like −241° and +205°. Those exist only because Kinema carries the real
-±360° limits, and are exactly the configurations Blender's ±180° IK cannot
+and keeping the distinct results finds **at least 15 different solutions** for a
+single UR5e tool pose, every one converging to ~0.0001 mm. A 6R arm has at most
+eight *analytic* solutions — the extra ones are multi-turn variants, sitting at
+joint angles like −241° and +205°. Those exist only because Kinema carries the
+real ±360° limits, and are exactly the configurations Blender's ±180° IK cannot
 represent. Same root cause as the wrist flip above.
+
+The count is a **lower bound, not an enumeration** — it is whatever those seeds
+happened to reach, and more seeds reach more:
+
+| Seeds | Distinct solutions |
+|---|---|
+| 40 | 15 |
+| 120 | 34 |
+
+So quote it as "at least 15", never "15 solutions". `branches.py` takes the seed
+count as a trailing argument if you want to push it further.
 
 **Null-space sweep.** A 7-DoF arm has a one-dimensional family of configurations
 for any reachable tool pose. Biasing the seed along it and re-solving walks that

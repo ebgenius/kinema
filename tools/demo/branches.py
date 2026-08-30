@@ -105,8 +105,10 @@ def probe_branches(seed_count=40):
                    for f in found):
             found.append(q)
 
-    log(f"A. distinct branches for one UR5e pose: {len(found)} "
-        f"(from {seed_count} seeds)")
+    # A lower bound, not an enumeration: this is whatever these seeds reached.
+    # More seeds find more, so the honest phrasing is "at least N".
+    log(f"A. distinct branches for one UR5e pose: at least {len(found)} "
+        f"(from {seed_count} random seeds; more seeds would find more)")
     for i, q in enumerate(found):
         set_q(joints, q)
         log(f"     branch {i}: err {tool_error(rig, builder, goal):6.4f} mm  "
@@ -158,13 +160,17 @@ def probe_nullspace(robot_key="panda_mj_description", steps=24,
 
 
 def main():
-    n = probe_branches()
+    seeds = 40
+    if "--" in sys.argv and len(sys.argv) > sys.argv.index("--") + 1:
+        seeds = int(sys.argv[sys.argv.index("--") + 1])
+
+    n = probe_branches(seed_count=seeds)
     save_blend("branches")      # UR5e, left on the last branch found
     span, err = probe_nullspace()
     save_blend("branches-nullspace")
     log("")
     log(f"VERDICT A (multiple branches): "
-        f"{'YES' if n >= 2 else 'NO'} -- {n} distinct solutions")
+        f"{'YES' if n >= 2 else 'NO'} -- at least {n} distinct solutions")
     log(f"VERDICT B (null-space sweep): "
         f"{'YES' if span > 20 and err < 1.0 else 'NO'} -- "
         f"{span:.1f} deg of motion at {err:.3f} mm tool error")
