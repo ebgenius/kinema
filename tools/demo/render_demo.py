@@ -15,6 +15,9 @@ import sys
 import bpy
 from mathutils import Matrix, Vector
 
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from _blendfile import save_blend  # noqa: E402
+
 EXT = "bl_ext.user_default.kinema"
 ROBOT = "ur5e_description"
 TURNS = 2.0
@@ -178,6 +181,8 @@ def main():
     scene.render.resolution_y = 540
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = f"{out_dir}/frame_"
+
+    save_blend("ik-comparison")
 
     log(f"rendering to {out_dir} ...")
     bpy.ops.render.render(animation=True)

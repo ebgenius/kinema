@@ -18,6 +18,9 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from _blendfile import save_blend  # noqa: E402
+
 EXT = "bl_ext.user_default.kinema"
 ROBOT = "panda_mj_description"
 FRAMES = 96
@@ -45,15 +48,27 @@ def main():
     rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
     joints = builder.joint_bones(rig)
 
-    # The Panda's actuated set includes two gripper fingers; only the arm joints
-    # take part in the redundancy.
+    # Move the TCP onto the flange before adding IK.
+    #
+    # The Panda imports with its TCP on 'right_finger', which puts both gripper
+    # joints *inside* the IK chain: 9 DoF against a 6-DoF task. The solver then
+    # holds the fingertip perfectly while spinning the whole hand around it --
+    # the tool pose is fixed by the letter of the metric and visibly rotating on
+    # screen. Targeting the flange drops the finger joints out of the chain and
+    # leaves exactly the 7 arm joints, which is the redundancy this demo is about.
+    bpy.context.view_layer.objects.active = rig
+    rig.select_set(True)
+    bpy.ops.object.mode_set(mode="POSE")
+    rig.data.bones.active = rig.data.bones["joint7"]
+    bpy.ops.kinema.set_tcp()
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    joints = builder.joint_bones(rig)
     arm = joints[:7]
     for pb, v in zip(arm, SEED_POSE):
         pb.rotation_euler[1] = v
     bpy.context.view_layer.update()
 
-    bpy.context.view_layer.objects.active = rig
-    rig.select_set(True)
     bpy.ops.kinema.add_ik()
     rig.select_set(False)
     rig.kinema_solver_mode = "PYROKI"
@@ -74,8 +89,14 @@ def main():
     scene.frame_start, scene.frame_end = 1, FRAMES
     rest = np.array([pb.rotation_euler[1] for pb in joints])
 
+    # The flange's own world orientation, tracked across the sweep. The tool-frame
+    # error can read zero while the hand visibly spins, if the task frame sits
+    # below a spare joint -- so this is measured directly rather than inferred.
+    flange = rig.pose.bones["joint7"]
+    flange_ref = flange.matrix.to_3x3().copy()
+
     log(f"baking {FRAMES} frames ...")
-    errors = []
+    errors, ori_errors, flange_spin = [], [], []
     for i in range(FRAMES):
         frame = i + 1
         scene.frame_set(frame)
@@ -95,11 +116,19 @@ def main():
 
         errors.append(((rig.matrix_world @ tcp.matrix.translation)
                        - goal_world).length * 1000.0)
+        delta = goal.to_3x3().inverted() @ tcp.matrix.to_3x3()
+        ori_errors.append(math.degrees(delta.to_quaternion().angle))
+        spin = flange_ref.inverted() @ flange.matrix.to_3x3()
+        flange_spin.append(math.degrees(spin.to_quaternion().angle))
+
         for pb in joints:
             pb.keyframe_insert("rotation_euler", index=1, frame=frame)
 
-    log(f"tool error across the sweep: max {max(errors):.4f} mm, "
+    log(f"tool position error: max {max(errors):.4f} mm, "
         f"mean {sum(errors)/len(errors):.4f} mm")
+    log(f"tool orientation error: max {max(ori_errors):.4f} deg")
+    log(f"flange rotation in world: max {max(flange_spin):.4f} deg "
+        f"({'HOLDS STILL' if max(flange_spin) < 0.05 else 'STILL ROTATING'})")
 
     # --- the marker that proves the tool does not move ---
     marker_mesh = bpy.data.meshes.new("goal")
@@ -139,6 +168,8 @@ def main():
     scene.render.resolution_y = 560
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = f"{out_dir}/frame_"
+
+    save_blend("nullspace")
 
     log(f"rendering to {out_dir} ...")
     bpy.ops.render.render(animation=True)

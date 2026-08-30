@@ -23,6 +23,9 @@ import sys
 import bpy
 from mathutils import Matrix, Vector
 
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from _blendfile import save_blend  # noqa: E402
+
 EXT = "bl_ext.user_default.kinema"
 ROBOT = "ur5e_description"
 
@@ -430,6 +433,10 @@ def main():
             rows = run_path(rig_k, ik_bone_name, joints_k, baselines, target,
                             path, tag, writer, kinema_extra)
             summaries.append(summarise(rows, tag, names))
+
+    # Saved after the sweep, so the four rigs are left in the state the last
+    # path put them in -- open it to inspect the fairness setup by hand.
+    save_blend("sweep")
 
     print("SUMMARY_JSON " + json.dumps(summaries), flush=True)
     return 0

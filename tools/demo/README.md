@@ -110,7 +110,7 @@ represent. Same root cause as the wrist flip above.
 
 **Null-space sweep.** A 7-DoF arm has a one-dimensional family of configurations
 for any reachable tool pose. Biasing the seed along it and re-solving walks that
-family: on the Panda, **90.2° of arm motion while the tool holds to 0.0009 mm**.
+family: on the Panda, **91.4° of arm motion at 0.0019 mm and 0.0000°**.
 `nullspace_demo.py` renders it, with a static marker sphere placed once at the
 goal — if the tool drifts off the marker, the demo is lying.
 
@@ -118,8 +118,36 @@ Both use only the public solve path (pose the arm at a seed, then solve). PyRoki
 `rest_cost` biases toward the seed, so the seed is what selects the branch. No
 add-on code was added for either.
 
-The Panda's actuated set is 9 joints — 7 arm plus 2 gripper fingers. Only the
-arm joints take part in the redundancy, and `nullspace_demo.py` seeds accordingly.
+### Put the TCP on the flange, and measure orientation
+
+The Panda imports with its **TCP on `right_finger`**, which leaves both gripper
+joints *inside* the IK chain: 9 DoF against a 6-DoF task. The solver then holds
+the fingertip exactly while spinning the whole hand around it — and a
+position-only metric reports 0.0005 mm while the flange visibly rotates on
+screen. Two mistakes compounding: the wrong task frame, and a metric too weak to
+notice.
+
+Both scripts now move the TCP to `joint7` with `kinema.set_tcp` before adding IK,
+leaving exactly the seven arm joints, and both measure **position and
+orientation**. `nullspace_demo.py` additionally tracks the flange's own world
+rotation across the sweep, which is the thing a viewer actually watches:
+
+```
+tool position error:      max 0.0005 mm
+tool orientation error:   max 0.0000 deg
+flange rotation in world: max 0.0000 deg   (HOLDS STILL)
+```
+
+## Saved scenes
+
+Each script writes the scene it built to `tools/demo/blend/`, so you can open the
+exact result of a headless run and scrub it rather than trusting a log line:
+`sweep.blend`, `ik-comparison.blend`, `nullspace.blend`, `branches.blend`,
+`branches-nullspace.blend`.
+
+They are **gitignored** — tens of megabytes of packed robot meshes each, and all
+regenerable by re-running the script. Set `KINEMA_DEMO_BLEND_DIR` to write them
+somewhere else. Saving is best-effort and never fails a run.
 
 ## Things this does not show
 

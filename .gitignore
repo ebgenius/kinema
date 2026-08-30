@@ -11,6 +11,12 @@ __pycache__/
 /dist/
 *.zip
 
+# Scenes the demo scripts save for inspection: tens of MB of packed robot
+# meshes, and every one is regenerable by re-running its script.
+/tools/demo/blend/
+*.blend
+*.blend[0-9]
+
 # Vendored third-party source is fetched by tools/vendor.py, not committed.
 /src/kinema/vendor/pyroki/
 /src/kinema/vendor/jaxls/

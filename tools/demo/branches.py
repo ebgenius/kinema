@@ -19,6 +19,9 @@ import sys
 import numpy as np
 import bpy
 
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from _blendfile import save_blend  # noqa: E402
+
 EXT = "bl_ext.user_default.kinema"
 
 
@@ -26,7 +29,7 @@ def log(m):
     print(f"[multi] {m}", flush=True)
 
 
-def build(robot_key):
+def build(robot_key, tcp_bone=None):
     builder = sys.modules[f"{EXT}.rig.builder"]
     manager = sys.modules[f"{EXT}.solver.manager"]
     for obj in list(bpy.data.objects):
@@ -39,6 +42,11 @@ def build(robot_key):
 
     bpy.context.view_layer.objects.active = rig
     rig.select_set(True)
+    if tcp_bone is not None:
+        bpy.ops.object.mode_set(mode="POSE")
+        rig.data.bones.active = rig.data.bones[tcp_bone]
+        bpy.ops.kinema.set_tcp()
+        bpy.ops.object.mode_set(mode="OBJECT")
     bpy.ops.kinema.add_ik()
     rig.select_set(False)
     rig.kinema_solver_mode = "PYROKI"
@@ -107,11 +115,17 @@ def probe_branches(seed_count=40):
 
 
 # ------------------------------------------------------------ B: null space
-def probe_nullspace(robot_key="panda_mj_description", steps=24):
-    rig, solver, joints, builder = build(robot_key)
+def probe_nullspace(robot_key="panda_mj_description", steps=24,
+                    tcp_bone="joint7"):
+    # The Panda imports with its TCP on 'right_finger', which leaves both gripper
+    # joints inside the IK chain -- 9 DoF against a 6-DoF task. The solver then
+    # holds the fingertip exactly while spinning the hand around it, so a
+    # position-only metric reads zero while the flange visibly rotates. Target
+    # the flange instead and the chain is the 7 arm joints it should be.
+    rig, solver, joints, builder = build(robot_key, tcp_bone=tcp_bone)
     ik = rig.pose.bones[rig.get(builder.PROP_IK_BONE)]
     n = len(joints)
-    log(f"B. {robot_key} has {n} actuated joints "
+    log(f"B. {robot_key}: TCP on {tcp_bone!r}, {n} actuated joints "
         f"({'redundant' if n > 6 else 'NOT redundant'})")
 
     rest = q_of(joints)
@@ -119,7 +133,8 @@ def probe_nullspace(robot_key="panda_mj_description", steps=24):
     set_q(joints, rest)
     goal = tcp.matrix.copy()
 
-    errs, first_joint = [], []
+    tcp = rig.pose.bones[rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE]
+    errs, ori_errs, first_joint = [], [], []
     for i in range(steps):
         t = i / (steps - 1)
         bias = rest.copy()
@@ -130,18 +145,23 @@ def probe_nullspace(robot_key="panda_mj_description", steps=24):
         solver.solve(rig, "PYROKI")
         bpy.context.view_layer.update()
         errs.append(tool_error(rig, builder, goal))
+        # Orientation too: position alone reads zero even when the tool spins.
+        delta = goal.to_3x3().inverted() @ tcp.matrix.to_3x3()
+        ori_errs.append(math.degrees(delta.to_quaternion().angle))
         first_joint.append(q_of(joints)[0])
 
     span = math.degrees(max(first_joint) - min(first_joint))
     log(f"     tool error over the sweep: max {max(errs):.4f} mm, "
-        f"mean {sum(errs)/len(errs):.4f} mm")
+        f"{max(ori_errs):.4f} deg")
     log(f"     joint-0 span while the tool stayed put: {span:.1f} deg")
     return span, max(errs)
 
 
 def main():
     n = probe_branches()
+    save_blend("branches")      # UR5e, left on the last branch found
     span, err = probe_nullspace()
+    save_blend("branches-nullspace")
     log("")
     log(f"VERDICT A (multiple branches): "
         f"{'YES' if n >= 2 else 'NO'} -- {n} distinct solutions")
