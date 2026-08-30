@@ -174,6 +174,19 @@ def _joint_indices(rig: bpy.types.Object) -> dict[str, int]:
     return {bone.name: index for index, bone in enumerate(builder.joint_bones(rig))}
 
 
+def tip_index_of(rig: bpy.types.Object, pose_bone) -> int | None:
+    """The ``kinema_ik_tip`` value that aims at ``pose_bone``, or None.
+
+    Joint bones map to their index; the TCP marker maps to -1, the default.
+    Everything else -- Root, the IK control -- is not a thing the solver can
+    aim at and gets no radio button.
+    """
+    if builder.PROP_JOINT_NAME in pose_bone.bone:
+        return _joint_indices(rig).get(pose_bone.name)
+    tcp_name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    return -1 if pose_bone.name == tcp_name else None
+
+
 def active_bone(rig: bpy.types.Object) -> bpy.types.PoseBone | None:
     """The bone the Bones list has highlighted, if it still exists."""
     if rig is None:
@@ -195,28 +208,27 @@ class KINEMA_UL_bones(UIList):
         self, context, layout, data, item, icon, active_data, active_propname, index
     ):
         rig = item.id_data
-        bone = item.bone
-        is_joint = builder.PROP_JOINT_NAME in bone
         attachment = builder.bone_attachment(rig, item.name)
+        index = tip_index_of(rig, item)
 
         split = layout.split(factor=0.42, align=True)
 
         left = split.row(align=True)
         target = left.row(align=True)
-        target.enabled = is_joint
-        if is_joint:
-            joint_index = _joint_indices(rig).get(item.name, -1)
-            selected = joint_index == getattr(rig, "kinema_ik_tip", -1)
+        if index is not None:
+            selected = index == getattr(rig, "kinema_ik_tip", -1)
             operator = target.operator(
                 "kinema.set_ik_tip",
                 text="",
                 icon="RADIOBUT_ON" if selected else "RADIOBUT_OFF",
                 emboss=False,
             )
-            operator.index = joint_index
+            operator.index = index
         else:
-            # The TCP marker and Root can carry attachments but cannot be
-            # solved to, so their radio is a spacer rather than a dead button.
+            # Root and the IK control cannot be solved to, so they get a spacer
+            # rather than a dead button. The TCP marker is not among them: it is
+            # the default target, and without a row of its own there would be no
+            # way back to it from the list once a joint had been picked.
             target.label(text="", icon="BLANK1")
         left.label(text=item.name)
 
@@ -360,15 +372,21 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         column.prop(rig, "kinema_solver_mode", text="")
 
         # The friendly way to change the tip is the radio column in the Bones
-        # list. This row exists so the channel is reachable for keyframing:
-        # the decorator dot beside it is how a shot hands the goal from the
-        # wrist to the elbow part-way through.
+        # list; this row shows where it landed and keys it.
+        #
+        # Deliberately no property decorator. The dot inserts a key with the
+        # user's default interpolation, and an interpolated index ramps through
+        # every value between two tips -- solving chains nobody asked for. The
+        # button forces the channel to step instead, so the offered way to key
+        # this is the one that behaves.
         from ..solver import manager
 
         tip = layout.column(align=True)
         tip.use_property_split = True
-        tip.use_property_decorate = True
-        tip.prop(rig, "kinema_ik_tip", text="Target Bone")
+        tip.use_property_decorate = False
+        row = tip.row(align=True)
+        row.prop(rig, "kinema_ik_tip", text="Target Bone")
+        row.operator("kinema.key_ik_tip", text="", icon="DECORATE_KEYFRAME")
         tip.label(text=f"Solving to '{manager.tip_bone(rig)}'", icon="BONE_DATA")
 
         row = layout.row(align=True)

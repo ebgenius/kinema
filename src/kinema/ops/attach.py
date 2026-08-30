@@ -86,15 +86,34 @@ def attach(rig, bone_name: str, source) -> bpy.types.Object | None:
     copy.matrix_parent_inverse = Matrix.Translation(
         (0.0, -(pose_bone.bone.length or 0.0), 0.0)
     )
-    copy.location = (0.0, 0.0, 0.0)
-    copy.rotation_euler = (0.0, 0.0, 0.0)
-    copy.scale = (1.0, 1.0, 1.0)
+    zero_offset(copy)
 
     # Last, so a failure above leaves the old attachment in place rather than
     # removing it and then not replacing it.
     if superseded is not None:
         bpy.data.objects.remove(superseded, do_unlink=True)
     return copy
+
+
+def zero_offset(obj) -> None:
+    """Sit ``obj`` exactly on its parent frame, whatever channels it inherited.
+
+    Not simply ``rotation_euler = (0, 0, 0)``. A copy keeps its source's
+    ``rotation_mode``, so zeroing the Euler channel leaves a quaternion or
+    axis-angle source rotated -- and delta transforms are copied too and feed
+    ``matrix_basis`` on top of everything else. Either one puts a "zero" offset
+    somewhere other than the bone head.
+
+    Clearing the deltas first is what makes the basis assignment sufficient:
+    ``matrix_basis`` reads deltas but writing it only touches the ordinary
+    channels, so a surviving delta would reappear immediately.
+    """
+    obj.delta_location = (0.0, 0.0, 0.0)
+    obj.delta_rotation_euler = (0.0, 0.0, 0.0)
+    obj.delta_rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    obj.delta_scale = (1.0, 1.0, 1.0)
+    # Assigning the basis zeroes whichever rotation channel is actually active.
+    obj.matrix_basis = Matrix.Identity(4)
 
 
 def detach(attachment) -> None:
@@ -357,9 +376,7 @@ class KINEMA_OT_reset_attachment_offset(KinemaAttachOperator):
             self.report({"WARNING"}, f"Nothing is attached to '{self.bone}'")
             return {"CANCELLED"}
 
-        attachment.location = (0.0, 0.0, 0.0)
-        attachment.rotation_euler = (0.0, 0.0, 0.0)
-        attachment.scale = (1.0, 1.0, 1.0)
+        zero_offset(attachment)
         context.view_layer.update()
         self.report({"INFO"}, f"'{attachment.name}' reset onto the bone")
         return {"FINISHED"}

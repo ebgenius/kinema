@@ -116,6 +116,56 @@ class TestAttach:
         )
         assert (copy.matrix_world.translation - expected).length < 1e-6
 
+    def test_a_quaternion_source_still_lands_on_the_bone(self, rig, attach, cube):
+        """A copy keeps its source's rotation_mode.
+
+        Zeroing rotation_euler leaves a quaternion source rotated, because that
+        is not the channel Blender is reading -- so the "zero" offset would put
+        the attachment somewhere other than the bone head.
+        """
+        import bpy
+        from mathutils import Quaternion
+
+        cube.rotation_mode = "QUATERNION"
+        cube.rotation_quaternion = Quaternion((1.0, 1.0, 0.0, 0.0)).normalized()
+        bpy.context.view_layer.update()
+
+        copy = attach.attach(rig, "joint3", cube)
+        bpy.context.view_layer.update()
+
+        assert copy.rotation_mode == "QUATERNION"
+        head = _bone_head_world(rig, "joint3")
+        assert (copy.matrix_world.translation - head).length < 1e-6
+        expected = (rig.matrix_world @ rig.pose.bones["joint3"].matrix).to_3x3()
+        assert (copy.matrix_world.to_3x3() - expected).median_scale < 1e-6
+
+    def test_an_axis_angle_source_still_lands_on_the_bone(self, rig, attach, cube):
+        import bpy
+
+        cube.rotation_mode = "AXIS_ANGLE"
+        cube.rotation_axis_angle = (1.2, 0.0, 0.0, 1.0)
+        bpy.context.view_layer.update()
+
+        copy = attach.attach(rig, "joint3", cube)
+        bpy.context.view_layer.update()
+
+        assert (copy.matrix_world.translation - _bone_head_world(rig, "joint3")).length < 1e-6
+
+    def test_source_delta_transforms_do_not_survive(self, rig, attach, cube):
+        """Deltas are copied too, and feed matrix_basis on top of everything else."""
+        import bpy
+
+        cube.delta_location = (0.3, -0.2, 0.7)
+        cube.delta_rotation_euler = (0.4, 0.0, 0.0)
+        cube.delta_scale = (2.0, 2.0, 2.0)
+        bpy.context.view_layer.update()
+
+        copy = attach.attach(rig, "joint3", cube)
+        bpy.context.view_layer.update()
+
+        assert (copy.matrix_world.translation - _bone_head_world(rig, "joint3")).length < 1e-6
+        assert tuple(copy.delta_location) == (0.0, 0.0, 0.0)
+
     def test_the_copy_is_linked_not_duplicated(self, rig, attach, cube):
         """Fix the harness once, every link wearing it updates."""
         copy = attach.attach(rig, "joint3", cube)
@@ -320,7 +370,31 @@ class TestPanelWiring:
         joints = builder.joint_bones(rig)
 
         assert indices == {bone.name: i for i, bone in enumerate(joints)}
-        assert builder.TCP_BONE not in indices, "the TCP is not a solvable tip"
+        assert builder.TCP_BONE not in indices, "the TCP is not a joint"
+
+    def test_the_tcp_row_offers_a_radio(self, rig, panel, builder):
+        """Without one there is no way back to the default target from the list."""
+        tcp_name = rig.get(builder.PROP_TCP_BONE)
+
+        assert panel.tip_index_of(rig, rig.pose.bones[tcp_name]) == -1
+        assert panel.tip_index_of(rig, rig.pose.bones["joint3"]) == 2
+        assert panel.tip_index_of(rig, rig.pose.bones[builder.ROOT_BONE]) is None
+
+    def test_every_radio_index_round_trips_through_set_ik_tip(self, rig, panel, builder):
+        """Whatever the list can offer, the operator must accept."""
+        import bpy
+
+        bpy.context.view_layer.objects.active = rig
+        offered = [
+            panel.tip_index_of(rig, bone)
+            for bone in rig.pose.bones
+            if panel.tip_index_of(rig, bone) is not None
+        ]
+        assert -1 in offered and len(offered) == len(builder.joint_bones(rig)) + 1
+
+        for index in offered:
+            assert bpy.ops.kinema.set_ik_tip(index=index) == {"FINISHED"}
+            assert rig.kinema_ik_tip == index
 
 
 class TestOperators:
@@ -384,6 +458,25 @@ class TestOperators:
         assert tuple(copy.location) == (0.0, 0.0, 0.0)
         assert tuple(copy.scale) == (1.0, 1.0, 1.0)
         assert (copy.matrix_world.translation - _bone_head_world(rig, "joint3")).length < 1e-6
+
+    def test_reset_offset_handles_a_quaternion_attachment(self, rig, attach, cube):
+        """Reset must clear whichever rotation channel is actually active."""
+        import bpy
+        from mathutils import Quaternion
+
+        copy = attach.attach(rig, "joint3", cube)
+        copy.rotation_mode = "QUATERNION"
+        copy.rotation_quaternion = Quaternion((1.0, 0.0, 1.0, 0.0)).normalized()
+        copy.location = (0.1, 0.0, 0.0)
+        bpy.context.view_layer.objects.active = rig
+        bpy.context.view_layer.update()
+
+        assert bpy.ops.kinema.reset_attachment_offset(bone="joint3") == {"FINISHED"}
+        bpy.context.view_layer.update()
+
+        expected = rig.matrix_world @ rig.pose.bones["joint3"].matrix
+        assert (copy.matrix_world.to_3x3() - expected.to_3x3()).median_scale < 1e-6
+        assert (copy.matrix_world.translation - expected.translation).length < 1e-6
 
 
 class TestPickerCallback:

@@ -194,6 +194,22 @@ def _pyroki_cache_put(rig_name: str, link_target, solver, chain_to_full) -> None
         _pyroki_cache.popitem(last=False)
 
 
+def tip_bone_for(rig, index: int) -> str:
+    """Which bone ``index`` names, without reading or writing the rig's own tip.
+
+    Split out from :func:`tip_bone` so a caller can find out where a tip *would*
+    land before committing to it. Writing ``kinema_ik_tip`` is not inert: it
+    invalidates the cached goal, and the next depsgraph update then solves the
+    new chain. Anything that needs the new tip's *current* pose has to ask
+    before that happens.
+    """
+    if index >= 0:
+        joints = builder.joint_bones(rig)
+        if index < len(joints):
+            return joints[index].name
+    return rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+
+
 def tip_bone(rig) -> str:
     """The bone the solver aims at.
 
@@ -203,12 +219,7 @@ def tip_bone(rig) -> str:
     mid-shot. Out of range -- including the -1 default -- means "use the TCP
     marker", which is the behaviour every rig had before the property existed.
     """
-    index = getattr(rig, "kinema_ik_tip", -1)
-    if index >= 0:
-        joints = builder.joint_bones(rig)
-        if index < len(joints):
-            return joints[index].name
-    return rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    return tip_bone_for(rig, getattr(rig, "kinema_ik_tip", -1))
 
 
 def _load_source_urdf(rig, *, allow_download: bool = False):

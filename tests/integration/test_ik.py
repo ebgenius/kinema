@@ -254,6 +254,14 @@ class TestBake:
         assert np.linalg.norm(last - first) > 1e-3, "baked keys did not move the tool"
 
 
+def _tip_curves(rig) -> list:
+    """Every F-curve animating the rig's IK tip."""
+    action = rig.animation_data.action if rig.animation_data else None
+    if action is None:
+        return []
+    return [c for c in _all_fcurves(action) if c.data_path == "kinema_ik_tip"]
+
+
 def _add_ik_uncompiled(rig) -> None:
     """Add an IK target without paying JAX's ~10 s JIT compile.
 
@@ -421,6 +429,90 @@ class TestIkTip:
         goal = _np4(rig.pose.bones[ik_name].matrix)[:3, 3]
         tip = _np4(rig.pose.bones["joint3"].matrix)[:3, 3]
         assert np.linalg.norm(goal - tip) < 1e-6
+
+    def test_set_ik_tip_snaps_with_live_ik_running(self, rig, builder):
+        """Regression: the snapshot was taken after the handler had moved the arm.
+
+        Writing kinema_ik_tip drops the cached goal, so the next depsgraph
+        update solves the *new* chain against the *old* goal and swings the
+        arm. Reading the tip's pose after that captured the disturbed pose and
+        baked the jerk in -- the opposite of what this operator promises.
+        """
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        assert rig.kinema_ik_enabled, "this test is only meaningful with live IK on"
+
+        bpy.context.view_layer.update()
+        before = _np4(rig.pose.bones["joint3"].matrix)[:3, 3].copy()
+
+        assert bpy.ops.kinema.set_ik_tip(index=2) == {"FINISHED"}
+        bpy.context.view_layer.update()
+
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        goal = _np4(rig.pose.bones[ik_name].matrix)[:3, 3]
+        assert np.linalg.norm(goal - before) < 1e-6, (
+            "the control snapped to a pose the solver had already disturbed"
+        )
+
+    def test_keyed_tips_step_rather_than_ramp(self, rig, builder, manager):
+        """Regression: an interpolated index is a chain nobody asked for.
+
+        Keyed with the default Bezier interpolation, a hand-off from the TCP
+        (-1) to joint3 (2) passes through 0 and 1 on the frames between, so the
+        solver drives two other chains on the way -- and each unseen link pays
+        its own JAX compile.
+        """
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        scene = bpy.context.scene
+        bpy.context.view_layer.objects.active = rig
+
+        scene.frame_set(1)
+        rig.kinema_ik_tip = -1
+        assert bpy.ops.kinema.key_ik_tip() == {"FINISHED"}
+        scene.frame_set(40)
+        rig.kinema_ik_tip = 2
+        assert bpy.ops.kinema.key_ik_tip() == {"FINISHED"}
+
+        seen = set()
+        for frame in range(1, 41):
+            scene.frame_set(frame)
+            seen.add(rig.kinema_ik_tip)
+
+        assert seen == {-1, 2}, f"the tip ramped through intermediate chains: {sorted(seen)}"
+
+    def test_keying_forces_constant_interpolation(self, rig):
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        bpy.context.view_layer.objects.active = rig
+        assert bpy.ops.kinema.key_ik_tip() == {"FINISHED"}
+
+        curves = _tip_curves(rig)
+        assert curves, "no F-curve was created for the tip"
+        assert all(
+            point.interpolation == "CONSTANT"
+            for curve in curves
+            for point in curve.keyframe_points
+        )
+
+    def test_set_ik_tip_normalises_a_hand_keyed_curve(self, rig):
+        """A key made with the decorator dot gets fixed the next time we touch it."""
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        bpy.context.view_layer.objects.active = rig
+
+        bpy.context.scene.frame_set(1)
+        rig.keyframe_insert(data_path="kinema_ik_tip", frame=1)
+        curve = _tip_curves(rig)[0]
+        for point in curve.keyframe_points:
+            point.interpolation = "BEZIER"
+
+        bpy.ops.kinema.set_ik_tip(index=2)
+        assert all(p.interpolation == "CONSTANT" for p in curve.keyframe_points)
 
     def test_set_ik_tip_rejects_a_bone_outside_the_chain(self, rig):
         """An ERROR report from bpy.ops surfaces in Python as a RuntimeError."""

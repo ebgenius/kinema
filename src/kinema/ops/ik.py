@@ -208,26 +208,62 @@ class KINEMA_OT_set_ik_tip(KinemaRigOperator):
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
         joints = builder.joint_bones(rig)
-        if self.index >= len(joints):
+        if self.index < -1 or self.index >= len(joints):
             self.report({"ERROR"}, "That bone is not part of this rig's chain")
             return {"CANCELLED"}
 
-        rig.kinema_ik_tip = self.index
-        tip_name = manager.tip_bone(rig)
+        tip_name = manager.tip_bone_for(rig, self.index)
+
+        # Where the new tip is *now*, read before the tip changes. Writing
+        # kinema_ik_tip drops the cached goal, so the very next depsgraph
+        # update solves the new chain against the old goal and moves the arm --
+        # and a snapshot taken after that would capture the disturbed pose and
+        # bake the jerk in, which is exactly what this operator promises not to
+        # do.
+        context.view_layer.update()
+        landing = (
+            rig.pose.bones[tip_name].matrix.copy()
+            if tip_name in rig.pose.bones
+            else None
+        )
 
         # No manager.invalidate() here: get_solver compares the tip and rebuilds
         # on its own, and invalidating would also throw away the compiled PyRoki
         # kernels this rig has already paid for -- the exact thing that makes
         # scrubbing a keyframed tip affordable.
+        rig.kinema_ik_tip = self.index
+        _force_constant_tip_keys(rig)
+
         ik_name = rig.get(builder.PROP_IK_BONE)
-        if self.snap and ik_name and ik_name in rig.pose.bones:
-            if tip_name in rig.pose.bones:
-                context.view_layer.update()
-                rig.pose.bones[ik_name].matrix = rig.pose.bones[tip_name].matrix.copy()
-                context.view_layer.update()
+        if self.snap and landing is not None and ik_name and ik_name in rig.pose.bones:
+            rig.pose.bones[ik_name].matrix = landing
         handlers.reset(rig.name)
+        context.view_layer.update()
 
         self.report({"INFO"}, f"IK now targets '{tip_name}'")
+        return {"FINISHED"}
+
+
+class KINEMA_OT_key_ik_tip(KinemaRigOperator):
+    bl_idname = "kinema.key_ik_tip"
+    bl_label = "Key IK Target Bone"
+    bl_description = (
+        "Keyframe which bone IK aims at, so a shot can hand the goal from one "
+        "bone to another part-way through"
+    )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        frame = context.scene.frame_current
+        if not rig.keyframe_insert(data_path=TIP_PATH, frame=frame):
+            self.report({"WARNING"}, "Could not key the IK target bone")
+            return {"CANCELLED"}
+
+        # This, rather than the property's decorator dot, is the offered way to
+        # key the tip -- because it is the only one that can guarantee the
+        # channel steps rather than ramps.
+        _force_constant_tip_keys(rig)
+        self.report({"INFO"}, f"IK target bone keyed at frame {frame}")
         return {"FINISHED"}
 
 
@@ -327,6 +363,37 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
                     curves.remove(curve)
 
 
+#: Data path of the keyframable IK tip, on the rig object.
+TIP_PATH = "kinema_ik_tip"
+
+
+def _tip_curves(rig):
+    """Every F-curve animating this rig's IK tip, across Blender's action layouts."""
+    action = rig.animation_data.action if rig.animation_data else None
+    if action is None:
+        return
+    for curves in _iter_fcurve_containers(action):
+        for curve in curves:
+            if curve.data_path == TIP_PATH:
+                yield curve
+
+
+def _force_constant_tip_keys(rig) -> None:
+    """Make the tip channel step between values instead of ramping through them.
+
+    The tip is an index, not a quantity. Interpolated at all, a hand-off from
+    the TCP (-1) to joint3 (2) passes through 0 and 1 on the frames between the
+    keys, so the solver drives two chains nobody asked for -- and each link it
+    has not seen before pays its own JAX compile on the way past. Blender
+    inserts keys with the user's default interpolation, Bezier out of the box,
+    so the curve is normalised wherever Kinema touches it.
+    """
+    for curve in _tip_curves(rig):
+        for point in curve.keyframe_points:
+            point.interpolation = "CONSTANT"
+        curve.update()
+
+
 def _iter_fcurve_containers(action):
     """Yield every F-curve collection in an action, across Blender versions."""
     legacy = getattr(action, "fcurves", None)
@@ -344,5 +411,6 @@ classes = (
     KINEMA_OT_remove_ik,
     KINEMA_OT_snap_ik,
     KINEMA_OT_set_ik_tip,
+    KINEMA_OT_key_ik_tip,
     KINEMA_OT_bake_ik,
 )
