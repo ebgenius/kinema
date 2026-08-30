@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "pwsh -NoProfile -File .claude/hooks/guard-main.ps1",
+            "if": "Bash(git *)",
+            "timeout": 10,
+            "statusMessage": "Checking branch..."
+          },
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "pwsh -NoProfile -File .claude/hooks/guard-main.ps1",
+            "if": "PowerShell(git *)",
+            "timeout": 10,
+            "statusMessage": "Checking branch..."
+          }
+        ]
+      }
+    ]
+  }
+}
