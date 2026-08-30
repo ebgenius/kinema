@@ -28,6 +28,37 @@ function Get-Args([string]$Command) {
         ForEach-Object { $_ -replace '^\+', '' }
 }
 
+#: Global git options that consume the following token as their value, so the
+#: subcommand scan must step over both.
+$script:GitOptionsWithValue = @('-C', '-c', '--git-dir', '--work-tree', '--namespace')
+
+function Get-GitSubcommand([string]$Segment) {
+    # The subcommand only, e.g. 'commit' from `git -C repo -c k=v commit -m x`.
+    #
+    # Matching the word anywhere in the line is not good enough: `\bcommit\b`
+    # also fires on `git commit-graph` (a '-' is a word boundary) and on
+    # `git log --grep=commit`, blocking read-only commands that merely mention
+    # it. Only the subcommand position decides.
+    $tokens = @($Segment -split '\s+' | Where-Object { $_ })
+    $i = [array]::IndexOf($tokens, 'git')
+    if ($i -lt 0) { return $null }
+    for ($i++; $i -lt $tokens.Count; $i++) {
+        $token = $tokens[$i]
+        if ($token -in $script:GitOptionsWithValue) { $i++; continue }
+        if ($token -match '^-') { continue }
+        return $token
+    }
+    return $null
+}
+
+function Test-GitSubcommand([string]$Command, [string]$Name) {
+    # Each `;`, `&&`, `||` or `|` separated segment is its own command line.
+    foreach ($segment in ($Command -split '(?:&&|\|\||[;|])')) {
+        if ((Get-GitSubcommand $segment) -eq $Name) { return $true }
+    }
+    return $false
+}
+
 function Targets-Main([string]$Command) {
     # True if any argument names main as a push destination, in any spelling:
     # `main`, `refs/heads/main`, `HEAD:main`, `HEAD:refs/heads/main`, `+main`.
@@ -82,10 +113,8 @@ try {
     Allow
 }
 
-# `git commit` / `git push`, allowing for `git -C path push`, `git   push`, and
-# the command sitting after a `&&` or `;` in a longer line.
-$isCommit = $command -match '(^|[;&|]\s*)git\b[^;&|]*\bcommit\b'
-$isPush = $command -match '(^|[;&|]\s*)git\b[^;&|]*\bpush\b'
+$isCommit = Test-GitSubcommand $command 'commit'
+$isPush = Test-GitSubcommand $command 'push'
 if (-not ($isCommit -or $isPush)) { Allow }
 
 # Changes nothing, so there is nothing to guard.
