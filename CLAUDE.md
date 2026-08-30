@@ -16,11 +16,25 @@ body — and **stop there and wait for review**. Do not merge, and do not switch
 Tag pushes (`git push origin v0.1.0`) are fine on `main`; they cut a release and do not
 advance the branch.
 
-This is enforced, not just documented: `.claude/hooks/guard-main.ps1` refuses `git commit`
-and `git push` when HEAD is `main`, and refuses any push that names `main` as its target
-from anywhere. It exists because the written rule alone did not hold — five commits landed
-directly on `main` in a single session before anyone noticed. The hook fails open, so if it
-cannot determine the branch it gets out of the way.
+This is enforced twice, not just documented.
+
+**Locally**, `.claude/hooks/guard-main.ps1` refuses `git commit` and `git push` when HEAD is
+`main`, and refuses any push naming `main` as its target from anywhere. It exists because the
+written rule alone did not hold — five commits landed directly on `main` in a single session
+before anyone noticed. The hook fails open, so if it cannot determine the branch it gets out
+of the way.
+
+**On GitHub**, the `main_protect` ruleset applies `pull_request`, `non_fast_forward` and
+`deletion` to the default branch with **no bypass actors** — so direct pushes, force-pushes
+and deletion are refused for everyone, the owner included. Zero approvals are required, since
+GitHub will not let you approve your own PR and there is one collaborator; the PR itself is
+the gate, not the approval count. Merges are restricted to **rebase**.
+
+No bypass is deliberate. An agent working here authenticates with the owner's credentials, so
+GitHub cannot tell them apart — an "admin bypass" would be a bypass for the agent too, and
+would not have stopped those five commits. To push directly in a genuine emergency, set the
+ruleset to Disabled in *Settings → Rules* for the moment it is needed. That is a conscious act
+no agent should take on its own.
 
 ## Where the process docs live
 
