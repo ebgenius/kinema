@@ -21,6 +21,42 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-Args([string]$Command) {
+    # Non-flag tokens, with a leading '+' (force refspec) stripped.
+    ($Command -split '\s+') |
+        Where-Object { $_ -and $_ -notmatch '^-' } |
+        ForEach-Object { $_ -replace '^\+', '' }
+}
+
+function Targets-Main([string]$Command) {
+    # True if any argument names main as a push destination, in any spelling:
+    # `main`, `refs/heads/main`, `HEAD:main`, `HEAD:refs/heads/main`, `+main`.
+    #
+    # Compared as a whole ref, not a substring, so `fix/domain-main` and
+    # `feature/main` are left alone -- only the branch actually called main.
+    foreach ($token in Get-Args $Command) {
+        $ref = $token
+        if ($ref.Contains(':')) { $ref = $ref.Substring($ref.LastIndexOf(':') + 1) }
+        $ref = $ref -replace '^refs/heads/', ''
+        if ($ref -eq 'main') { return $true }
+    }
+    return $false
+}
+
+function Is-TagPush([string]$Command) {
+    # Ask git, rather than guessing from the name. A pattern like `v\d` also
+    # matches branches called v2 or v10-experiment, which would hand out a
+    # bypass to anything named like a version.
+    if ($Command -match '--tags\b') { return $true }
+    foreach ($token in Get-Args $Command) {
+        $name = $token -replace '^refs/tags/', ''
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        & git show-ref --verify --quiet "refs/tags/$name" 2>$null
+        if ($LASTEXITCODE -eq 0) { return $true }
+    }
+    return $false
+}
+
 function Allow {
     # Silence is consent: emitting nothing leaves the permission decision alone.
     exit 0
@@ -55,19 +91,12 @@ if (-not ($isCommit -or $isPush)) { Allow }
 # Changes nothing, so there is nothing to guard.
 if ($command -match '--dry-run') { Allow }
 
-# Tag pushes are how a release is cut and never advance a branch.
-# `git push origin v0.1.0`, `git push --tags`, `git push origin refs/tags/...`
-$isTagPush = $isPush -and -not $isCommit -and
-    ($command -match '(--tags\b|refs/tags/|\sv\d)')
-if ($isTagPush) { Allow }
-
-# A push that names main explicitly advances main no matter which branch it is
-# run from, so the current-branch check below would miss it. Matched as a whole
-# argument or refspec target -- `origin main`, `HEAD:main` -- so a branch merely
-# containing the word, like fix/domain-main, is untouched.
-if ($isPush -and $command -match '(?:\s|:)main(?:\s|$)') {
+# A push naming main advances main whatever branch it runs from, so the
+# current-branch check below would miss it. Tested before the tag carve-out, so
+# `git push origin v1.0 main` cannot ride in on the tag.
+if ($isPush -and (Targets-Main $command)) {
     Deny(@"
-Pushing to 'main' is blocked. main only advances through a reviewed PR rebase.
+Pushing to 'main' is blocked. main only advances through a reviewed PR.
 
 Push your branch instead, then open a draft PR and wait for review:
     git push -u origin <type>/<short-slug>
@@ -75,6 +104,12 @@ Push your branch instead, then open a draft PR and wait for review:
 See CLAUDE.md.
 "@)
 }
+
+# Tag pushes are how a release is cut and never advance a branch. If git cannot
+# confirm the name is a tag the push is simply not exempted, and falls through to
+# the branch check below -- so an unconfirmable tag is refused on main rather
+# than waved past.
+if ($isPush -and -not $isCommit -and (Is-TagPush $command)) { Allow }
 
 # symbolic-ref, not `rev-parse --abbrev-ref HEAD`: rev-parse cannot name the
 # branch before the first commit exists (it errors and prints "HEAD"), so a
@@ -93,7 +128,7 @@ if ($branch -ne 'main') { Allow }
 
 $verb = if ($isCommit) { 'Committing' } else { 'Pushing' }
 Deny(@"
-$verb on 'main' is blocked. main only advances through a reviewed PR rebase.
+$verb on 'main' is blocked. main only advances through a reviewed PR.
 
 Create a branch first, then commit there:
     git checkout -b <type>/<short-slug>     # fix/ feat/ docs/ chore/
