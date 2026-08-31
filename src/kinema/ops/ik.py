@@ -193,7 +193,8 @@ class KINEMA_OT_set_ik_tip(KinemaRigOperator):
     bl_label = "Set IK Target Bone"
     bl_description = (
         "Aim the solver at this bone. Everything above it in the chain stays "
-        "free; everything below it stops being solved"
+        "free; everything below it stops being solved. If the target is already "
+        "animated, this keys the change on the current frame"
     )
 
     #: Index into builder.joint_bones(rig); -1 restores the TCP marker.
@@ -232,6 +233,12 @@ class KINEMA_OT_set_ik_tip(KinemaRigOperator):
         # kernels this rig has already paid for -- the exact thing that makes
         # scrubbing a keyframed tip affordable.
         rig.kinema_ik_tip = self.index
+        # On an already-animated tip a plain write does not survive: the next
+        # animation evaluation puts the curve's value back, so the radio button
+        # would appear to do nothing at all. Changing the target on a frame that
+        # is already keyed means keying it there.
+        if _tip_curves(rig):
+            rig.keyframe_insert(data_path=TIP_PATH, frame=context.scene.frame_current)
         _force_constant_tip_keys(rig)
 
         ik_name = rig.get(builder.PROP_IK_BONE)
@@ -302,8 +309,7 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
             self.report({"ERROR"}, "This rig has no IK target to bake")
             return {"CANCELLED"}
 
-        solver = manager.get_solver(rig, ik_name)
-        if solver is None:
+        if manager.get_solver(rig, ik_name) is None:
             self.report({"ERROR"}, "Could not prepare a solver for this rig")
             return {"CANCELLED"}
 
@@ -313,31 +319,43 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         if mode == manager.MODE_OFF:
             mode = manager.MODE_PYROKI
 
-        joint_bones = [rig.pose.bones[name] for name in solver.chain.bone_names]
-        if self.clear_existing:
-            self._clear_keys(rig, solver.chain.bone_names)
-
         frames = range(self.frame_start, self.frame_end + 1, self.step)
         failed = 0
         window = context.window_manager
-        window.progress_begin(0, len(frames))
+
+        # Live IK off for the duration, restored afterwards. frame_set fires the
+        # frame-change handler, which solves and writes the pose -- and then this
+        # loop solves the same frame again. Worse, with a keyed tip the two can
+        # disagree, and whichever ran last wins.
+        was_live = rig.kinema_ik_enabled
+        rig.kinema_ik_enabled = False
         try:
+            bones = self._bones_over_range(rig, scene, frames, ik_name)
+            if self.clear_existing:
+                self._clear_keys(rig, list(bones))
+
+            window.progress_begin(0, len(frames))
             for index, frame in enumerate(frames):
                 scene.frame_set(frame)
-                result = solver.solve(rig, mode)
+                # Per frame, not once: the tip is keyframable, so the chain can
+                # change mid-bake and a solver captured up front would go on
+                # driving the joints of a chain that is no longer live.
+                solver = manager.get_solver(rig, ik_name)
+                result = solver.solve(rig, mode) if solver is not None else None
                 if result is None or not result.converged:
                     failed += 1
-                for pose_bone, revolute in zip(
-                    joint_bones, solver.chain.is_revolute, strict=True
-                ):
-                    path, channel = (
-                        ("rotation_euler", 1) if revolute else ("location", 1)
-                    )
-                    pose_bone.keyframe_insert(data_path=path, index=channel, frame=frame)
+                # Every joint that is active anywhere in the range gets a key on
+                # every frame, not just the ones this frame's chain solved. A
+                # joint that drops out of the chain still has a value, and a
+                # channel that stopped being keyed half way through would hold
+                # its last key instead -- a different pose than the one baked.
+                for name in bones:
+                    _key_joint_value(rig.pose.bones[name], frame)
                 window.progress_update(index)
         finally:
             window.progress_end()
             scene.frame_set(original_frame)
+            rig.kinema_ik_enabled = was_live
 
         if self.disable_live_ik:
             rig.kinema_ik_enabled = False
@@ -348,6 +366,39 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
             message += f" ({failed} did not converge -- target may be out of reach)"
         self.report({"WARNING"} if failed else {"INFO"}, message)
         return {"FINISHED"}
+
+    @staticmethod
+    def _bones_over_range(rig, scene, frames, ik_name: str) -> list[str]:
+        """Every joint that is on the IK chain at any frame in the range.
+
+        With a static tip that is just the current chain. With a keyed one the
+        chain changes part-way through, and both the channels to clear and the
+        channels to key are the union over the range -- clearing only today's
+        chain would leave a stale curve on a joint that becomes active later.
+
+        Scanning costs a pass of frame_set, so it is skipped entirely when the
+        tip is not animated, which is the common case.
+        """
+        solver = manager.get_solver(rig, ik_name)
+        names = list(solver.chain.bone_names) if solver is not None else []
+        if not _tip_curves(rig):
+            return names
+
+        seen = dict.fromkeys(names)
+        original = scene.frame_current
+        try:
+            for frame in frames:
+                scene.frame_set(frame)
+                # Chain extraction is pure matrix maths off the armature; it
+                # does not build a PyRoki solver, so this pass stays cheap.
+                solver = manager.get_solver(rig, ik_name)
+                if solver is not None:
+                    seen.update(dict.fromkeys(solver.chain.bone_names))
+        finally:
+            scene.frame_set(original)
+        # Rig order, so the baked channels read the way the chain does.
+        order = {bone.name: i for i, bone in enumerate(builder.joint_bones(rig))}
+        return sorted(seen, key=lambda name: order.get(name, len(order)))
 
     @staticmethod
     def _clear_keys(rig, bone_names: list[str]) -> None:
@@ -367,15 +418,35 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
 TIP_PATH = "kinema_ik_tip"
 
 
-def _tip_curves(rig):
-    """Every F-curve animating this rig's IK tip, across Blender's action layouts."""
+def _key_joint_value(pose_bone, frame: int) -> None:
+    """Key the one channel this joint actually uses.
+
+    Read off the bone rather than a chain's ``is_revolute``, so it works for a
+    joint that is not on the chain currently being solved. Keying all nine
+    channels would fill the dope sheet with curves that can never move.
+    """
+    is_prismatic = (
+        pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
+    )
+    path, channel = ("location", 1) if is_prismatic else ("rotation_euler", 1)
+    pose_bone.keyframe_insert(data_path=path, index=channel, frame=frame)
+
+
+def _tip_curves(rig) -> list:
+    """Every F-curve animating this rig's IK tip, across Blender's action layouts.
+
+    A list, not a generator: both callers ask whether the tip is animated at
+    all, and a generator object is truthy even when it yields nothing.
+    """
     action = rig.animation_data.action if rig.animation_data else None
     if action is None:
-        return
-    for curves in _iter_fcurve_containers(action):
-        for curve in curves:
-            if curve.data_path == TIP_PATH:
-                yield curve
+        return []
+    return [
+        curve
+        for container in _iter_fcurve_containers(action)
+        for curve in container
+        if curve.data_path == TIP_PATH
+    ]
 
 
 def _force_constant_tip_keys(rig) -> None:

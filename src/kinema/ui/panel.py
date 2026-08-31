@@ -174,6 +174,15 @@ def _joint_indices(rig: bpy.types.Object) -> dict[str, int]:
     return {bone.name: index for index, bone in enumerate(builder.joint_bones(rig))}
 
 
+def _rotation_channel(obj: bpy.types.Object) -> str:
+    """The rotation property ``obj.rotation_mode`` actually evaluates."""
+    if obj.rotation_mode == "QUATERNION":
+        return "rotation_quaternion"
+    if obj.rotation_mode == "AXIS_ANGLE":
+        return "rotation_axis_angle"
+    return "rotation_euler"
+
+
 def tip_index_of(rig: bpy.types.Object, pose_bone) -> int | None:
     """The ``kinema_ik_tip`` value that aims at ``pose_bone``, or None.
 
@@ -306,7 +315,12 @@ class KINEMA_PT_bones(KinemaPanelBase, Panel):
             body.use_property_split = True
             body.use_property_decorate = True
             body.prop(attachment, "location")
-            body.prop(attachment, "rotation_euler", text="Rotation")
+            # An attachment keeps its source's rotation_mode, so the Euler
+            # channel is not necessarily the one Blender is reading -- drawing
+            # it unconditionally would offer a field that silently does nothing
+            # on a quaternion or axis-angle source.
+            body.prop(attachment, "rotation_mode", text="Rotation Mode")
+            body.prop(attachment, _rotation_channel(attachment), text="Rotation")
             body.prop(attachment, "scale")
             body.operator(
                 "kinema.reset_attachment_offset", text="Reset", icon="LOOP_BACK"

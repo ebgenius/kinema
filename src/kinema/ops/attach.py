@@ -65,9 +65,12 @@ def attach(rig, bone_name: str, source) -> bpy.types.Object | None:
         # copy() and not a data copy: sharing .data is the whole point.
         copy = source.copy()
         copy.name = f"{source.name}.{bone_name}"
-        # The source's own action would otherwise drive the copy's transform,
-        # which here *is* the offset from the bone.
+        # Everything that could drive the copy's transform has to go, because
+        # here that transform *is* the offset from the bone -- an attachment
+        # still being pulled around by a Copy Location or a driver is not
+        # sitting at the offset the panel claims it is.
         copy.animation_data_clear()
+        copy.constraints.clear()
 
     _target_collection(rig).objects.link(copy)
 

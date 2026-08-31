@@ -514,6 +514,46 @@ class TestIkTip:
         bpy.ops.kinema.set_ik_tip(index=2)
         assert all(p.interpolation == "CONSTANT" for p in curve.keyframe_points)
 
+    def test_set_ik_tip_keys_a_change_on_an_animated_tip(self, rig):
+        """Regression: on an animated tip, a plain write does not survive.
+
+        The operator ends with a view_layer.update(), which re-evaluates the
+        animation and puts the curve's value straight back -- so the radio
+        button in the Bones list appeared to do nothing at all once the tip had
+        been keyed even once. Changing the target on a keyed channel has to key
+        it there.
+        """
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        scene = bpy.context.scene
+        bpy.context.view_layer.objects.active = rig
+
+        scene.frame_set(1)
+        bpy.ops.kinema.set_ik_tip(index=2)
+        bpy.ops.kinema.key_ik_tip()
+
+        scene.frame_set(6)
+        assert bpy.ops.kinema.set_ik_tip(index=-1) == {"FINISHED"}
+        assert rig.kinema_ik_tip == -1, "the animation reverted the change"
+
+        # And it stuck, rather than merely surviving until the next evaluation.
+        scene.frame_set(1)
+        assert rig.kinema_ik_tip == 2
+        scene.frame_set(6)
+        assert rig.kinema_ik_tip == -1
+
+    def test_set_ik_tip_does_not_start_animating_an_unkeyed_tip(self, rig):
+        """Only a channel that is *already* animated gets keyed."""
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        bpy.context.view_layer.objects.active = rig
+
+        bpy.ops.kinema.set_ik_tip(index=2)
+        assert _tip_curves(rig) == [], "changing the tip created animation unasked"
+        assert rig.kinema_ik_tip == 2
+
     def test_set_ik_tip_rejects_a_bone_outside_the_chain(self, rig):
         """An ERROR report from bpy.ops surfaces in Python as a RuntimeError."""
         import bpy
@@ -543,6 +583,121 @@ class TestSetTcpInvalidates:
         after = manager.get_solver(rig).chain.dof
         assert after == 3
         assert after < before
+
+
+class TestBakeWithAKeyedTip:
+    """Baking has to follow the tip, not the chain that was live when it started."""
+
+    def _bake_with_tip_handoff(self, rig, builder):
+        """Key the tip from joint3 (frames 1-5) to the TCP (frames 6-10), then bake."""
+        import bpy
+        from mathutils import Vector
+
+        _add_ik_uncompiled(rig)
+        scene = bpy.context.scene
+        bpy.context.view_layer.objects.active = rig
+        ik_name = rig.get(builder.PROP_IK_BONE)
+
+        scene.frame_set(1)
+        # Through the operator, so the control snaps onto each new tip and the
+        # goal stays something the live chain can actually be asked for.
+        bpy.ops.kinema.set_ik_tip(index=2)  # joint3
+        bpy.ops.kinema.key_ik_tip()
+        rig.pose.bones[ik_name].keyframe_insert("location", frame=1)
+
+        scene.frame_set(6)
+        bpy.ops.kinema.set_ik_tip(index=-1)  # back to the TCP
+        bpy.ops.kinema.key_ik_tip()
+        matrix = rig.pose.bones[ik_name].matrix.copy()
+        matrix.translation += Vector((0.0, 0.0, -0.04))
+        rig.pose.bones[ik_name].matrix = matrix
+        rig.pose.bones[ik_name].keyframe_insert("location", frame=6)
+
+        # A third key, so the goal keeps moving through the TCP window too.
+        # Without it the goal is constant after frame 6 and every joint holds
+        # still there, which would make "did the chain change?" unfalsifiable.
+        scene.frame_set(10)
+        matrix = rig.pose.bones[ik_name].matrix.copy()
+        matrix.translation += Vector((0.0, -0.05, -0.02))
+        rig.pose.bones[ik_name].matrix = matrix
+        rig.pose.bones[ik_name].keyframe_insert("location", frame=10)
+
+        assert bpy.ops.kinema.bake_ik(frame_start=1, frame_end=10, step=1) == {"FINISHED"}
+        return {c.data_path for c in _all_fcurves(rig.animation_data.action)}
+
+    def test_bakes_the_union_of_every_chain_in_the_range(self, rig, builder):
+        """Regression: the bake captured one solver and one joint list up front.
+
+        With a keyed tip the chain changes mid-bake, so joints that only become
+        active later were never keyed -- and the stale solver overwrote the
+        frame-change handler's correct solve on the way past.
+        """
+        paths = self._bake_with_tip_handoff(rig, builder)
+
+        # joint3's chain is joints 1-3; the TCP's is all six. Every one of them
+        # has to come out of the bake with a curve.
+        for name in ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6"):
+            assert any(f'"{name}"' in path for path in paths), f"{name} was never keyed"
+
+    def test_joints_beyond_the_tip_are_not_driven(self, rig, builder):
+        """While the tip is joint3, the solver owns joints 1-3 and nothing else.
+
+        This is the signature of the bug: the stale solver held the TCP's
+        six-joint chain, so it drove joint4-6 through the joint3 window too.
+        Checked by playing the baked curves back with the solver off, which is
+        what a delivered .blend does.
+        """
+        import bpy
+
+        self._bake_with_tip_handoff(rig, builder)
+        scene = bpy.context.scene
+        rig.kinema_solver_mode = "OFF"
+        rig.kinema_ik_enabled = False
+
+        def spread(bone_name, frames):
+            values = []
+            for frame in frames:
+                scene.frame_set(frame)
+                values.append(rig.pose.bones[bone_name].rotation_euler[1])
+            return max(values) - min(values)
+
+        # Frames 1-5 are the joint3 window; 6-10 are the TCP's.
+        assert spread("joint5", range(1, 6)) < 1e-6, "a joint beyond the tip was driven"
+        assert spread("joint5", range(6, 11)) > 1e-4, (
+            "joint5 never moves at all, so the check above proves nothing"
+        )
+
+    def test_a_static_tip_still_bakes_its_own_chain(self, rig, builder):
+        """The scan is skipped when the tip is not animated; that path still works."""
+        import bpy
+        from mathutils import Vector
+
+        _add_ik_uncompiled(rig)
+        bpy.ops.kinema.set_ik_tip(index=2)  # joint3, never keyed
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        scene = bpy.context.scene
+
+        base = rig.pose.bones[ik_name].matrix.copy()
+        for frame, offset in ((1, (0, 0, 0)), (10, (0.0, 0.0, -0.03))):
+            scene.frame_set(frame)
+            matrix = base.copy()
+            matrix.translation += Vector(offset)
+            rig.pose.bones[ik_name].matrix = matrix
+            rig.pose.bones[ik_name].keyframe_insert("location", frame=frame)
+
+        assert bpy.ops.kinema.bake_ik(frame_start=1, frame_end=10, step=1) == {"FINISHED"}
+        paths = {c.data_path for c in _all_fcurves(rig.animation_data.action)}
+        assert any('"joint3"' in path for path in paths)
+
+    def test_bake_restores_live_ik_it_turned_off(self, rig, builder):
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        assert rig.kinema_ik_enabled
+        bpy.ops.kinema.bake_ik(
+            frame_start=1, frame_end=3, step=1, disable_live_ik=False
+        )
+        assert rig.kinema_ik_enabled, "the bake left live IK switched off"
 
 
 class TestRemoveIk:

@@ -166,6 +166,25 @@ class TestAttach:
         assert (copy.matrix_world.translation - _bone_head_world(rig, "joint3")).length < 1e-6
         assert tuple(copy.delta_location) == (0.0, 0.0, 0.0)
 
+    def test_source_constraints_do_not_come_along(self, rig, attach, cube, clean_scene):
+        """A constraint would go on driving the copy, so its transform would no
+        longer be the offset the panel claims it is."""
+        import bpy
+
+        anchor = bpy.data.objects.new("anchor", None)
+        bpy.context.scene.collection.objects.link(anchor)
+        anchor.location = (5.0, 5.0, 5.0)
+        constraint = cube.constraints.new("COPY_LOCATION")
+        constraint.target = anchor
+        bpy.context.view_layer.update()
+
+        copy = attach.attach(rig, "joint3", cube)
+        bpy.context.view_layer.update()
+
+        assert len(copy.constraints) == 0
+        assert (copy.matrix_world.translation - _bone_head_world(rig, "joint3")).length < 1e-6
+        assert len(cube.constraints) == 1, "the source lost its own constraint"
+
     def test_the_copy_is_linked_not_duplicated(self, rig, attach, cube):
         """Fix the harness once, every link wearing it updates."""
         copy = attach.attach(rig, "joint3", cube)
@@ -371,6 +390,19 @@ class TestPanelWiring:
 
         assert indices == {bone.name: i for i, bone in enumerate(joints)}
         assert builder.TCP_BONE not in indices, "the TCP is not a joint"
+
+    def test_the_offset_panel_draws_the_active_rotation_channel(
+        self, rig, panel, attach, cube
+    ):
+        """Drawing rotation_euler on a quaternion attachment offers a dead field."""
+        copy = attach.attach(rig, "joint3", cube)
+
+        copy.rotation_mode = "XYZ"
+        assert panel._rotation_channel(copy) == "rotation_euler"
+        copy.rotation_mode = "QUATERNION"
+        assert panel._rotation_channel(copy) == "rotation_quaternion"
+        copy.rotation_mode = "AXIS_ANGLE"
+        assert panel._rotation_channel(copy) == "rotation_axis_angle"
 
     def test_the_tcp_row_offers_a_radio(self, rig, panel, builder):
         """Without one there is no way back to the default target from the list."""
