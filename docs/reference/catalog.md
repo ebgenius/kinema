@@ -52,12 +52,26 @@ So:
 
 Downloads go to `~/.cache/robot_descriptions` by default. You can point somewhere else
 with the **Robot Cache** [preference](preferences.md#robot-cache), or with the
-`ROBOT_DESCRIPTIONS_CACHE` environment variable — Kinema honours the same variable as the
-underlying library, so it shares a cache with any other tooling you already use.
+`ROBOT_DESCRIPTIONS_CACHE` environment variable — the same one the underlying
+`robot_descriptions` library uses.
 
-!!! info "Cached by repository, not by robot"
-    Several robots often live in one upstream repository, so the cache is organised by
-    repository. Importing one arm from a family may leave its siblings already downloaded.
+!!! info "Sharing the cache is one-way"
+    Kinema reuses an existing `robot_descriptions` checkout rather than downloading it
+    again. The reverse does not hold: plain `robot_descriptions` finds no `.git` in a
+    directory Kinema fetched and re-clones it.
+
+### Only the robot you asked for
+
+Several robots often live in one large upstream repository, and downloading all of it to get
+one machine would be painful. `mujoco_menagerie` alone is 1.64 GB and backs 49 of the 186
+catalog entries.
+
+So for those repositories Kinema fetches **just the subdirectory the robot needs**. A Unitree
+Go2 costs **31 MB instead of 1.7 GB**.
+
+The cache layout is unchanged — the repository-named directory is still there, with one
+subdirectory populated inside it — so importing a second robot from the same family adds to
+it incrementally rather than starting over, and an existing full checkout is reused as-is.
 
 If a download fails, the usual causes are no network, a firewall blocking the host, or the
 upstream repository having moved. The cache is safe to delete at any time — the next

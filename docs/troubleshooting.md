@@ -114,6 +114,17 @@ there.
 `meshes/` folder must be present alongside it. Downloading a single description file from
 a repository web page is the usual mistake.
 
+## The parts pile up at the origin, then snap into place
+
+**Not a bug.** Meshes are loaded one at a time and parented to their bones before any of them
+is positioned, so for a moment the robot is a heap at the world origin. It resolves itself on
+the next redraw.
+
+## A second import is refused while one is running
+
+**Not a bug.** Kinema imports one robot at a time. Wait for the first to finish, or press
+`Esc` to cancel it.
+
 ## There are fewer bones than I expected
 
 **Not a bug.** Two bone collections are hidden on a new rig:
@@ -126,6 +137,25 @@ Unhide them in the Properties editor under Object Data → Bone Collections. See
 
 Also worth knowing: in a robot rig, **bones are joints, not limbs**. A six-jointed arm has
 six control bones, not one per visible segment.
+
+## Move TCP to Active Bone raises an AttributeError
+
+**Symptom:** clicking **Move TCP to Active Bone** (or **Create TCP from Active Bone**) prints
+a traceback ending in:
+
+```
+AttributeError: 'Bone' object has no attribute 'select'
+```
+
+**Cause:** the button acts on the bone that is *active in Pose Mode*, and it does not cope
+with there being none. A freshly imported robot has no bone selected, so clicking the button
+straight after an import hits this every time.
+
+**Fix:** enter Pose Mode and click the bone you want the TCP on, then press the button. That
+is the path the [tool centre point](concepts/tcp.md) page describes, and it works.
+
+Fixed in the next release, where the bone is chosen from a field in the panel and no mode
+change is needed.
 
 ## Add IK Target is refused
 
