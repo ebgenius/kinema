@@ -41,6 +41,9 @@ class RigSolver:
     #: The bone the solver aims at. Usually the TCP marker, but any joint bone
     #: can be the tip -- see :func:`tip_bone`.
     tip_bone: str
+    #: Which rig this was built for, checked on every cache hit -- a name alone
+    #: is handed back to the next object to take it. See :func:`rig_identity`.
+    identity: int | str = ""
     #: bone-space goal -> URDF link-space goal, and the link PyRoki should hit.
     link_target: tuple[str, np.ndarray] | None = None
     _pyroki: pyroki_backend.PyrokiSolver | None = None
@@ -58,14 +61,14 @@ class RigSolver:
         """Build the PyRoki solver on first use, or explain why it is absent."""
         if self._pyroki is not None or self._pyroki_failed:
             return self._pyroki
-        cached = _pyroki_cache_get(self.rig_name, self.link_target)
+        cached = _pyroki_cache_get(self.identity, self.link_target)
         # Length check, not trust: the cached mapping was derived from whatever
         # chain reached this link first. Today that is always this same chain,
         # but a mapping of the wrong width would silently scatter joint values
         # into the wrong slots, and that is not a failure worth risking to save
         # a rebuild.
         if cached is not None and len(cached[1]) == self.chain.dof:
-            self._pyroki, self._chain_to_full = cached
+            self._pyroki, self._chain_to_full = cached[0], cached[1]
             return self._pyroki
         try:
             self._pyroki = self._build_pyroki(rig)
@@ -73,7 +76,8 @@ class RigSolver:
             self._pyroki_failed = str(exc)
             return None
         _pyroki_cache_put(
-            self.rig_name, self.link_target, self._pyroki, self._chain_to_full
+            self.identity, self.rig_name, self.link_target,
+            self._pyroki, self._chain_to_full,
         )
         return self._pyroki
 
@@ -154,14 +158,29 @@ class RigSolver:
 # --------------------------------------------------------------------------
 _cache: dict[str, RigSolver] = {}
 
-#: (rig name, URDF link) -> a built PyRoki solver and its chain->full mapping.
+def rig_identity(rig) -> int | str:
+    """Something that identifies this rig and is never reused for another.
+
+    Not the name. Blender hands a deleted object's name straight back to the
+    next import, so a new robot can arrive as "arm6" holding the previous
+    "arm6"'s cache entries -- and if it happens to share a link name and joint
+    count, a compiled solver built for a model that no longer exists would be
+    accepted and would silently solve the wrong robot. ``session_uid`` is unique
+    for the life of the session; the name is only a fallback for a build that
+    does not expose it.
+    """
+    return getattr(rig, "session_uid", None) or rig.name
+
+
+#: (rig identity, URDF link) -> a built PyRoki solver, its chain->full mapping,
+#: and the rig name, which is kept only so invalidate() can purge by name.
 #: Separate from ``_cache`` because moving the IK tip throws the RigSolver away
 #: but not the thing that was expensive to make: building a PyRoki solver
 #: reloads the description and pays a JAX compile, tens of seconds the first
 #: time. Keyed by link so switching the tip back and forth -- which a keyframed
 #: tip does on every scrub -- costs nothing after the first visit to each.
 _pyroki_cache: OrderedDict[
-    tuple[str, str], tuple[pyroki_backend.PyrokiSolver, np.ndarray]
+    tuple[int | str, str], tuple[pyroki_backend.PyrokiSolver, np.ndarray, str]
 ] = OrderedDict()
 
 #: How many compiled solvers to keep, least-recently-used evicted first.
@@ -175,21 +194,22 @@ _pyroki_cache: OrderedDict[
 _PYROKI_CACHE_LIMIT = 4
 
 
-def _pyroki_cache_get(rig_name: str, link_target) -> tuple | None:
+def _pyroki_cache_get(identity, link_target) -> tuple | None:
     if link_target is None:
         return None
-    key = (rig_name, link_target[0])
+    key = (identity, link_target[0])
     entry = _pyroki_cache.get(key)
     if entry is not None:
         _pyroki_cache.move_to_end(key)
     return entry
 
 
-def _pyroki_cache_put(rig_name: str, link_target, solver, chain_to_full) -> None:
+def _pyroki_cache_put(identity, rig_name: str, link_target, solver, chain_to_full) -> None:
     if link_target is None or solver is None or chain_to_full is None:
         return
-    _pyroki_cache[(rig_name, link_target[0])] = (solver, chain_to_full)
-    _pyroki_cache.move_to_end((rig_name, link_target[0]))
+    key = (identity, link_target[0])
+    _pyroki_cache[key] = (solver, chain_to_full, rig_name)
+    _pyroki_cache.move_to_end(key)
     while len(_pyroki_cache) > _PYROKI_CACHE_LIMIT:
         _pyroki_cache.popitem(last=False)
 
@@ -332,6 +352,7 @@ def build_solver(rig, ik_bone: str, tip: str | None = None) -> RigSolver | None:
         chain=chain,
         ik_bone=ik_bone,
         tip_bone=tip,
+        identity=rig_identity(rig),
         link_target=_link_target_for(rig, tip),
     )
 
@@ -349,6 +370,9 @@ def get_solver(rig, ik_bone: str | None = None) -> RigSolver | None:
     cached = _cache.get(rig.name)
     if (
         cached is not None
+        # Same object, not merely the same name: deleting a rig frees its name
+        # for the next import, which would otherwise inherit its solver.
+        and cached.identity == rig_identity(rig)
         and cached.ik_bone == ik_bone
         and cached.tip_bone == tip
         and tip in rig.pose.bones
@@ -375,5 +399,8 @@ def invalidate(rig_name: str | None = None) -> None:
         _pyroki_cache.clear()
     else:
         _cache.pop(rig_name, None)
-        for key in [k for k in _pyroki_cache if k[0] == rig_name]:
-            del _pyroki_cache[key]
+        # Matched on the stored name rather than the key, which is now an
+        # identity: callers only ever have a name to give.
+        for key, entry in list(_pyroki_cache.items()):
+            if entry[2] == rig_name:
+                del _pyroki_cache[key]

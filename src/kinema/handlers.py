@@ -23,6 +23,7 @@ update in five, so it keeps tracking and its timing gets re-measured.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 
 import bpy
 import numpy as np
@@ -180,6 +181,28 @@ def on_load_post(_dummy=None) -> None:
     _last_duration.clear()
     _skipped.clear()
     manager.invalidate()
+
+
+@contextmanager
+def suspended():
+    """Stop the live handlers solving for the duration of the block.
+
+    Baking needs this and cannot get it by switching ``kinema_ik_enabled`` off:
+    that property is animatable too, so a rig with a curve on it has the value
+    restored by every ``frame_set`` before the frame-change handler runs, and
+    the handler would solve each frame that the bake is about to solve itself.
+
+    Reuses the re-entrancy flag rather than adding a second one, because it
+    wants exactly what that flag already means: whatever is happening to the
+    scene right now, it is not the handlers' business.
+    """
+    global _solving
+    previous = _solving
+    _solving = True
+    try:
+        yield
+    finally:
+        _solving = previous
 
 
 def last_solve_ms(rig: bpy.types.Object) -> float | None:

@@ -323,39 +323,42 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         failed = 0
         window = context.window_manager
 
-        # Live IK off for the duration, restored afterwards. frame_set fires the
-        # frame-change handler, which solves and writes the pose -- and then this
-        # loop solves the same frame again. Worse, with a keyed tip the two can
-        # disagree, and whichever ran last wins.
-        was_live = rig.kinema_ik_enabled
-        rig.kinema_ik_enabled = False
-        try:
+        # Handlers suspended, not kinema_ik_enabled switched off: that property
+        # is animatable, so a rig with a curve on it would have live IK restored
+        # by every frame_set. frame_set fires the frame-change handler, which
+        # solves and writes the pose -- and then this loop solves the same frame
+        # again. With a keyed tip the two can disagree, and whichever ran last
+        # wins.
+        with handlers.suspended():
             bones = self._bones_over_range(rig, scene, frames, ik_name)
+            if not bones:
+                self.report({"ERROR"}, "No joints to bake on this rig")
+                return {"CANCELLED"}
             if self.clear_existing:
-                self._clear_keys(rig, list(bones))
+                self._clear_keys(rig, bones)
 
             window.progress_begin(0, len(frames))
-            for index, frame in enumerate(frames):
-                scene.frame_set(frame)
-                # Per frame, not once: the tip is keyframable, so the chain can
-                # change mid-bake and a solver captured up front would go on
-                # driving the joints of a chain that is no longer live.
-                solver = manager.get_solver(rig, ik_name)
-                result = solver.solve(rig, mode) if solver is not None else None
-                if result is None or not result.converged:
-                    failed += 1
-                # Every joint that is active anywhere in the range gets a key on
-                # every frame, not just the ones this frame's chain solved. A
-                # joint that drops out of the chain still has a value, and a
-                # channel that stopped being keyed half way through would hold
-                # its last key instead -- a different pose than the one baked.
-                for name in bones:
-                    _key_joint_value(rig.pose.bones[name], frame)
-                window.progress_update(index)
-        finally:
-            window.progress_end()
-            scene.frame_set(original_frame)
-            rig.kinema_ik_enabled = was_live
+            try:
+                for index, frame in enumerate(frames):
+                    scene.frame_set(frame)
+                    # Per frame, not once: the tip is keyframable, so the chain
+                    # can change mid-bake and a solver captured up front would go
+                    # on driving the joints of a chain that is no longer live.
+                    solver = manager.get_solver(rig, ik_name)
+                    result = solver.solve(rig, mode) if solver is not None else None
+                    if result is None or not result.converged:
+                        failed += 1
+                    # Every joint active anywhere in the range gets a key on every
+                    # frame, not just the ones this frame's chain solved. A joint
+                    # that drops out of the chain still has a value, and a channel
+                    # that stopped being keyed half way through would hold its
+                    # last key instead -- a different pose than the one baked.
+                    for name in bones:
+                        _key_joint_value(rig.pose.bones[name], frame)
+                    window.progress_update(index)
+            finally:
+                window.progress_end()
+                scene.frame_set(original_frame)
 
         if self.disable_live_ik:
             rig.kinema_ik_enabled = False
@@ -379,12 +382,15 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         Scanning costs a pass of frame_set, so it is skipped entirely when the
         tip is not animated, which is the common case.
         """
-        solver = manager.get_solver(rig, ik_name)
-        names = list(solver.chain.bone_names) if solver is not None else []
         if not _tip_curves(rig):
-            return names
+            solver = manager.get_solver(rig, ik_name)
+            return list(solver.chain.bone_names) if solver is not None else []
 
-        seen = dict.fromkeys(names)
+        # Seeded empty, not from the current frame: the frame the user happens
+        # to be sitting on need not be inside the bake range, and if it targets
+        # a different tip its joints would have their existing curves cleared
+        # and new keys written despite never being active in the range.
+        seen: dict[str, None] = {}
         original = scene.frame_current
         try:
             for frame in frames:
@@ -402,13 +408,11 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
 
     @staticmethod
     def _clear_keys(rig, bone_names: list[str]) -> None:
-        action = rig.animation_data.action if rig.animation_data else None
-        if action is None:
-            return
         wanted = {f'pose.bones["{name}"]' for name in bone_names}
         # Blender 4.4+ stores curves in slotted layers/strips rather than
-        # directly on the action, so walk whichever structure this build uses.
-        for curves in _iter_fcurve_containers(action):
+        # directly on the action, and only this rig's slot is ours to clear --
+        # a rig sharing the action almost certainly has bones by the same names.
+        for curves in _own_fcurve_containers(rig):
             for curve in list(curves):
                 if any(curve.data_path.startswith(prefix) for prefix in wanted):
                     curves.remove(curve)
@@ -433,20 +437,44 @@ def _key_joint_value(pose_bone, frame: int) -> None:
 
 
 def _tip_curves(rig) -> list:
-    """Every F-curve animating this rig's IK tip, across Blender's action layouts.
+    """Every F-curve animating this rig's IK tip.
 
     A list, not a generator: both callers ask whether the tip is animated at
     all, and a generator object is truthy even when it yields nothing.
     """
-    action = rig.animation_data.action if rig.animation_data else None
-    if action is None:
-        return []
     return [
         curve
-        for container in _iter_fcurve_containers(action)
+        for container in _own_fcurve_containers(rig)
         for curve in container
         if curve.data_path == TIP_PATH
     ]
+
+
+def _own_fcurve_containers(rig):
+    """F-curve collections belonging to ``rig``, and to no other ID.
+
+    One Action can hold channelbags for several slots, so two rigs may share
+    it. Walking all of them and matching on data path alone would find another
+    rig's ``kinema_ik_tip`` -- enough to auto-key this rig off someone else's
+    animation and rewrite the other slot's interpolation -- and, worse for
+    baking, another rig's identically named pose bones.
+    """
+    anim = rig.animation_data
+    action = anim.action if anim else None
+    if action is None:
+        return
+    if getattr(action, "layers", None):
+        slot = getattr(anim, "action_slot", None)
+        handle = getattr(slot, "handle", None)
+        if handle is None:
+            # A slotted action with no slot assigned animates nothing here.
+            # Yielding the whole action instead would hand back every other
+            # rig's curves, which is the failure this exists to prevent.
+            return
+        yield from _iter_fcurve_containers(action, handle)
+        return
+    # Pre-4.4 layout: an action belongs to one ID, so all of it is ours.
+    yield from _iter_fcurve_containers(action)
 
 
 def _force_constant_tip_keys(rig) -> None:
@@ -465,16 +493,32 @@ def _force_constant_tip_keys(rig) -> None:
         curve.update()
 
 
-def _iter_fcurve_containers(action):
-    """Yield every F-curve collection in an action, across Blender versions."""
+def _iter_fcurve_containers(action, slot_handle=None):
+    """Yield every F-curve collection in an action, across Blender versions.
+
+    ``slot_handle`` restricts the walk to one slot's channelbags, which is what
+    keeps a shared action's other occupants out of the result.
+
+    Layers are checked first, and that order is load-bearing. Blender 5.2 still
+    exposes ``action.fcurves`` on a slotted action as a compatibility view, so
+    testing for it first -- which this used to do -- takes the legacy path for
+    every modern action and makes the slot filter below unreachable.
+    """
+    layers = getattr(action, "layers", None)
+    if layers:
+        for layer in layers:
+            for strip in getattr(layer, "strips", ()):
+                for channelbag in getattr(strip, "channelbags", ()):
+                    if (
+                        slot_handle is not None
+                        and getattr(channelbag, "slot_handle", None) != slot_handle
+                    ):
+                        continue
+                    yield channelbag.fcurves
+        return
     legacy = getattr(action, "fcurves", None)
     if legacy is not None:
         yield legacy
-        return
-    for layer in getattr(action, "layers", ()):
-        for strip in getattr(layer, "strips", ()):
-            for channelbag in getattr(strip, "channelbags", ()):
-                yield channelbag.fcurves
 
 
 classes = (

@@ -254,6 +254,23 @@ class TestBake:
         assert np.linalg.norm(last - first) > 1e-3, "baked keys did not move the tool"
 
 
+def ik_module():
+    import importlib
+
+    from ..conftest import EXTENSION_ID
+
+    return importlib.import_module(f"{EXTENSION_ID}.ops.ik")
+
+
+def manager_of(rig):
+    import importlib
+
+    from ..conftest import EXTENSION_ID
+
+    manager = importlib.import_module(f"{EXTENSION_ID}.solver.manager")
+    return manager.get_solver(rig)
+
+
 def _tip_curves(rig) -> list:
     """Every F-curve animating the rig's IK tip."""
     action = rig.animation_data.action if rig.animation_data else None
@@ -689,6 +706,77 @@ class TestBakeWithAKeyedTip:
         paths = {c.data_path for c in _all_fcurves(rig.animation_data.action)}
         assert any('"joint3"' in path for path in paths)
 
+    def test_the_union_ignores_the_frame_the_user_is_sitting_on(self, rig, builder):
+        """Regression: the union was seeded from scene.frame_current.
+
+        That frame need not be inside the bake range. Sitting on a frame whose
+        tip is the TCP and baking a range that only ever targets joint3 pulled
+        joints 4-6 into the union, cleared their existing curves, and wrote keys
+        for joints never active in the range.
+        """
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        scene = bpy.context.scene
+        bpy.context.view_layer.objects.active = rig
+
+        # joint3 for frames 1-10; the TCP only from frame 50 on.
+        scene.frame_set(1)
+        bpy.ops.kinema.set_ik_tip(index=2)
+        bpy.ops.kinema.key_ik_tip()
+        scene.frame_set(50)
+        bpy.ops.kinema.set_ik_tip(index=-1)
+        bpy.ops.kinema.key_ik_tip()
+
+        # Park on frame 50, outside the range about to be baked.
+        scene.frame_set(50)
+        assert manager_of(rig).tip_bone == builder.TCP_BONE
+
+        bones = ik_module().KINEMA_OT_bake_ik._bones_over_range(
+            rig, scene, range(1, 11), rig.get(builder.PROP_IK_BONE)
+        )
+        assert bones == ["joint1", "joint2", "joint3"], (
+            f"the current frame leaked into the union: {bones}"
+        )
+
+    def test_a_shared_action_does_not_cross_contaminate(self, rig, builder, fixture_dir):
+        """One Action can hold several slots, one per rig.
+
+        Matching on data path alone would find the *other* rig's tip curve --
+        enough to auto-key this rig off someone else's animation and rewrite
+        the other slot's interpolation.
+        """
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.kinema.set_ik_tip(index=2)
+        bpy.ops.kinema.key_ik_tip()
+        action = rig.animation_data.action
+        if not hasattr(action, "layers"):
+            pytest.skip("this Blender stores actions without slots")
+
+        # A second rig sharing the very same action, in a slot of its own.
+        bpy.ops.kinema.import_urdf(filepath=str(fixture_dir / "arm6.urdf"))
+        other = next(
+            o for o in bpy.data.objects if builder.is_kinema_rig(o) and o is not rig
+        )
+        other.animation_data_create()
+        other.animation_data.action = action
+        other.animation_data.action_slot = action.slots.new("OBJECT", "other")
+        assert (
+            other.animation_data.action_slot.handle
+            != rig.animation_data.action_slot.handle
+        ), "both rigs ended up in one slot, so this proves nothing"
+
+        # The add-on's own lookup, not this file's helper: slot isolation is
+        # exactly the thing under test.
+        tip_curves = ik_module()._tip_curves
+        assert tip_curves(other) == [], (
+            "the other rig's slot picked up this rig's tip curve"
+        )
+        assert tip_curves(rig), "this rig lost sight of its own tip curve"
+
     def test_bake_restores_live_ik_it_turned_off(self, rig, builder):
         import bpy
 
@@ -698,6 +786,92 @@ class TestBakeWithAKeyedTip:
             frame_start=1, frame_end=3, step=1, disable_live_ik=False
         )
         assert rig.kinema_ik_enabled, "the bake left live IK switched off"
+
+
+class TestSolverIdentity:
+    """Blender reuses a deleted object's name for the next one to claim it."""
+
+    def test_a_new_rig_reusing_the_name_gets_its_own_solver(
+        self, addon, builder, manager, fixture_dir, clean_scene
+    ):
+        """Regression: the caches were keyed on the object name alone.
+
+        Delete a rig and import another, and Blender hands the new object the
+        old name -- which handed it the old robot's cached chain and, if the
+        link name and joint count matched, its compiled JAX solver too.
+        """
+        import bpy
+
+        bpy.ops.kinema.import_urdf(filepath=str(fixture_dir / "arm6.urdf"))
+        first = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
+        bpy.context.view_layer.objects.active = first
+        _add_ik_uncompiled(first)
+        name, first_identity = first.name, manager.rig_identity(first)
+        assert manager.get_solver(first) is not None
+
+        for obj in list(bpy.data.objects):
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+        # A different robot, which Blender will name the same thing.
+        bpy.ops.kinema.import_urdf(filepath=str(fixture_dir / "arm3.urdf"))
+        second = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
+        bpy.context.view_layer.objects.active = second
+        second.name = name
+        _add_ik_uncompiled(second)
+
+        assert manager.rig_identity(second) != first_identity, (
+            "session_uid was reused, so this test cannot detect the bug"
+        )
+        solver = manager.get_solver(second)
+        assert solver.identity == manager.rig_identity(second)
+        assert solver.chain.dof == 3, "inherited the deleted rig's six-joint chain"
+
+
+class TestHandlerSuspension:
+    def test_suspended_stops_the_live_solve(self, rig, builder, handlers):
+        """kinema_ik_enabled cannot do this job: it is animatable itself, so a
+        curve on it puts live IK back on at every frame_set."""
+        import bpy
+        from mathutils import Vector
+
+        _add_ik_uncompiled(rig)
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        before = [b.rotation_euler[1] for b in builder.joint_bones(rig)]
+
+        with handlers.suspended():
+            matrix = rig.pose.bones[ik_name].matrix.copy()
+            matrix.translation += Vector((0.0, 0.0, -0.05))
+            rig.pose.bones[ik_name].matrix = matrix
+            bpy.context.view_layer.update()
+            after = [b.rotation_euler[1] for b in builder.joint_bones(rig)]
+
+        assert np.allclose(before, after), "the handler solved while suspended"
+        assert handlers._solving is False, "suspension leaked past the block"
+
+        # ...and live IK works again: a fresh move of the target, not a bare
+        # update(), because an unchanged depsgraph fires no handler at all.
+        matrix = rig.pose.bones[ik_name].matrix.copy()
+        matrix.translation += Vector((0.0, 0.0, -0.03))
+        rig.pose.bones[ik_name].matrix = matrix
+        bpy.context.view_layer.update()
+        assert not np.allclose(
+            before, [b.rotation_euler[1] for b in builder.joint_bones(rig)]
+        ), "the handler stayed suspended after the block"
+
+    def test_bake_survives_an_animated_live_ik_flag(self, rig, builder):
+        """The property being keyed on must not reintroduce the double solve."""
+        import bpy
+
+        _add_ik_uncompiled(rig)
+        scene = bpy.context.scene
+        bpy.context.view_layer.objects.active = rig
+        rig.kinema_ik_enabled = True
+        rig.keyframe_insert(data_path="kinema_ik_enabled", frame=1)
+
+        assert bpy.ops.kinema.bake_ik(
+            frame_start=1, frame_end=5, step=1, disable_live_ik=False
+        ) == {"FINISHED"}
+        scene.frame_set(1)
 
 
 class TestRemoveIk:
