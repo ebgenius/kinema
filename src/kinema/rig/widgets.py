@@ -99,20 +99,46 @@ def _root_widget() -> bpy.types.Object:
 
 
 def _tcp_widget() -> bpy.types.Object:
-    """An axis tripod: the tool frame's X, Y and Z."""
-    vertices = [
-        (0.0, 0.0, 0.0),
-        (0.6, 0.0, 0.0),   # X
-        (0.0, 1.0, 0.0),   # Y (along the bone)
-        (0.0, 0.0, 0.6),   # Z
-    ]
-    edges = [(0, 1), (0, 2), (0, 3)]
-    # A small square at the tip marks the tool point itself.
+    """The tool frame, drawn so its three axes can be told apart.
+
+    Shapes are in *bone* space, and the tool frame rides the bone permuted (see
+    ``builder.BONE_TO_TOOL``): the tool's Z is the bone's +Y, its X the bone's
+    +Z, its Y the bone's +X. So the long arrowed arm running head to tail is
+    the approach direction, which is the one an operator actually looks for.
+
+    The previous version gave X and Z the same length and no arrowhead, which
+    left the marker's orientation unreadable -- three identical sticks tell you
+    where the tool is but not which way it faces.
+    """
+    vertices: list[tuple[float, float, float]] = [(0.0, 0.0, 0.0)]
+    edges: list[tuple[int, int]] = []
+
+    # Tool Z: long, along the bone, with an arrowhead. The approach direction.
+    tip = len(vertices)
+    vertices.append((0.0, 1.0, 0.0))
+    edges.append((0, tip))
+    head_y, spread = 0.78, 0.09
+    for dx, dz in ((spread, 0.0), (-spread, 0.0), (0.0, spread), (0.0, -spread)):
+        barb = len(vertices)
+        vertices.append((dx, head_y, dz))
+        edges.append((tip, barb))
+
+    # Tool X: medium, on the bone's +Z. Tool Y: short, on the bone's +X.
+    for length, axis in ((0.55, (0.0, 0.0, 1.0)), (0.3, (1.0, 0.0, 0.0))):
+        end = len(vertices)
+        vertices.append(tuple(component * length for component in axis))
+        edges.append((0, end))
+
+    # A small square about the tool point, so the origin reads as a frame and
+    # not as the end of yet another stick.
     base = len(vertices)
-    s = 0.1
-    vertices += [(-s, 1.0, -s), (s, 1.0, -s), (s, 1.0, s), (-s, 1.0, s)]
+    s = 0.08
+    vertices += [(-s, 0.0, -s), (s, 0.0, -s), (s, 0.0, s), (-s, 0.0, s)]
     edges += [(base, base + 1), (base + 1, base + 2), (base + 2, base + 3), (base + 3, base)]
-    return _make_widget("tcp", vertices, edges)
+
+    # New name, not a redraw of "tcp": _make_widget reuses any object it finds
+    # by name, so a .blend saved with the old shape would otherwise keep it.
+    return _make_widget("tcp-axes", vertices, edges)
 
 
 def _ik_target_widget() -> bpy.types.Object:

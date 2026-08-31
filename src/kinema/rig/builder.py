@@ -48,6 +48,18 @@ COLLECTION_MECHANISM = "Mechanism"
 ROOT_BONE = "Root"
 TCP_BONE = "TCP"
 
+#: Bone axes -> tool axes, as a change of basis.
+#:
+#: A bone's +Y is always head-to-tail, so a tool frame cannot sit in a bone's
+#: own axes: it rides one permuted, with the tool's Z on the bone's Y. The
+#: importer picks this permutation when it builds the TCP from a link frame
+#: (tail along link Z, roll to link X); naming it here is what keeps every
+#: other route to the same bone agreeing with that one.
+#:
+#: Columns are the tool axes expressed in bone coordinates, so
+#: ``tool = bone_matrix @ BONE_TO_TOOL``.
+BONE_TO_TOOL = Matrix(((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))).to_4x4()
+
 #: Name of the constraint enforcing a joint's URDF limits.
 LIMIT_CONSTRAINT = "Kinema Joint Limit"
 
@@ -491,6 +503,23 @@ def build_rig_iter(
     if result.tcp_link:
         armature_object[PROP_TCP_BONE] = TCP_BONE
         armature_object[PROP_TCP_LINK] = result.tcp_link
+        # Seed the panel's parent field and tool offset from what was actually
+        # built, so a freshly imported rig arrives with them filled in.
+        #
+        # The offset is rarely zero, and that is the point: the tool frame is
+        # the *deepest* link, which usually sits behind one or more fixed joints
+        # from the last actuated one. Fixed joints get no bone, so that distance
+        # is invisible on the rig -- recording it here is what puts it in front
+        # of the user, and what lets "Update TCP" reproduce the import exactly
+        # rather than snapping the marker back to the flange.
+        tcp_bone = armature.bones.get(TCP_BONE)
+        if tcp_bone is not None and tcp_bone.parent is not None:
+            armature_object.kinema_tcp_parent = tcp_bone.parent.name
+            flange = link_frame_of(tcp_bone.parent)
+            if flange is not None:
+                offset = flange.inverted_safe() @ tcp_bone.matrix_local @ BONE_TO_TOOL
+                armature_object.kinema_tcp_offset = offset.translation
+                armature_object.kinema_tcp_rpy = offset.to_euler("XYZ")
 
     if options.import_visuals:
         yield from _attach_visuals_iter(armature_object, model, collection, result)
@@ -539,6 +568,25 @@ def joint_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:
         for pose_bone in armature_object.pose.bones
         if PROP_JOINT_NAME in pose_bone.bone
     ]
+
+
+def link_frame_of(bone) -> Matrix | None:
+    """The rest frame of the URDF link a joint bone drives, in armature space.
+
+    This is the frame a tool offset is meaningful in -- the flange, with its Z
+    out of the face -- and it is not the bone's own frame, because the bone's
+    axes are aligned to the joint axis instead. The constant transform between
+    the two was recorded on the bone at build time, so this works on a .blend
+    whose original description is long gone.
+
+    Returns None for a bone that drives no link: Root, the TCP marker, the IK
+    control.
+    """
+    stored = bone.get(PROP_LINK_CORRECTION) if bone is not None else None
+    if stored is None or len(stored) != 16:
+        return None
+    correction = Matrix([[float(stored[row * 4 + col]) for col in range(4)] for row in range(4)])
+    return bone.matrix_local @ correction
 
 
 def bone_attachment(

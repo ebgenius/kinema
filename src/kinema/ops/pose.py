@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import bpy
+from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
-from mathutils import Vector
+from mathutils import Euler, Matrix, Vector
 
 from .. import handlers
 from ..rig import builder
@@ -65,47 +66,73 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
     bl_idname = "kinema.set_tcp"
     bl_label = "Set TCP"
     bl_description = (
-        "Move the tool-centre-point marker to the active bone, or create it there"
+        "Place the tool-centre-point marker on a joint bone, offset from that "
+        "joint's link frame by the rig's tool offset"
+    )
+
+    bone: StringProperty(
+        name="Bone",
+        description="Joint bone to place the TCP on. Empty uses the active bone",
+        default="",
+        options={"SKIP_SAVE"},
     )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
-        source = self._source_bone(context, rig)
+        source = self._source_bone(context, rig, self.bone)
         if source is None:
             self.report(
-                {"ERROR"},
-                "Select a bone to place the TCP on (enter Pose mode and click one)",
+                {"WARNING"},
+                "Pick a bone in the Tool Centre Point panel, or make one active "
+                "in Pose or Edit mode",
             )
             return {"CANCELLED"}
-        if source.name == builder.TCP_BONE:
-            self.report({"WARNING"}, "Select a joint bone, not the TCP itself")
+        # Joint bones only. They are the ones carrying a link correction, so
+        # they are the only ones this can place a *tool frame* on -- and it
+        # keeps the TCP off the IK control, which is the likeliest thing to be
+        # selected in Pose mode once IK exists and which would leave the marker
+        # riding the goal it is supposed to define.
+        if builder.PROP_JOINT_NAME not in source.bone:
+            self.report({"WARNING"}, f"'{source.name}' is not a joint bone")
             return {"CANCELLED"}
 
         previous_mode = context.object.mode if context.object else "OBJECT"
         previous_active = context.view_layer.objects.active
-
         context.view_layer.objects.active = rig
+        if rig.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        # Computed before Edit mode, not inside it: Bone.matrix_local is not
+        # live while the armature is open for editing, and the whole placement
+        # hangs off it.
+        target = self._tool_frame(rig, source)
+        if target is None:
+            self.report({"ERROR"}, f"'{source.name}' records no link frame")
+            return {"CANCELLED"}
+        length = source.bone.length or 0.05
+
         bpy.ops.object.mode_set(mode="EDIT")
         try:
             edit_bones = rig.data.edit_bones
-            reference = edit_bones[source.name]
-            length = (reference.tail - reference.head).length or 0.05
+            reference = edit_bones.get(source.name)
+            if reference is None:
+                self.report({"ERROR"}, f"'{source.name}' vanished from the armature")
+                return {"CANCELLED"}
 
-            tcp = edit_bones.get(builder.TCP_BONE)
-            if tcp is None:
-                tcp = edit_bones.new(builder.TCP_BONE)
-            # Sit on the source bone's head, pointing along its Z, matching the
-            # ROS convention that a tool frame's +Z is its approach direction.
-            rotation = reference.matrix.to_3x3()
-            tcp.head = reference.head
-            tcp.tail = reference.head + (rotation @ Vector((0.0, 0.0, 1.0))) * length * 0.8
-            tcp.align_roll(rotation @ Vector((1.0, 0.0, 0.0)))
+            tcp = edit_bones.get(builder.TCP_BONE) or edit_bones.new(builder.TCP_BONE)
+            # The same three lines the importer uses, against the same frame --
+            # which is what makes re-setting the TCP land where it started
+            # rather than rolling it onto the bone's own axes.
+            origin = target.translation
+            tcp.head = origin
+            tcp.tail = origin + target.col[2].xyz.normalized() * length * 0.8
+            tcp.align_roll(target.col[0].xyz)  # align_roll takes the desired Z
             tcp.parent = reference
             tcp.use_connect = False
         finally:
             bpy.ops.object.mode_set(mode="OBJECT")
 
-        self._finish_tcp(rig, source.name)
+        self._finish_tcp(rig, source)
 
         if previous_active is not None:
             context.view_layer.objects.active = previous_active
@@ -119,17 +146,52 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         return {"FINISHED"}
 
     @staticmethod
-    def _source_bone(context, rig):
+    def _tool_frame(rig, source):
+        """Where the tool should sit: the link frame, then the rig's offset.
+
+        The offset is read in the *link* frame rather than the bone's, so zero
+        means exactly where the importer would have put it and the numbers match
+        a URDF ``<origin rpy="...">`` for the same tool.
+        """
+        link = builder.link_frame_of(source.bone)
+        if link is None:
+            return None
+        offset = Matrix.Translation(
+            Vector(getattr(rig, "kinema_tcp_offset", (0.0, 0.0, 0.0)))
+        ) @ Euler(
+            Vector(getattr(rig, "kinema_tcp_rpy", (0.0, 0.0, 0.0))), "XYZ"
+        ).to_matrix().to_4x4()
+        return link @ offset
+
+    @staticmethod
+    def _source_bone(context, rig, name: str = ""):
+        """The bone to place the TCP on, in order of how explicit it is.
+
+        No selection scan: ``Bone`` carries no selection flag at all in Blender
+        5.x, and reading one is what made this operator raise an AttributeError
+        every time it was used from Object mode.
+        """
+        if name:
+            return rig.pose.bones.get(name)
         bone = context.active_pose_bone
         if bone is not None and bone.id_data is rig:
             return bone
-        selected = [b for b in rig.pose.bones if b.bone.select]
-        return selected[0] if selected else None
+        # In Edit mode this is an EditBone, which shares the bone's name.
+        active = getattr(context, "active_bone", None)
+        if active is not None:
+            return rig.pose.bones.get(active.name)
+        return None
 
     @staticmethod
-    def _finish_tcp(rig, source_name: str) -> None:
+    def _finish_tcp(rig, source) -> None:
         rig[builder.PROP_TCP_BONE] = builder.TCP_BONE
-        rig[builder.PROP_TCP_LINK] = source_name
+        # The URDF link, not the bone name -- the panel labels this "Link:", and
+        # the importer writes a link here, so writing a bone name made the two
+        # disagree depending on how the TCP had last been placed.
+        rig[builder.PROP_TCP_LINK] = source.bone.get(
+            builder.PROP_CHILD_LINK, source.name
+        )
+        rig.kinema_tcp_parent = source.name
 
         armature = rig.data
         tcp_collection = next(
@@ -160,4 +222,37 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         handlers.reset(rig.name)
 
 
-classes = (KINEMA_OT_reset_pose, KINEMA_OT_key_joints, KINEMA_OT_set_tcp)
+class KINEMA_OT_reset_tcp_offset(KinemaRigOperator):
+    bl_idname = "kinema.reset_tcp_offset"
+    bl_label = "Reset Tool Offset"
+    bl_description = (
+        "Zero the tool offset, putting the TCP exactly on the selected joint's "
+        "own link frame"
+    )
+
+    apply: BoolProperty(
+        name="Re-place the TCP",
+        description="Move the marker straight away, rather than only clearing the fields",
+        default=True,
+        options={"SKIP_SAVE"},
+    )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        rig.kinema_tcp_offset = (0.0, 0.0, 0.0)
+        rig.kinema_tcp_rpy = (0.0, 0.0, 0.0)
+
+        parent = rig.kinema_tcp_parent
+        if self.apply and parent and parent in rig.pose.bones:
+            return bpy.ops.kinema.set_tcp(bone=parent)
+
+        self.report({"INFO"}, "Tool offset cleared")
+        return {"FINISHED"}
+
+
+classes = (
+    KINEMA_OT_reset_pose,
+    KINEMA_OT_key_joints,
+    KINEMA_OT_set_tcp,
+    KINEMA_OT_reset_tcp_offset,
+)
