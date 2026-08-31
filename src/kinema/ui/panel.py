@@ -11,10 +11,13 @@ click the dot beside a slider and you get a keyframe on the actual rig.
 
 from __future__ import annotations
 
+import math
+
 import bpy
 from bpy.props import (
     BoolProperty,
     EnumProperty,
+    FloatVectorProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
@@ -341,22 +344,79 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         rig = active_rig(context)
         tcp_name = rig.get(builder.PROP_TCP_BONE)
 
-        if not tcp_name or tcp_name not in rig.pose.bones:
+        if tcp_name and tcp_name in rig.pose.bones:
+            self._draw_readout(layout, rig, rig.pose.bones[tcp_name])
+        else:
             layout.label(text="No TCP on this rig", icon="INFO")
-            layout.operator("kinema.set_tcp", text="Create TCP from Active Bone",
-                            icon="EMPTY_ARROWS")
-            return
 
-        tcp = rig.pose.bones[tcp_name]
-        world = rig.matrix_world @ tcp.matrix
+        self._draw_placement(layout, rig, exists=bool(tcp_name))
+
+    @staticmethod
+    def _draw_readout(layout, rig, tcp) -> None:
+        """Where the tool is and which way it faces.
+
+        Reported in the *tool* frame, not the bone's: a bone's own Y is always
+        head-to-tail, so its raw matrix would describe the marker rather than
+        the thing the marker stands for.
+        """
+        world = rig.matrix_world @ tcp.matrix @ builder.BONE_TO_TOOL
+        location = world.translation
+        roll, pitch, yaw = (math.degrees(a) for a in world.to_euler("XYZ"))
 
         box = layout.box()
         column = box.column(align=True)
-        column.label(text=f"Link: {rig.get('kinema_tcp_link', '—')}", icon="EMPTY_AXIS")
-        location = world.translation
-        column.label(text=f"X {location.x:+.4f}   Y {location.y:+.4f}   Z {location.z:+.4f}")
+        column.label(
+            text=f"Link: {rig.get(builder.PROP_TCP_LINK, '—')}", icon="EMPTY_AXIS"
+        )
+        column.label(
+            text=f"X {location.x:+.4f}   Y {location.y:+.4f}   Z {location.z:+.4f}"
+        )
+        column.label(text=f"R {roll:+7.2f}   P {pitch:+7.2f}   Y {yaw:+7.2f}")
 
-        layout.operator("kinema.set_tcp", text="Move TCP to Active Bone", icon="EMPTY_ARROWS")
+    @staticmethod
+    def _draw_placement(layout, rig, *, exists: bool) -> None:
+        column = layout.column(align=True)
+        column.use_property_split = True
+        column.prop_search(
+            rig, "kinema_tcp_parent", rig.pose, "bones", text="Parent Bone",
+            icon="BONE_DATA",
+        )
+
+        header, body = layout.panel("kinema_tcp_offset", default_closed=True)
+        header.label(text="Tool Offset")
+        if body is not None:
+            body.use_property_split = True
+            body.label(text="From the flange link frame", icon="INFO")
+            body.prop(rig, "kinema_tcp_offset", text="Location")
+            body.prop(rig, "kinema_tcp_rpy", text="Rotation")
+            body.operator("kinema.reset_tcp_offset", text="Reset", icon="LOOP_BACK")
+
+        parent = rig.kinema_tcp_parent
+        chosen = rig.pose.bones.get(parent) if parent else None
+        # The search offers every bone, but only joint bones carry a link frame
+        # for the offset to be measured in -- so Root, the marker itself and the
+        # IK control are all things the operator refuses. Checked here too, or
+        # picking one leaves an enabled button that is guaranteed to cancel.
+        usable = chosen is not None and builder.PROP_JOINT_NAME in chosen.bone
+
+        row = layout.row(align=True)
+        row.scale_y = 1.2
+        # Disabled rather than hidden: the button is where the eye goes, and a
+        # button that vanishes is harder to understand than one that explains
+        # what it wants.
+        row.enabled = usable
+        label = "Update TCP" if exists else "Create TCP"
+        row.operator(
+            "kinema.set_tcp", text=label, icon="EMPTY_ARROWS"
+        ).bone = parent
+
+        if chosen is None:
+            layout.label(text="Pick a parent bone first", icon="INFO")
+        elif not usable:
+            layout.label(text=f"'{parent}' is not a joint bone", icon="ERROR")
+        layout.operator(
+            "kinema.set_tcp", text="Move TCP to Active Bone", icon="BONE_DATA"
+        ).bone = ""
 
 
 class KINEMA_PT_ik(KinemaPanelBase, Panel):
@@ -525,6 +585,34 @@ def register_props() -> None:
         default=0,
         min=0,
     )
+    bpy.types.Object.kinema_tcp_parent = StringProperty(
+        name="Parent Bone",
+        description="Joint bone the tool centre point rides",
+        default="",
+    )
+    # Expressed in the flange's *link* frame, so the numbers match a URDF
+    # <origin rpy="..."> for the same tool. Zero is the flange itself, which is
+    # not usually where the importer leaves the marker -- it uses the deepest
+    # link, past any fixed joints, and seeds that distance here.
+    bpy.types.Object.kinema_tcp_offset = FloatVectorProperty(
+        name="Tool Offset",
+        description="Tool position relative to the flange link frame",
+        size=3,
+        default=(0.0, 0.0, 0.0),
+        subtype="TRANSLATION",
+        unit="LENGTH",
+    )
+    bpy.types.Object.kinema_tcp_rpy = FloatVectorProperty(
+        name="Tool Rotation",
+        description=(
+            "Tool orientation relative to the flange link frame, as roll, pitch "
+            "and yaw about fixed X, Y and Z -- the convention URDF uses"
+        ),
+        size=3,
+        default=(0.0, 0.0, 0.0),
+        subtype="EULER",
+        unit="ROTATION",
+    )
 
 
 def unregister_props() -> None:
@@ -533,3 +621,6 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_solver_mode
     del bpy.types.Object.kinema_ik_tip
     del bpy.types.Object.kinema_active_bone_index
+    del bpy.types.Object.kinema_tcp_parent
+    del bpy.types.Object.kinema_tcp_offset
+    del bpy.types.Object.kinema_tcp_rpy

@@ -33,10 +33,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through joints 1 and 2 on the frames between and solve two chains nobody asked for.
 - Baking follows a keyed target across the range, keying every joint active anywhere in it.
 
+- **A tool offset you can type.** The Tool Centre Point panel gains a parent-bone field and
+  six fields — location and roll/pitch/yaw — that place the TCP relative to the flange's own
+  link frame. The angles use URDF's convention (`Rz(y) @ Ry(p) @ Rx(r)`), so an offset copied
+  out of a description can be typed in unchanged. Mounting a tool 150 mm off the flange no
+  longer means adding a bone by hand and positioning it in Edit mode.
+- The panel reports the tool's orientation beside its position, and the offset the importer
+  recorded — which is rarely zero, because the tool frame usually sits behind one or more
+  fixed joints from the last actuated one, and fixed joints get no bone to show it.
+
 ### Fixed
 
+- **Clicking *Move TCP to Active Bone* raised `AttributeError: 'Bone' object has no
+  attribute 'select'`** ([#16]). `bpy.types.Bone` carries no selection flag in Blender 5.x,
+  and the operator's fallback read one whenever there was no active pose bone — which is
+  always, in Object mode, so a freshly imported rig failed every time. It now takes the bone
+  from the panel, the active pose bone, or the active edit bone, and says so plainly when it
+  has none.
+- **Re-placing the TCP flipped its orientation.** The importer built it from the URDF link
+  frame, but *Move TCP to Active Bone* built it from the bone's own — and Kinema aligns each
+  joint bone's Y to the joint axis, so the two disagree. Putting the TCP back on the last
+  link left its Z pointing the wrong way, fixable only by hand in Edit mode. Both routes now
+  build from the link frame.
+- The TCP marker's two transverse axes were the same length and its approach axis had no
+  arrowhead, so the widget showed where the tool was and roughly which line it lay on, but
+  not which way it pointed or which way up it was. The approach axis is now arrowed, and the
+  other two differ in length from each other.
+- *Move TCP to Active Bone* wrote the **bone** name into `kinema_tcp_link` while the importer
+  wrote the **URDF link**, so the panel's `Link:` label showed a bone as soon as the button
+  had been used once.
+- Placing the TCP on the IK control — the likeliest thing selected in Pose mode once IK
+  exists — left the marker riding the goal it defines, which silently dropped the rig to the
+  NumPy solver. Only joint bones are accepted now.
 - *Move TCP to Active Bone* re-roots the IK chain, but the bone keeps its name, so the
   cached solver was not rebuilt and went on driving the old chain. It now invalidates.
+
+[#16]: https://github.com/ebgenius/kinema/issues/16
 - Baking solved every frame twice — once through the frame-change handler that `frame_set`
   fires, once in the bake loop — and on a rig whose target changed mid-range the two could
   disagree.

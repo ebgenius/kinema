@@ -77,6 +77,26 @@ Switching to a bone whose link the solver has not seen before pays a one-off com
 same wait as the first solve after adding an IK target. A handful of recently used ones are
 kept compiled, so scrubbing back and forth over a hand-off is free after the first pass.
 
+## Where the tool frame sits
+
+The **Tool Centre Point** panel places the TCP on a joint bone and offsets it from there.
+Pick the parent bone, type the offset, press *Update TCP*.
+
+The offset is measured in that joint's own **link frame** — the flange, with its Z out of the
+face — and the angles are roll, pitch and yaw about fixed X, Y and Z, which is the convention
+URDF itself uses in `<origin rpy="...">`. So a tool transform copied out of a description
+goes in unchanged, and `Z = 0.15` means 150 mm out of the flange rather than 150 mm up.
+
+It usually arrives non-zero. The tool frame is the description's deepest link, which normally
+sits behind one or more *fixed* joints from the last actuated one — and fixed joints get no
+bone, so nothing on the rig shows that distance. The offset field is where it becomes
+visible.
+
+Bone axes are not tool axes and cannot be: a bone's +Y always runs head to tail. Kinema rides
+the tool frame on the marker permuted — tool Z on the bone's Y — and reports the tool frame,
+not the bone's, in the panel. The marker draws the approach axis long and arrowed so the
+direction is readable at a glance.
+
 ## Requirements
 
 Blender **5.2 LTS or newer** (embeds CPython 3.13). Everything else ships with the add-on.
