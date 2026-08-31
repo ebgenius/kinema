@@ -46,7 +46,12 @@ class RigSolver:
     identity: int | str = ""
     #: bone-space goal -> URDF link-space goal, and the link PyRoki should hit.
     link_target: tuple[str, np.ndarray] | None = None
-    _pyroki: pyroki_backend.PyrokiSolver | None = None
+    #: Deliberately *not* a field. The compiled solver is owned by
+    #: ``_pyroki_cache`` and nothing else, so its size limit is the real bound
+    #: on how many JAX kernels can be alive at once. A reference held here too
+    #: would keep a kernel reachable for as long as this RigSolver sat in
+    #: ``_cache`` -- which is per rig name, indefinitely -- and the limit would
+    #: bound nothing.
     _pyroki_failed: str | None = None
     #: chain index -> index into PyRoki's full actuated vector.
     _chain_to_full: np.ndarray | None = None
@@ -58,9 +63,16 @@ class RigSolver:
 
     # ---------------------------------------------------------------- PyRoki
     def pyroki(self, rig) -> pyroki_backend.PyrokiSolver | None:
-        """Build the PyRoki solver on first use, or explain why it is absent."""
-        if self._pyroki is not None or self._pyroki_failed:
-            return self._pyroki
+        """Fetch the PyRoki solver from the cache, building it on a miss.
+
+        Looked up every time rather than held on the instance, so the cache is
+        the only strong owner of a compiled kernel and its size limit actually
+        bounds memory. The lookup is a dict hit; the rebuild it risks is the
+        price of that bound, and with a limit of four it does not come up for
+        the case this cache exists for.
+        """
+        if self._pyroki_failed:
+            return None
         cached = _pyroki_cache_get(self.identity, self.link_target)
         # Length check, not trust: the cached mapping was derived from whatever
         # chain reached this link first. Today that is always this same chain,
@@ -68,18 +80,18 @@ class RigSolver:
         # into the wrong slots, and that is not a failure worth risking to save
         # a rebuild.
         if cached is not None and len(cached[1]) == self.chain.dof:
-            self._pyroki, self._chain_to_full = cached[0], cached[1]
-            return self._pyroki
+            self._chain_to_full = cached[1]
+            return cached[0]
         try:
-            self._pyroki = self._build_pyroki(rig)
+            solver = self._build_pyroki(rig)
         except Exception as exc:  # noqa: BLE001 - always falls back to NumPy
             self._pyroki_failed = str(exc)
             return None
         _pyroki_cache_put(
             self.identity, self.rig_name, self.link_target,
-            self._pyroki, self._chain_to_full,
+            solver, self._chain_to_full,
         )
-        return self._pyroki
+        return solver
 
     def _build_pyroki(self, rig) -> pyroki_backend.PyrokiSolver:
         if self.link_target is None:

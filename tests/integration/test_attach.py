@@ -460,6 +460,35 @@ class TestOperators:
 
         assert rig.pose.bones["joint3"].kinema_attach_object is cube
 
+    def test_attach_operator_rejects_a_cycle(self, rig, builder):
+        """The operator is script-reachable, so the picker's poll is not enough."""
+        import bpy
+
+        bpy.context.view_layer.objects.active = rig
+        with pytest.raises(RuntimeError, match="own parent"):
+            bpy.ops.kinema.attach_to_bone(bone="joint3", source=rig.name)
+
+        link_mesh = next(c for c in rig.children if c.parent_type == "BONE")
+        with pytest.raises(RuntimeError, match="own parent"):
+            bpy.ops.kinema.attach_to_bone(bone="joint3", source=link_mesh.name)
+
+        assert builder.bone_attachment(rig, "joint3") is None
+
+    def test_attach_operator_rejects_a_collection_holding_the_rig(self, rig, builder):
+        import bpy
+
+        bpy.context.view_layer.objects.active = rig
+        holder = bpy.data.collections.new("holder")
+        holder.objects.link(rig)
+        try:
+            with pytest.raises(RuntimeError, match="own parent"):
+                bpy.ops.kinema.attach_to_bone(
+                    bone="joint3", source="holder", is_collection=True
+                )
+            assert builder.bone_attachment(rig, "joint3") is None
+        finally:
+            bpy.data.collections.remove(holder)
+
     def test_attach_operator_rejects_an_unknown_source(self, rig):
         import bpy
 

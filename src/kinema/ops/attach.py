@@ -307,6 +307,20 @@ class KINEMA_OT_attach_to_bone(KinemaAttachOperator):
             self.report({"ERROR"}, f"'{self.source}' is not in this file")
             return {"CANCELLED"}
 
+        # The same predicates the picker filters on. Enforced here too because
+        # this operator is reachable from a script, and a rejected source is not
+        # a matter of taste -- it is the depsgraph cycle the picker exists to
+        # keep out.
+        pose_bone = rig.pose.bones[self.bone]
+        allowed = _can_instance if self.is_collection else _can_attach
+        if not allowed(pose_bone, source):
+            self.report(
+                {"ERROR"},
+                f"'{source.name}' contains this rig, so attaching it would "
+                f"make it its own parent",
+            )
+            return {"CANCELLED"}
+
         copy = attach(rig, self.bone, source)
         if copy is None:
             self.report({"ERROR"}, f"Could not attach '{self.source}'")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 
 import numpy as np
@@ -807,24 +808,85 @@ class TestSolverIdentity:
         bpy.context.view_layer.objects.active = first
         _add_ik_uncompiled(first)
         name, first_identity = first.name, manager.rig_identity(first)
-        assert manager.get_solver(first) is not None
+        first_solver = manager.get_solver(first)
+        assert first_solver.chain.dof == 6
 
         for obj in list(bpy.data.objects):
             bpy.data.objects.remove(obj, do_unlink=True)
 
-        # A different robot, which Blender will name the same thing.
+        # A different robot, set up under its *own* name first. add_ik calls
+        # manager.invalidate(rig.name), so renaming before that would clear the
+        # very entry this test needs to still be there -- and the test would
+        # then pass with or without the identity check.
         bpy.ops.kinema.import_urdf(filepath=str(fixture_dir / "arm3.urdf"))
         second = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
         bpy.context.view_layer.objects.active = second
-        second.name = name
+        assert second.name != name
         _add_ik_uncompiled(second)
 
+        second.name = name  # now claims the dead rig's name, and its cache entry
+        assert manager._cache.get(name) is first_solver, (
+            "the stale entry was already gone, so this test proves nothing"
+        )
         assert manager.rig_identity(second) != first_identity, (
             "session_uid was reused, so this test cannot detect the bug"
         )
+
         solver = manager.get_solver(second)
         assert solver.identity == manager.rig_identity(second)
         assert solver.chain.dof == 3, "inherited the deleted rig's six-joint chain"
+
+
+class TestCompiledSolverOwnership:
+    """The LRU limit only bounds memory if nothing else pins a kernel."""
+
+    def test_a_rig_solver_holds_no_compiled_solver(self, rig, manager):
+        """Regression: RigSolver kept its own _pyroki reference.
+
+        _cache holds one RigSolver per rig name indefinitely, so a reference
+        there kept a JAX kernel strongly reachable long after its LRU entry had
+        been evicted -- and deleting a handful of differently named rigs left
+        exactly as many kernels alive as before the limit existed.
+        """
+        _add_ik_uncompiled(rig)
+        solver = manager.get_solver(rig)
+
+        assert not hasattr(solver, "_pyroki"), (
+            "RigSolver pins a compiled solver, so the cache limit bounds nothing"
+        )
+        assert "_pyroki" not in {f.name for f in dataclasses.fields(solver)}
+
+    def test_the_cache_is_the_only_owner(self, rig, manager):
+        """Nothing on the RigSolver may reference the compiled solver."""
+        _add_ik_uncompiled(rig)
+        rig.kinema_solver_mode = "PYROKI"
+        solver = manager.get_solver(rig)
+        compiled = solver.pyroki(rig)
+        if compiled is None:
+            pytest.skip(f"PyRoki unavailable here: {solver.pyroki_error}")
+
+        # `is not`, not `not in`: one of these values is a NumPy array, and `in`
+        # would compare elementwise and raise on the ambiguous truth value.
+        assert all(value is not compiled for value in vars(solver).values()), (
+            "the RigSolver pins the compiled solver, so eviction frees nothing"
+        )
+        manager.invalidate(rig.name)
+        assert manager._pyroki_cache == {}
+
+    def test_the_limit_evicts_the_least_recently_used(self, manager):
+        """Through the real put(), so it is the shipped policy under test."""
+        manager.invalidate()
+        limit = manager._PYROKI_CACHE_LIMIT
+        try:
+            for index in range(limit + 2):
+                manager._pyroki_cache_put(
+                    index, f"rig{index}", ("link", None), "solver", [0]
+                )
+            assert len(manager._pyroki_cache) == limit
+            assert (0, "link") not in manager._pyroki_cache, "the oldest survived"
+            assert (limit + 1, "link") in manager._pyroki_cache
+        finally:
+            manager.invalidate()
 
 
 class TestHandlerSuspension:
@@ -858,8 +920,13 @@ class TestHandlerSuspension:
             before, [b.rotation_euler[1] for b in builder.joint_bones(rig)]
         ), "the handler stayed suspended after the block"
 
-    def test_bake_survives_an_animated_live_ik_flag(self, rig, builder):
-        """The property being keyed on must not reintroduce the double solve."""
+    def test_bake_survives_an_animated_live_ik_flag(self, rig, builder, handlers):
+        """The property being keyed on must not reintroduce the double solve.
+
+        Observed rather than inferred: the old behaviour also returned FINISHED,
+        so the bake is instrumented to count handler solves. Any call at all
+        during the bake means a frame_set got through to the handler.
+        """
         import bpy
 
         _add_ik_uncompiled(rig)
@@ -868,10 +935,28 @@ class TestHandlerSuspension:
         rig.kinema_ik_enabled = True
         rig.keyframe_insert(data_path="kinema_ik_enabled", frame=1)
 
-        assert bpy.ops.kinema.bake_ik(
-            frame_start=1, frame_end=5, step=1, disable_live_ik=False
-        ) == {"FINISHED"}
-        scene.frame_set(1)
+        calls = []
+        original = handlers.solve_rig
+
+        def counting(target, **kwargs):
+            calls.append(target.name)
+            return original(target, **kwargs)
+
+        handlers.solve_rig = counting
+        try:
+            # Positive control: with the handlers live, a frame change does
+            # reach solve_rig -- so an empty list below means suspension, not
+            # broken instrumentation.
+            scene.frame_set(3)
+            assert calls, "the handler never fires, so this test cannot detect the bug"
+
+            calls.clear()
+            assert bpy.ops.kinema.bake_ik(
+                frame_start=1, frame_end=5, step=1, disable_live_ik=False
+            ) == {"FINISHED"}
+            assert calls == [], f"the handler solved during the bake: {calls}"
+        finally:
+            handlers.solve_rig = original
 
 
 class TestRemoveIk:
