@@ -31,6 +31,27 @@ credentials, so GitHub cannot distinguish the two — an owner bypass would be a
 To push directly in an emergency, disable the ruleset in *Settings → Rules* for the moment it
 is needed.
 
+## Copilot reviews on its own
+
+A second ruleset, `copilot_review`, requests a Copilot code review on every pull request
+targeting `main`. It is kept separate from `main_protect` on purpose: that one is load-bearing
+and a botched `PUT` to it would quietly reopen the branch.
+
+Drafts are **excluded**, which is the point — a PR is reviewed when it is marked ready, not
+while it is being iterated on. Pushes to a ready PR are re-reviewed.
+
+The rule type is not in GitHub's REST documentation, which describes only the UI. It was found
+by posting a `disabled` ruleset and reading back what the API echoed:
+
+```jsonc
+// PUT /repos/ebgenius/kinema/rulesets/21957417
+{"type": "copilot_code_review",
+ "parameters": {"review_on_push": true, "review_draft_pull_requests": false}}
+```
+
+Set `review_draft_pull_requests` to `true` to get feedback on drafts as well, or delete the
+ruleset to go back to requesting reviews by hand. It needs a Copilot Pro, Pro+ or Max plan.
+
 ## Where the process docs live
 
 - **Cutting a release** — `RELEASING.md`. Manual by design; the version lives in two
