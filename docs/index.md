@@ -1,10 +1,10 @@
-# Kinema
+# <img src="assets/images/logo.svg" alt="" style="height:1.15em; vertical-align:-0.18em; margin-right:0.15em"/> Kinema
 
 **Animation-ready robot rigs in Blender.** Import any of 186 real robots and get a single
 clean armature you can actually animate — with IK that understands singularities, joint
 limits and multi-turn joints.
 
-> 📷 *Screenshot: a UR5e loaded in the viewport with the Kinema sidebar open.*
+![Screenshot: a UR5e loaded in the viewport with the Kinema sidebar open.](assets/images/kinema_viewport_overview.png){ .screenshot }
 
 ## Who this is for
 

@@ -13,7 +13,7 @@ In the 3D viewport, press <kbd>N</kbd> to open the sidebar, then click the **Kin
 With nothing selected you will see two buttons and a note saying no robot is selected.
 That is the starting state.
 
-> 📷 *Screenshot: the Kinema panel in its empty state.*
+![Screenshot: the Kinema panel in its empty state.](../assets/images/kinema_panel_empty.png){ .screenshot }
 
 ## 2. Import from the catalog
 
@@ -28,7 +28,7 @@ the maker and joint count for each. Type `ur5e` to filter, select it, and confir
     downloaded and cached; after that it loads offline. See
     [Robot catalog](../reference/catalog.md).
 
-> 📷 *Screenshot: the catalog picker filtered to "ur5e".*
+![Screenshot: the catalog picker filtered to ur5e.](../assets/images/kinema_catalog_picker.png){ .screenshot }
 
 ## 3. Look at what you got
 
@@ -53,13 +53,13 @@ Drop into **Pose Mode** and open the bone collections in the Properties editor
 
 ## 4. Move it
 
-Open the **Joints (FK)** panel. There is one slider per joint, labelled with the joint's
+In the **Joints (FK)** panel there is one slider per joint, labelled with the joint's
 real name from the manufacturer's data, and each one is clamped to that joint's true
 range of motion — you cannot drive the elbow through the forearm.
 
 Drag a few. The arm moves.
 
-> 📷 *Screenshot: the Joints (FK) panel with sliders on a UR5e.*
+![Screenshot: the catalog picker filtered to ur5e.](../assets/images/kinema_joints_sliders.png){ .screenshot }
 
 Two buttons sit at the top of that panel:
 
@@ -71,9 +71,6 @@ how posing an ordinary Blender armature works.
 
 ## 5. Now do it the other way round
 
-Forward kinematics is fine for a wave. It is miserable for "put the gripper *there*",
-because you have to solve six joint angles in your head.
-
 Open the **Inverse Kinematics** panel and click **Add IK Target**.
 
 You get a control at the robot's tool tip. Grab it and move it — the whole arm
@@ -82,7 +79,7 @@ animated the robot by animating the thing you actually care about: where the too
 
 The panel reports how long each solve took, typically a few milliseconds.
 
-> 📷 *Screenshot: an IK target being dragged, with the "Last solve" readout visible.*
+![Screenshot: an IK target being dragged, with the "Last solve" readout visible.](../assets/images/kinema_ik_solve.png){ .screenshot }
 
 !!! warning "The first solve takes about 15 seconds"
     Creating the IK target compiles the solver for this specific robot, behind a wait

@@ -2,7 +2,7 @@
 
 **Edit → Preferences → Add-ons → Kinema**, then expand the entry.
 
-> 📷 *Screenshot: the Kinema add-on preferences.*
+![Screenshot: the Kinema preferences panel.](../assets/images/kinema_preferences.png){ .screenshot }
 
 ## Default Solver
 

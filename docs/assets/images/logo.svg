@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Kinema">
+  <rect width="64" height="64" rx="15" fill="#FF5722"></rect>
+  <path d="M46 26C52 20 54 16 54 11" fill="none" stroke="#2074D4" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3.5"></path>
+  <g fill="none" stroke="#1f2124" stroke-width="5.5" stroke-linecap="round">
+    <path d="M16 50 30 32"></path>
+    <path d="M30 32 46 26"></path>
+  </g>
+  <g fill="#fff" stroke="#1f2124" stroke-width="2.6">
+    <circle cx="16" cy="50" r="3.6"></circle>
+    <circle cx="30" cy="32" r="3.6"></circle>
+  </g>
+  <path d="M46 18.6 51.4 26 46 33.4 40.6 26Z" fill="#2074D4"></path>
+</svg>

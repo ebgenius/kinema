@@ -6,7 +6,7 @@ Everything Kinema does lives in the 3D viewport sidebar. Press <kbd>N</kbd> and 
 There are five panels. The last four only show anything useful when a Kinema rig is
 selected.
 
-> 📷 *Screenshot: the full Kinema sidebar with all panels expanded.*
+![Screenshot: an IK target being dragged, with the "Last solve" readout visible.](../assets/images/kinema_ik_solve.png){ .screenshot }
 
 ## Kinema
 

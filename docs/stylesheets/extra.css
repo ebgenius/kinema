@@ -1,0 +1,30 @@
+/* Material's `primary` setting only accepts names from its own palette, and none of
+   them is Kinema's blue. Setting it to `custom` matches no rule in palette.css, which
+   leaves the primary variables undefined -- so the values below become the only ones. */
+:root {
+  --md-primary-fg-color:        #2074d4;  /* the blue from logo.svg */
+  --md-primary-fg-color--light: #5897df;
+  --md-primary-fg-color--dark:  #195aa5;
+  --md-primary-bg-color:        #fff;
+  --md-primary-bg-color--light: #ffffffb3;
+}
+
+/* Screenshots: half width and centred on desktop, full bleed once the column is narrow
+   enough that shrinking them further would make the UI in them unreadable. */
+.md-typeset .screenshot {
+  display: block;
+  width: 50%;
+  margin-inline: auto;
+}
+
+@media screen and (max-width: 60em) {
+  .md-typeset .screenshot {
+    width: 100%;
+  }
+}
+
+/* Links inherit the primary colour. #2074d4 clears 4.5:1 on white, but only ~3.4:1 on
+   slate's background, so dark mode reads body links in the lighter tint (~5.1:1). */
+[data-md-color-scheme="slate"] {
+  --md-typeset-a-color: var(--md-primary-fg-color--light);
+}

@@ -57,8 +57,6 @@ Download the zip for your platform from the
     3. Select `kinema-0.1.0-linux_x64.zip`
     4. Kinema appears in the add-on list, already enabled
 
-> 📷 *Screenshot: Blender's Install from Disk dialog with the Kinema zip selected.*
-
 ## Check it worked
 
 Press <kbd>N</kbd> in the 3D viewport to open the sidebar. You should see a **Kinema**
@@ -76,8 +74,6 @@ If it says **PyRoki unavailable** with an error underneath, the add-on still wor
 falls back to a simpler solver — but you are missing the good one. That usually means a
 platform mismatch in the download. See
 [Solver unavailable](../troubleshooting.md#solver-unavailable).
-
-> 📷 *Screenshot: the Solver panel showing "PyRoki ready".*
 
 !!! tip "The first solve pauses. Once."
     The solver compiles itself the first time it runs on a given robot, which takes

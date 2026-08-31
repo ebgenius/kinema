@@ -3,7 +3,7 @@
 **Kinema panel → Import from Catalog…** opens a picker listing 186 real robots — arms,
 humanoids, quadrupeds, drones, grippers and mobile manipulators — ready to import and rig.
 
-> 📷 *Screenshot: the catalog picker, filtered.*
+![Screenshot: the catalog picker filtered to ur5e.](../assets/images/kinema_catalog_picker.png){ .screenshot }
 
 ## What each entry tells you
 

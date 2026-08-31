@@ -1,12 +1,12 @@
 # Pose a robot by hand
 
-Forward kinematics — FK — means setting each joint angle yourself and letting the robot's
+Forward kinematics (FK) means setting each joint angle yourself and letting the robot's
 shape follow. It is the same thing you do when you pose an ordinary Blender armature bone
 by bone.
 
 Kinema gives you a slider per joint in the **Joints (FK)** panel.
 
-> 📷 *Screenshot: the Joints (FK) panel with sliders on a 6-DoF arm.*
+![Screenshot: the catalog picker filtered to ur5e.](../assets/images/kinema_joints_sliders.png){ .screenshot }
 
 ## The sliders
 

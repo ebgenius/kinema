@@ -12,19 +12,25 @@ copyright: GPL-3.0-or-later — vendored PyRoki and jaxls remain MIT
 theme:
   name: material
   language: en
+  # Paths are relative to docs_dir, not to mkdocs.yml.
+  logo: assets/images/logo.svg
+  favicon: assets/images/favicon.svg
   icon:
     repo: fontawesome/brands/github
+  # `primary: custom` is not a colour -- it is the opt-out that stops Material from
+  # setting the primary variables at all, so docs/stylesheets/extra.css can define
+  # them as #2074d4. Changing it back to a named colour makes that file dead weight.
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: deep orange
+      primary: custom
       accent: deep orange
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: deep orange
+      primary: custom
       accent: deep orange
       toggle:
         icon: material/brightness-4
@@ -39,6 +45,9 @@ theme:
     - search.highlight
     - content.code.copy
     - content.action.edit
+
+extra_css:
+  - stylesheets/extra.css
 
 plugins:
   - search
@@ -58,6 +67,11 @@ markdown_extensions:
       alternate_style: true
   - toc:
       permalink: true
+
+# docs/README.md is contributor notes on running this site, not a page of it. MkDocs
+# would otherwise treat it as a second index.md and warn -- which --strict fails CI on.
+exclude_docs: |
+  README.md
 
 # With --strict these become build errors, so a moved page or a renamed heading
 # fails CI instead of shipping a dead link.
