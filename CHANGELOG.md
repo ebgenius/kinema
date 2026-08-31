@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A **Bones** list in the sidebar, one row per bone, that does the two things you reach for
+  once a rig is imported: aim the solver at a bone, and hang something off it.
+- **Attachments.** Pick an object or a collection in a bone's row and a linked copy rides
+  that bone — a gripper on the flange, a cable harness down the forearm. The copy shares
+  its mesh and materials with the source, so the same harness can dress six links and still
+  be edited in one place, and the source may live in any scene in the file. It arrives as a
+  placement and nothing more: the source's animation and constraints are stripped, so
+  nothing reaches in from outside to move it.
+- Offsets are measured from the bone's **head**, not the tail Blender's own bone parenting
+  uses, so the attachment's plain location/rotation/scale *is* its offset from the joint —
+  editable in the sidebar or with G/R/S, and keyframable. The panel edits whichever rotation
+  channel the attachment's rotation mode actually uses.
+- Clearing a row's picker removes the copy; the **✕** button unparents it and leaves it in
+  the scene exactly where it appears.
+- **A keyframable IK target bone.** The solver's tip is now a property on the rig rather
+  than the position of the TCP marker, so it can be changed from the panel without entering
+  Pose mode — and keyed, so a shot can hand the goal from the wrist to the elbow part-way
+  through. Aiming at a bone further up the chain is how you cut a gripper's joints out of a
+  redundant solve; that previously needed a script.
+- **Key Target Bone**, which keys the target with stepped interpolation. The target is an
+  index, not a quantity: interpolated, a hand-off from the tool point to joint 3 would pass
+  through joints 1 and 2 on the frames between and solve two chains nobody asked for.
+- Baking follows a keyed target across the range, keying every joint active anywhere in it.
+
+### Fixed
+
+- *Move TCP to Active Bone* re-roots the IK chain, but the bone keeps its name, so the
+  cached solver was not rebuilt and went on driving the old chain. It now invalidates.
+- Baking solved every frame twice — once through the frame-change handler that `frame_set`
+  fires, once in the bake loop — and on a rig whose target changed mid-range the two could
+  disagree.
+- F-curve lookups walked every slot of an Action. Two rigs sharing one could have the wrong
+  rig's channels read, re-keyed, or cleared.
+
 ## [0.1.0] - 2026-08-29
 
 First release. Kinema turns a robot description into a single animation-ready Blender

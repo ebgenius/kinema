@@ -23,6 +23,7 @@ update in five, so it keeps tracking and its timing gets re-measured.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 
 import bpy
 import numpy as np
@@ -33,8 +34,11 @@ from .solver import manager
 
 #: Guards against the handler re-entering itself via its own scene writes.
 _solving = False
-#: rig name -> last IK target matrix we solved for.
-_last_target: dict[str, np.ndarray] = {}
+#: rig name -> (tip bone, IK target matrix) we last solved for. The tip is part
+#: of the key because it is keyframable: handing the goal from the wrist to the
+#: elbow mid-shot changes the chain while the goal matrix stays exactly where
+#: it was, and comparing the matrix alone would call that "nothing moved".
+_last_target: dict[str, tuple[str, np.ndarray]] = {}
 #: rig name -> seconds the last solve took.
 _last_duration: dict[str, float] = {}
 #: rig name -> consecutive live updates skipped for being over budget.
@@ -93,8 +97,14 @@ def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
         return False
 
     target = _np4(rig.pose.bones[ik_bone].matrix)
+    tip = manager.tip_bone(rig)
     previous = _last_target.get(rig.name)
-    if not force and previous is not None and np.allclose(target, previous, atol=1e-7):
+    if (
+        not force
+        and previous is not None
+        and previous[0] == tip
+        and np.allclose(target, previous[1], atol=1e-7)
+    ):
         return False
 
     solver = manager.get_solver(rig, ik_bone)
@@ -118,7 +128,7 @@ def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
 
     # Record the goal we actually solved for, not the one we may have been
     # asked for a moment ago, so the next update compares against reality.
-    _last_target[rig.name] = target
+    _last_target[rig.name] = (tip, target)
     return True
 
 
@@ -171,6 +181,28 @@ def on_load_post(_dummy=None) -> None:
     _last_duration.clear()
     _skipped.clear()
     manager.invalidate()
+
+
+@contextmanager
+def suspended():
+    """Stop the live handlers solving for the duration of the block.
+
+    Baking needs this and cannot get it by switching ``kinema_ik_enabled`` off:
+    that property is animatable too, so a rig with a curve on it has the value
+    restored by every ``frame_set`` before the frame-change handler runs, and
+    the handler would solve each frame that the bake is about to solve itself.
+
+    Reuses the re-entrancy flag rather than adding a second one, because it
+    wants exactly what that flag already means: whatever is happening to the
+    scene right now, it is not the handlers' business.
+    """
+    global _solving
+    previous = _solving
+    _solving = True
+    try:
+        yield
+    finally:
+        _solving = previous
 
 
 def last_solve_ms(rig: bpy.types.Object) -> float | None:

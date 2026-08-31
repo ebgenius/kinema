@@ -81,6 +81,12 @@ PROP_IK_BONE = "kinema_ik_bone"
 PROP_IK_ENABLED = "kinema_ik_enabled"
 PROP_SOLVER_MODE = "kinema_solver_mode"
 
+#: Written onto an attached object: the bone it rides, and what it was copied
+#: from. Link visuals are bone-parented too, so without a marker there is no
+#: way to tell a user's gripper from the robot's own casing.
+PROP_ATTACHMENT = "kinema_attachment"
+PROP_ATTACH_SOURCE = "kinema_attach_source"
+
 
 @dataclass
 class RigBuildOptions:
@@ -532,4 +538,37 @@ def joint_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:
         pose_bone
         for pose_bone in armature_object.pose.bones
         if PROP_JOINT_NAME in pose_bone.bone
+    ]
+
+
+def bone_attachment(
+    armature_object: bpy.types.Object, bone_name: str
+) -> bpy.types.Object | None:
+    """The object attached to ``bone_name``, or None.
+
+    Derived by scanning the rig's children rather than stored in a list, so it
+    survives save/reload and cannot go stale: if the user deletes an attachment
+    or unparents it by hand, it simply stops being found. Same reasoning as the
+    rest of the rig being self-describing.
+    """
+    if armature_object is None:
+        return None
+    for child in armature_object.children:
+        if (
+            child.parent_type == "BONE"
+            and child.parent_bone == bone_name
+            and PROP_ATTACHMENT in child
+        ):
+            return child
+    return None
+
+
+def attachments(armature_object: bpy.types.Object) -> list[bpy.types.Object]:
+    """Every object attached to this rig's bones, in child order."""
+    if armature_object is None:
+        return []
+    return [
+        child
+        for child in armature_object.children
+        if child.parent_type == "BONE" and PROP_ATTACHMENT in child
     ]

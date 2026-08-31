@@ -12,8 +12,14 @@ click the dot beside a slider and you get a keyframe on the actual rig.
 from __future__ import annotations
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringProperty
-from bpy.types import Panel, PropertyGroup
+from bpy.props import (
+    BoolProperty,
+    EnumProperty,
+    IntProperty,
+    PointerProperty,
+    StringProperty,
+)
+from bpy.types import Panel, PropertyGroup, UIList
 
 from .. import runtime
 from ..ops.import_robot import SETTING_NAMES, import_settings
@@ -159,6 +165,168 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
             sub.label(text="", icon=icon)
 
 
+def _joint_indices(rig: bpy.types.Object) -> dict[str, int]:
+    """Bone name -> its index into ``builder.joint_bones``.
+
+    That index, not the name, is what ``kinema_ik_tip`` stores: an integer is
+    keyframable and a bone reference is not.
+    """
+    return {bone.name: index for index, bone in enumerate(builder.joint_bones(rig))}
+
+
+def _rotation_channel(obj: bpy.types.Object) -> str:
+    """The rotation property ``obj.rotation_mode`` actually evaluates."""
+    if obj.rotation_mode == "QUATERNION":
+        return "rotation_quaternion"
+    if obj.rotation_mode == "AXIS_ANGLE":
+        return "rotation_axis_angle"
+    return "rotation_euler"
+
+
+def tip_index_of(rig: bpy.types.Object, pose_bone) -> int | None:
+    """The ``kinema_ik_tip`` value that aims at ``pose_bone``, or None.
+
+    Joint bones map to their index; the TCP marker maps to -1, the default.
+    Everything else -- Root, the IK control -- is not a thing the solver can
+    aim at and gets no radio button.
+    """
+    if builder.PROP_JOINT_NAME in pose_bone.bone:
+        return _joint_indices(rig).get(pose_bone.name)
+    tcp_name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    return -1 if pose_bone.name == tcp_name else None
+
+
+def active_bone(rig: bpy.types.Object) -> bpy.types.PoseBone | None:
+    """The bone the Bones list has highlighted, if it still exists."""
+    if rig is None:
+        return None
+    bones = rig.pose.bones
+    index = getattr(rig, "kinema_active_bone_index", 0)
+    return bones[index] if 0 <= index < len(bones) else None
+
+
+class KINEMA_UL_bones(UIList):
+    """One row per bone: aim IK at it, and hang something off it.
+
+    Both controls belong on the same row because they answer the same
+    question -- what is this bone for? -- and because dressing a robot means
+    walking the whole list once, not opening a dialog per link.
+    """
+
+    def draw_item(
+        self, context, layout, data, item, icon, active_data, active_propname, index
+    ):
+        rig = item.id_data
+        attachment = builder.bone_attachment(rig, item.name)
+        index = tip_index_of(rig, item)
+
+        split = layout.split(factor=0.42, align=True)
+
+        left = split.row(align=True)
+        target = left.row(align=True)
+        if index is not None:
+            selected = index == getattr(rig, "kinema_ik_tip", -1)
+            operator = target.operator(
+                "kinema.set_ik_tip",
+                text="",
+                icon="RADIOBUT_ON" if selected else "RADIOBUT_OFF",
+                emboss=False,
+            )
+            operator.index = index
+        else:
+            # Root and the IK control cannot be solved to, so they get a spacer
+            # rather than a dead button. The TCP marker is not among them: it is
+            # the default target, and without a row of its own there would be no
+            # way back to it from the list once a joint had been picked.
+            target.label(text="", icon="BLANK1")
+        left.label(text=item.name)
+
+        right = split.row(align=True)
+        right.prop(item, "kinema_attach_type", text="", icon_only=True, expand=True)
+        if item.kinema_attach_type == "COLLECTION":
+            right.prop(item, "kinema_attach_collection", text="")
+        else:
+            right.prop(item, "kinema_attach_object", text="")
+        remove = right.row(align=True)
+        remove.enabled = attachment is not None
+        remove.operator(
+            "kinema.detach_from_bone", text="", icon="X", emboss=False
+        ).bone = item.name
+
+    def filter_items(self, context, data, propname):
+        """Hide the IK control bone; it is a goal, not a part of the robot."""
+        bones = getattr(data, propname)
+        rig = data.id_data
+        ik_name = rig.get(builder.PROP_IK_BONE)
+
+        flags = [
+            0 if bone.name == ik_name else self.bitflag_filter_item for bone in bones
+        ]
+        if self.filter_name:
+            matched = bpy.types.UI_UL_list.filter_items_by_name(
+                self.filter_name, self.bitflag_filter_item, bones, "name"
+            )
+            flags = [f & m for f, m in zip(flags, matched, strict=True)]
+        return flags, []
+
+
+class KINEMA_PT_bones(KinemaPanelBase, Panel):
+    bl_idname = "KINEMA_PT_bones"
+    bl_parent_id = "KINEMA_PT_main"
+    bl_label = "Bones"
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        rig = active_rig(context)
+
+        layout.template_list(
+            "KINEMA_UL_bones", "", rig.pose, "bones", rig, "kinema_active_bone_index",
+            rows=6,
+        )
+
+        pose_bone = active_bone(rig)
+        if pose_bone is None:
+            return
+
+        attachment = builder.bone_attachment(rig, pose_bone.name)
+        if attachment is None:
+            layout.label(text=f"Nothing attached to '{pose_bone.name}'", icon="INFO")
+            return
+
+        row = layout.row(align=True)
+        row.operator(
+            "kinema.select_attachment", text=attachment.name, icon="RESTRICT_SELECT_OFF"
+        ).bone = pose_bone.name
+        row.operator(
+            "kinema.detach_from_bone", text="", icon="UNLINKED"
+        ).bone = pose_bone.name
+
+        # The offset *is* the attachment's own transform -- the bone parenting
+        # is set up so that a zero transform sits it exactly on the joint --
+        # which is why these are plain object channels and keyframe like any
+        # other.
+        header, body = layout.panel("kinema_attach_offset", default_closed=True)
+        header.label(text="Offset from the Bone")
+        if body is not None:
+            body.use_property_split = True
+            body.use_property_decorate = True
+            body.prop(attachment, "location")
+            # An attachment keeps its source's rotation_mode, so the Euler
+            # channel is not necessarily the one Blender is reading -- drawing
+            # it unconditionally would offer a field that silently does nothing
+            # on a quaternion or axis-angle source.
+            body.prop(attachment, "rotation_mode", text="Rotation Mode")
+            body.prop(attachment, _rotation_channel(attachment), text="Rotation")
+            body.prop(attachment, "scale")
+            body.operator(
+                "kinema.reset_attachment_offset", text="Reset", icon="LOOP_BACK"
+            ).bone = pose_bone.name
+
+
 class KINEMA_PT_tcp(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_tcp"
     bl_parent_id = "KINEMA_PT_main"
@@ -216,6 +384,24 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         column.prop(rig, "kinema_ik_enabled", toggle=True,
                     icon="PLAY" if rig.kinema_ik_enabled else "PAUSE")
         column.prop(rig, "kinema_solver_mode", text="")
+
+        # The friendly way to change the tip is the radio column in the Bones
+        # list; this row shows where it landed and keys it.
+        #
+        # Deliberately no property decorator. The dot inserts a key with the
+        # user's default interpolation, and an interpolated index ramps through
+        # every value between two tips -- solving chains nobody asked for. The
+        # button forces the channel to step instead, so the offered way to key
+        # this is the one that behaves.
+        from ..solver import manager
+
+        tip = layout.column(align=True)
+        tip.use_property_split = True
+        tip.use_property_decorate = False
+        row = tip.row(align=True)
+        row.prop(rig, "kinema_ik_tip", text="Target Bone")
+        row.operator("kinema.key_ik_tip", text="", icon="DECORATE_KEYFRAME")
+        tip.label(text=f"Solving to '{manager.tip_bone(rig)}'", icon="BONE_DATA")
 
         row = layout.row(align=True)
         row.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
@@ -279,12 +465,21 @@ class KINEMA_PT_status(KinemaPanelBase, Panel):
 
 classes = (
     KinemaSceneProps,
+    KINEMA_UL_bones,
     KINEMA_PT_main,
     KINEMA_PT_joints,
+    KINEMA_PT_bones,
     KINEMA_PT_tcp,
     KINEMA_PT_ik,
     KINEMA_PT_status,
 )
+
+
+def _on_ik_tip_changed(rig, context) -> None:
+    """Forget the cached goal so the next update re-solves the new chain."""
+    from .. import handlers
+
+    handlers.reset(rig.name)
 
 
 def register_props() -> None:
@@ -307,9 +502,34 @@ def register_props() -> None:
         ],
         default="PYROKI",
     )
+    # An index into builder.joint_bones(), not a bone name, because this has to
+    # be keyframable: Blender animates integers and does not animate strings.
+    # -1 means "the TCP marker", which is where every rig starts and how it
+    # behaved before the tip could be moved at all.
+    bpy.types.Object.kinema_ik_tip = IntProperty(
+        name="IK Target Bone",
+        description=(
+            "Which joint bone the solver aims at, by index. -1 aims at the "
+            "tool centre point. Keyframable, so a shot can hand the goal from "
+            "one bone to another"
+        ),
+        default=-1,
+        min=-1,
+        update=_on_ik_tip_changed,
+    )
+    # UI state, so it belongs to the rig rather than the scene: two rigs in one
+    # file each remember their own highlighted row.
+    bpy.types.Object.kinema_active_bone_index = IntProperty(
+        name="Active Bone",
+        description="Row highlighted in the Bones list",
+        default=0,
+        min=0,
+    )
 
 
 def unregister_props() -> None:
     del bpy.types.Scene.kinema
     del bpy.types.Object.kinema_ik_enabled
     del bpy.types.Object.kinema_solver_mode
+    del bpy.types.Object.kinema_ik_tip
+    del bpy.types.Object.kinema_active_bone_index
