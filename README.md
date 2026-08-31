@@ -46,25 +46,36 @@ up as soon as a robot is imported.
 **Hang something off a bone.** Pick an object or a collection in a row and a linked copy
 rides that bone — a gripper on the flange, a cable harness down the forearm. It shares its
 mesh and materials with what you picked, so the same harness can dress six links and still
-be edited in one place, and the source can live in any scene in the file.
+be edited in one place, and the source can live in any scene in the file. What arrives is a
+placement and nothing more: the copy is stripped of the source's animation and constraints,
+so nothing reaches in from outside to move it.
 
 The offset is measured from the bone's **head**. Blender's own bone parenting measures from
 the tail, which puts a fresh attachment at the far end of the bone and makes every offset
 you then dial in relative to a frame that has nothing to do with the joint. Kinema cancels
 that, so the attachment's plain location/rotation/scale *is* its offset from the joint —
 edit it in the panel, or grab the object and use G/R/S, and keyframe it like anything else.
-*Detach* unparents and leaves the object exactly where it appears.
 
-**Choose what IK aims at.** The radio button in each row points the solver at that bone.
-This matters on redundant robots: a Panda imports with its tool frame on a fingertip, which
-leaves both gripper joints inside the chain — 9 DoF against a 6-DoF task — and the solver
-then holds the fingertip still while spinning the hand around it. Aim at the flange instead
-and the chain is the seven arm joints it should be.
+Clearing a row's picker removes the copy; the **✕** button instead unparents it and leaves
+it in the scene exactly where it appears, for when you want to keep what you placed.
+
+**Choose what IK aims at.** The radio button in each row points the solver at that bone, the
+tool centre point included — that one is the default. This matters on redundant robots: a
+Panda imports with its tool frame on a fingertip, which leaves both gripper joints inside
+the chain — 9 DoF against a 6-DoF task — and the solver then holds the fingertip still while
+spinning the hand around it. Aim at the flange instead and the chain is the seven arm joints
+it should be. Switching snaps the IK control onto the new target, so the arm does not jump.
 
 The choice is keyframable, so a shot can hand the goal from the wrist to the elbow part-way
-through; the *Target Bone* field in the IK panel is the channel to key. Switching to a bone
-whose link the solver has not seen before pays a one-off compile, the same wait as the first
-solve after adding an IK target — after that, switching back and forth is free.
+through. **Key Target Bone**, beside the field in the IK panel, is the way to key it: the
+target is an index rather than a quantity, and those keys have to *step* between values.
+Interpolated, a hand-off from the tool point to joint 3 would pass through joints 1 and 2 on
+the frames in between and solve two chains nobody asked for. Baking follows a keyed target
+across the range and keys every joint that is active anywhere in it.
+
+Switching to a bone whose link the solver has not seen before pays a one-off compile, the
+same wait as the first solve after adding an IK target. A handful of recently used ones are
+kept compiled, so scrubbing back and forth over a hand-off is free after the first pass.
 
 ## Requirements
 

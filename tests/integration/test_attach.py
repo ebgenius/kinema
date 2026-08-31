@@ -489,6 +489,50 @@ class TestOperators:
         finally:
             bpy.data.collections.remove(holder)
 
+    def test_attach_operator_rejects_an_empty_instancing_the_rig(self, rig, builder):
+        """The parent walk cannot see a cycle that lives inside an instance.
+
+        An Empty instancing a collection that holds the rig is not parented to
+        the rig at all, so the ancestry check passes -- but copy() carries the
+        instance_collection along, and the copy then instances its own parent.
+        """
+        import bpy
+
+        bpy.context.view_layer.objects.active = rig
+        holder = bpy.data.collections.new("holder")
+        holder.objects.link(rig)
+        proxy = bpy.data.objects.new("proxy", None)
+        proxy.instance_type = "COLLECTION"
+        proxy.instance_collection = holder
+        bpy.context.scene.collection.objects.link(proxy)
+        try:
+            assert proxy.parent is None, "the ancestry check would catch it otherwise"
+            with pytest.raises(RuntimeError, match="own parent"):
+                bpy.ops.kinema.attach_to_bone(bone="joint3", source="proxy")
+            assert builder.bone_attachment(rig, "joint3") is None
+        finally:
+            bpy.data.objects.remove(proxy, do_unlink=True)
+            bpy.data.collections.remove(holder)
+
+    def test_attach_operator_accepts_an_unrelated_collection_instance(self, rig, builder):
+        """...while an Empty instancing anything else is a normal attachment."""
+        import bpy
+
+        bpy.context.view_layer.objects.active = rig
+        harness = bpy.data.collections.new("harness")
+        harness.objects.link(bpy.data.objects.new("bracket", None))
+        proxy = bpy.data.objects.new("proxy", None)
+        proxy.instance_type = "COLLECTION"
+        proxy.instance_collection = harness
+        bpy.context.scene.collection.objects.link(proxy)
+        try:
+            assert bpy.ops.kinema.attach_to_bone(
+                bone="joint3", source="proxy"
+            ) == {"FINISHED"}
+            assert builder.bone_attachment(rig, "joint3") is not None
+        finally:
+            bpy.data.collections.remove(harness)
+
     def test_attach_operator_rejects_an_unknown_source(self, rig):
         import bpy
 

@@ -162,6 +162,11 @@ def _can_attach(pose_bone, obj) -> bool:
         if node == rig:
             return False
         node = node.parent
+    # An Empty that instances a collection carries that collection with it
+    # through copy(), so a collection holding the rig is the same cycle one
+    # level down -- and the parent walk above cannot see it.
+    if obj.instance_type == "COLLECTION" and obj.instance_collection is not None:
+        return _can_instance(pose_bone, obj.instance_collection)
     return True
 
 
