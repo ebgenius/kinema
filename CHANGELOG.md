@@ -55,9 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   joint bone's Y to the joint axis, so the two disagree. Putting the TCP back on the last
   link left its Z pointing the wrong way, fixable only by hand in Edit mode. Both routes now
   build from the link frame.
-- The TCP marker's three axes were the same length with no arrowhead, so the widget showed
-  where the tool was but not which way it faced. The approach axis is now long and arrowed,
-  and the other two differ in length.
+- The TCP marker's two transverse axes were the same length and its approach axis had no
+  arrowhead, so the widget showed where the tool was and roughly which line it lay on, but
+  not which way it pointed or which way up it was. The approach axis is now arrowed, and the
+  other two differ in length from each other.
 - *Move TCP to Active Bone* wrote the **bone** name into `kinema_tcp_link` while the importer
   wrote the **URDF link**, so the panel's `Link:` label showed a bone as soon as the button
   had been used once.

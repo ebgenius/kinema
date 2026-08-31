@@ -392,19 +392,28 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
             body.operator("kinema.reset_tcp_offset", text="Reset", icon="LOOP_BACK")
 
         parent = rig.kinema_tcp_parent
+        chosen = rig.pose.bones.get(parent) if parent else None
+        # The search offers every bone, but only joint bones carry a link frame
+        # for the offset to be measured in -- so Root, the marker itself and the
+        # IK control are all things the operator refuses. Checked here too, or
+        # picking one leaves an enabled button that is guaranteed to cancel.
+        usable = chosen is not None and builder.PROP_JOINT_NAME in chosen.bone
+
         row = layout.row(align=True)
         row.scale_y = 1.2
         # Disabled rather than hidden: the button is where the eye goes, and a
         # button that vanishes is harder to understand than one that explains
         # what it wants.
-        row.enabled = bool(parent) and parent in rig.pose.bones
+        row.enabled = usable
         label = "Update TCP" if exists else "Create TCP"
         row.operator(
             "kinema.set_tcp", text=label, icon="EMPTY_ARROWS"
         ).bone = parent
 
-        if not row.enabled:
+        if chosen is None:
             layout.label(text="Pick a parent bone first", icon="INFO")
+        elif not usable:
+            layout.label(text=f"'{parent}' is not a joint bone", icon="ERROR")
         layout.operator(
             "kinema.set_tcp", text="Move TCP to Active Bone", icon="BONE_DATA"
         ).bone = ""
@@ -581,9 +590,10 @@ def register_props() -> None:
         description="Joint bone the tool centre point rides",
         default="",
     )
-    # The offset is expressed in the flange's *link* frame, so zero puts the
-    # TCP exactly where the importer would, and the numbers match a URDF
-    # <origin rpy="..."> for the same tool.
+    # Expressed in the flange's *link* frame, so the numbers match a URDF
+    # <origin rpy="..."> for the same tool. Zero is the flange itself, which is
+    # not usually where the importer leaves the marker -- it uses the deepest
+    # link, past any fixed joints, and seeds that distance here.
     bpy.types.Object.kinema_tcp_offset = FloatVectorProperty(
         name="Tool Offset",
         description="Tool position relative to the flange link frame",

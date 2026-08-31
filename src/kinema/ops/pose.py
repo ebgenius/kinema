@@ -149,9 +149,14 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
     def _tool_frame(rig, source):
         """Where the tool should sit: the link frame, then the rig's offset.
 
-        The offset is read in the *link* frame rather than the bone's, so zero
-        means exactly where the importer would have put it and the numbers match
-        a URDF ``<origin rpy="...">`` for the same tool.
+        The offset is read in the *link* frame rather than the bone's, so the
+        numbers match a URDF ``<origin rpy="...">`` for the same tool.
+
+        Zero means the flange's own link frame -- **not** where the importer
+        puts the marker, which is normally the deepest link, one or more fixed
+        joints further out. That distance is what the importer seeds into the
+        offset, so reproducing an import means applying the seeded value rather
+        than clearing it.
         """
         link = builder.link_frame_of(source.bone)
         if link is None:
@@ -177,8 +182,14 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         if bone is not None and bone.id_data is rig:
             return bone
         # In Edit mode this is an EditBone, which shares the bone's name.
+        #
+        # Checked against this rig's armature, not just resolved by name:
+        # active_rig() will happily return a *selected* rig while a different
+        # armature is the active object, and two robots in one scene very
+        # often have a "joint3" each -- so a bare name lookup could move the
+        # TCP on the rig the user is not looking at.
         active = getattr(context, "active_bone", None)
-        if active is not None:
+        if active is not None and active.id_data == rig.data:
             return rig.pose.bones.get(active.name)
         return None
 

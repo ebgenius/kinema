@@ -106,6 +106,45 @@ class TestSourceResolution:
         bpy.ops.object.mode_set(mode="OBJECT")
         assert rig.data.bones[builder.TCP_BONE].parent.name == "joint5"
 
+    def test_another_armatures_active_bone_is_ignored(
+        self, rig, builder, fixture_dir, addon
+    ):
+        """Two robots in a scene very often have a "joint3" each.
+
+        active_rig() returns a *selected* rig even when a different armature is
+        the active object, so resolving the active bone by name alone could
+        move the TCP on the rig the user is not looking at.
+        """
+        import bpy
+
+        bpy.ops.kinema.import_urdf(filepath=str(fixture_dir / "arm6.urdf"))
+        other = next(
+            o for o in bpy.data.objects if builder.is_kinema_rig(o) and o is not rig
+        )
+        assert "joint3" in other.pose.bones, "fixtures share no bone name"
+
+        # `other` is active with joint3 active on it; `rig` is merely selected.
+        bpy.context.view_layer.objects.active = other
+        other.data.bones.active = other.data.bones["joint3"]
+        rig.select_set(True)
+
+        before = rig.data.bones[builder.TCP_BONE].parent.name
+        module = importlib.import_module(f"{addon.__name__}.ops.pose")
+        resolved = module.KINEMA_OT_set_tcp._source_bone(bpy.context, rig)
+
+        assert resolved is None, "took a bone from the wrong armature"
+        assert rig.data.bones[builder.TCP_BONE].parent.name == before
+
+    def test_this_rigs_active_bone_is_still_taken(self, rig, builder, addon):
+        """The guard must not reject the ordinary case."""
+        import bpy
+
+        rig.data.bones.active = rig.data.bones["joint3"]
+        module = importlib.import_module(f"{addon.__name__}.ops.pose")
+        resolved = module.KINEMA_OT_set_tcp._source_bone(bpy.context, rig)
+
+        assert resolved is not None and resolved.name == "joint3"
+
     def test_non_joint_bones_are_refused(self, rig, builder):
         import bpy
 
@@ -340,9 +379,13 @@ class TestBookkeeping:
 
 
 class TestWidget:
-    def test_the_tool_axes_are_distinguishable(self, addon):
-        """Three arms of the same length say where the tool is but not which
-        way it faces, which is what made the marker unreadable."""
+    def test_the_transverse_axes_differ_in_length(self, addon):
+        """Equal transverse arms leave the marker's roll ambiguous.
+
+        The approach axis was always the longest -- it runs head to tail -- but
+        the other two matched each other, so the widget said which *line* the
+        tool lay on without saying which way up it was.
+        """
         widgets = importlib.import_module(f"{addon.__name__}.rig.widgets")
         shape = widgets.ensure_widgets()["tcp"]
 
@@ -352,7 +395,19 @@ class TestWidget:
         tool_y = max(v.x for v in vertices)
 
         assert along_bone > tool_x > tool_y > 0.0
-        assert len(shape.data.edges) > 4, "no arrowhead on the approach axis"
+
+    def test_the_approach_axis_is_arrowed(self, addon):
+        """Counting edges proves nothing: the old arrowless widget had seven
+        too -- three axes plus the four-edge square. What an arrowhead means is
+        that the tip is a junction, so count the edges meeting at it."""
+        widgets = importlib.import_module(f"{addon.__name__}.rig.widgets")
+        shape = widgets.ensure_widgets()["tcp"]
+
+        vertices = shape.data.vertices
+        tip = max(range(len(vertices)), key=lambda i: vertices[i].co.y)
+        incident = sum(1 for edge in shape.data.edges if tip in tuple(edge.vertices))
+
+        assert incident > 1, "the approach axis ends in a bare point, not an arrow"
 
 
 class TestPanelWiring:
@@ -372,6 +427,34 @@ class TestPanelWiring:
     def test_prop_search_targets_a_real_collection(self, rig):
         """The parent field is prop_search(rig, ..., rig.pose, "bones")."""
         assert rig.kinema_tcp_parent in rig.pose.bones
+
+    def test_the_button_is_only_enabled_for_bones_the_operator_accepts(
+        self, rig, builder
+    ):
+        """The search offers every bone, but most of them are refused.
+
+        Whatever the panel enables the button for, set_tcp has to accept --
+        otherwise picking Root leaves a live button guaranteed to cancel.
+        """
+        import bpy
+
+        def panel_would_enable(name: str) -> bool:
+            chosen = rig.pose.bones.get(name)
+            return chosen is not None and builder.PROP_JOINT_NAME in chosen.bone
+
+        bpy.context.view_layer.objects.active = rig
+        for name in ("joint3", builder.ROOT_BONE, builder.TCP_BONE, "nope"):
+            enabled = panel_would_enable(name)
+            if not enabled:
+                continue
+            assert bpy.ops.kinema.set_tcp(bone=name) == {"FINISHED"}, (
+                f"the panel would enable '{name}' but the operator refuses it"
+            )
+
+        assert panel_would_enable("joint3")
+        assert not panel_would_enable(builder.ROOT_BONE)
+        assert not panel_would_enable(builder.TCP_BONE)
+        assert not panel_would_enable("nope")
 
     def test_the_offset_fields_read_as_angles_and_distances(self, addon):
         """subtype drives the units Blender shows -- degrees, and metres."""
