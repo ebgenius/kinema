@@ -118,8 +118,7 @@ The site at <https://ebgenius.github.io/kinema/> lives on the **`github-page` br
 `main`. Nothing links the two, so it does not update itself and it drifts silently — by
 v0.1.0 the catalog page still described a fetcher that had been replaced two months earlier.
 
-Work on a branch off `github-page` and open a PR into it, rather than pushing: that branch
-deploys on push, so a push publishes unreviewed. Note that the `copilot_review` ruleset
+Create a feature branch from `github-page` and open a PR back into `github-page`, rather than pushing directly to `github-page`: that branch deploys on push, so a direct push publishes unreviewed. Note that the `copilot_review` ruleset
 targets the default branch only, so nothing reviews these PRs automatically.
 
 **Always:**
