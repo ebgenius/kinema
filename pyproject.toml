@@ -1,61 +1,22 @@
 [project]
-name = "kinema"
+name = "kinema-docs"
 version = "0.1.0"
-description = "Animation-ready robot rigs in Blender: import any robot, get a clean armature with correct IK."
+description = "Sources for the Kinema documentation site."
 readme = "README.md"
-requires-python = "==3.13.*"          # must match Blender 5.2 LTS (Python 3.13.13)
+requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Eugenio Bernardi" }]
 
-# NOTE: this project is never pip-installed. Runtime dependencies ship to users as
-# bundled wheels (see tools/fetch_wheels.py + blender_manifest.toml) or as vendored
-# source under src/kinema/vendor/. The list below exists so the dev venv mirrors what
-# Blender will have at runtime, giving the IDE and type-checker something real to see.
-dependencies = [
-    "jax",
-    "jaxlib",
-    "jaxlie",
-    "jax-dataclasses",
-    "jaxtyping",
-    "loguru",
-    "lxml",
-    "pycollada",
-    "robot-descriptions",
-    "scipy",
-    "trimesh",            # deliberately WITHOUT [easy]: the extras add ~90 MB
-    "xacrodoc",
-    "yourdfpy",
-]
+# Empty on purpose. This branch builds a Markdown site and nothing else; the
+# add-on and its runtime dependencies live on `main`. Mirroring them here made
+# every docs build download ~130 MB of jaxlib, scipy and trimesh to render
+# Markdown, because `uv sync` installs [project.dependencies] whatever group is
+# named.
+dependencies = []
 
 [dependency-groups]
-# Documentation site (docs/, mkdocs.yml). Deliberately NOT in [project.dependencies]:
-# that list mirrors what Blender has at runtime and feeds tools/fetch_wheels.py.
+# What .github/workflows/docs.yml installs, via `uv sync --group docs`.
 docs = ["mkdocs-material"]
-dev = [
-    "fake-bpy-module-latest",   # bpy stubs for autocomplete / type checking
-    "debugpy",                  # IDE-agnostic DAP debugging inside Blender
-    "pytest",
-    "ruff",
-    # tools/fetch_wheels.py shells out to `pip download`; uv's venvs have no
-    # pip of their own, and uv has no download subcommand to use instead.
-    "pip",
-    # Ground truth for the MJCF reader's tests. Never bundled: the wheel is
-    # ~50 MB per platform, for a parser we only need the kinematic subset of.
-    "mujoco",
-]
 
 [tool.uv]
-# brentyi/jaxls is NOT on PyPI -- the PyPI name "jaxls" is an unrelated
-# "JAX Language Server" package. The real one is vendored; see tools/vendor.py.
 package = false
-
-[tool.ruff]
-line-length = 100
-target-version = "py313"
-extend-exclude = ["src/kinema/vendor"]
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
