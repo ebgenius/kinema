@@ -112,9 +112,44 @@ The manifest **cannot be edited on the website** — a change means a new upload
 converting the extension to a draft. Get `website`, `tagline`, `tags` and `permissions`
 right before submitting.
 
-## 6. After
+## 6. Update the docs site
+
+The site at <https://ebgenius.github.io/kinema/> lives on the **`github-page` branch**, not
+`main`. Nothing links the two, so it does not update itself and it drifts silently — by
+v0.1.0 the catalog page still described a fetcher that had been replaced two months earlier.
+
+Create a feature branch from `github-page` and open a PR back into `github-page`, rather than pushing directly to `github-page`: that branch deploys on push, so a direct push publishes unreviewed. Note that the `copilot_review` ruleset
+targets the default branch only, so nothing reviews these PRs automatically.
+
+**Always:**
+
+- `docs/getting-started/install.md` — **six** occurrences of the version across three
+  filenames, plus the three sizes. Take the sizes from the release assets and note the page
+  quotes **decimal MB**, which is what GitHub's own asset listing shows.
+
+**Whenever the sidebar changed** — which is most releases, and the part that actually rots:
+
+| File | What goes stale |
+|---|---|
+| `docs/reference/sidebar.md` | The panel reference. First to fall behind, and it states the panel *count* in its opening line. |
+| `docs/concepts/tcp.md` | Any change to how the TCP is placed, or to what IK aims at. |
+| `docs/concepts/ik.md` | Solver behaviour, the budget, what a solve costs. |
+| `docs/tutorials/animate-ik.md` | Its "panel while you work" table mirrors the IK panel row for row. |
+| `docs/tutorials/bake.md` | Mirrors the bake dialog's options. |
+| `docs/getting-started/first-robot.md` | The five-minute tour names each panel in order. |
+| `docs/assets/images/*.png` | `kinema_ik_solve.png` and `kinema_viewport_overview.png` both show the sidebar; the second is the site's hero image. |
+
+Two traps:
+
+- `mkdocs build --strict` is what CI runs, and it turns a broken internal link or a dead
+  anchor into a build failure. Renaming a heading means updating every inbound link in the
+  same commit. Run it locally first — `uv sync --group docs && uv run mkdocs build --strict`.
+- The workflow's `paths:` filter is `docs/**`, `mkdocs.yml`, `pyproject.toml`, `uv.lock`,
+  `.github/workflows/docs.yml`. A push touching only `README.md`, `src/`, `tests/` or
+  `tools/` **does not deploy**. Use `workflow_dispatch` if you need it to.
+
+## 7. After
 
 - Confirm `gh release view vX.Y.Z` lists three assets.
-- Check the docs install table at `docs/getting-started/install.md` on the `github-page`
-  branch — it hardcodes filenames and sizes, and lives on a different branch, so it does
-  not update itself.
+- Confirm the docs site actually rebuilt: the *docs* workflow run should be green and the
+  install page should show the new version.
