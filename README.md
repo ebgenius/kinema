@@ -59,6 +59,13 @@ edit it in the panel, or grab the object and use G/R/S, and keyframe it like any
 Clearing a row's picker removes the copy; the **✕** button instead unparents it and leaves
 it in the scene exactly where it appears, for when you want to keep what you placed.
 
+To resize an attachment, scale **the attachment** — its scale is in the *Offset from the
+Bone* block with the rest of its transform. Scaling the source object does not carry over,
+because the copy shares the source's *geometry* but keeps its own transform, and that
+transform is what positions it on the bone. (Applying scale on the source will not work
+either: Blender refuses `Ctrl+A` on a mesh with more than one user, which is exactly what a
+linked copy makes it.)
+
 **Choose what IK aims at.** The radio button in each row points the solver at that bone, the
 tool centre point included — that one is the default. This matters on redundant robots: a
 Panda imports with its tool frame on a fingertip, which leaves both gripper joints inside

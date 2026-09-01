@@ -42,8 +42,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded — which is rarely zero, because the tool frame usually sits behind one or more
   fixed joints from the last actuated one, and fixed joints get no bone to show it.
 
+- **Reset Meshes**, beside *Rest Pose*, puts every link mesh back where the importer placed
+  it. Link meshes are also locked now, so a stray grab is harder to have in the first place.
+
 ### Fixed
 
+- **A mesh file's own units and up-axis were discarded** ([#12]). The COLLADA reader works
+  them out — that is most of why it exists — and the rig builder then overwrote the result,
+  so a millimetre `.dae` imported a thousand times too large and a Y-up one lay on its side.
+  A test proved the correction was *computed*; none proved it survived the rig build.
+- **A URDF `<mesh scale>` was parked in the object's scale instead of applied** ([#12]). The
+  link looked right, but modifiers, physics and exporters that do not bake transforms all
+  quietly used the unscaled mesh. Both the scale and the file's own correction now go into
+  the geometry, so link meshes arrive at a scale of 1.
+- **`<mesh scale="0.001"/>` aborted the whole import** ([#12]). The single-value shorthand
+  comes back from the URDF parser as a bare number, which failed deep enough in the builder
+  to take the entire robot with it rather than the one visual.
+- **A link mesh moved by accident could not be put back** ([#14]). *Rest Pose* only returns
+  the joints, and a mesh keeps its whole placement in its own transform channels, so a stray
+  G/R/S destroyed the only copy of it. The placement is now recorded at import.
+- A mirrored `<mesh scale>` — used by symmetric robots to reuse one file for a left and a
+  right part — left the normals inside out.
+- *Move TCP to Active Bone* could refuse **after** making the rig active and dropping it into
+  Object mode, leaving you somewhere other than where you started ([#19]).
+- A rig whose TCP bone had been deleted still offered *Update TCP* while reporting that it
+  had no TCP ([#19]).
 - **Clicking *Move TCP to Active Bone* raised `AttributeError: 'Bone' object has no
   attribute 'select'`** ([#16]). `bpy.types.Bone` carries no selection flag in Blender 5.x,
   and the operator's fallback read one whenever there was no active pose bone — which is
@@ -68,7 +91,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *Move TCP to Active Bone* re-roots the IK chain, but the bone keeps its name, so the
   cached solver was not rebuilt and went on driving the old chain. It now invalidates.
 
+[#12]: https://github.com/ebgenius/kinema/issues/12
+[#14]: https://github.com/ebgenius/kinema/issues/14
 [#16]: https://github.com/ebgenius/kinema/issues/16
+[#19]: https://github.com/ebgenius/kinema/issues/19
 - Baking solved every frame twice — once through the frame-change handler that `frame_set`
   fires, once in the bake loop — and on a rig whose target changed mid-range the two could
   disagree.

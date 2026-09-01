@@ -184,6 +184,64 @@ def _bone_where_frames_differ(rig, builder):
     return None
 
 
+class TestCancellationLeavesNoTrace:
+    """A refused placement must not change what you were doing (#19)."""
+
+    def test_a_refused_bone_restores_the_mode_and_active_object(self, rig, builder):
+        """Regression: the guards run after the rig is made active and forced
+        into Object mode, so cancelling left the user somewhere else."""
+        import bpy
+
+        cube = bpy.data.objects.new("bystander", bpy.data.meshes.new("bystander_mesh"))
+        bpy.context.scene.collection.objects.link(cube)
+        bpy.context.view_layer.objects.active = cube
+        bpy.ops.object.mode_set(mode="EDIT")
+        assert bpy.context.object.mode == "EDIT"
+
+        # Root is not a joint bone, so this is refused -- after the operator
+        # has already made the rig active and dropped to Object mode.
+        assert bpy.ops.kinema.set_tcp(bone=builder.ROOT_BONE) == {"CANCELLED"}
+
+        assert bpy.context.view_layer.objects.active is cube, "active object changed"
+        assert bpy.context.object.mode == "EDIT", "mode was not restored"
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    def test_a_successful_placement_also_restores_them(self, rig, builder):
+        """The successful path had this already; keep it that way."""
+        import bpy
+
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.object.mode_set(mode="POSE")
+
+        assert bpy.ops.kinema.set_tcp(bone="joint3") == {"FINISHED"}
+
+        assert bpy.context.view_layer.objects.active is rig
+        assert bpy.context.object.mode == "POSE"
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+
+class TestStaleTcpProperty:
+    def test_a_deleted_tcp_bone_offers_create_not_update(self, rig, builder, addon):
+        """The property outlives the bone, and the panel used only its
+        truthiness -- so it said "No TCP on this rig" and offered "Update TCP"
+        in the same breath."""
+        import bpy
+
+        panel = importlib.import_module(f"{addon.__name__}.ui.panel")
+        tcp_name = rig.get(builder.PROP_TCP_BONE)
+        assert tcp_name
+
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.object.mode_set(mode="EDIT")
+        rig.data.edit_bones.remove(rig.data.edit_bones[tcp_name])
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        # The property is still there, but the bone is not.
+        assert rig.get(builder.PROP_TCP_BONE) == tcp_name
+        assert tcp_name not in rig.pose.bones
+        assert not panel.tcp_exists(rig), "a stale property still reads as a TCP"
+
+
 class TestOrientation:
     def test_the_importer_orients_the_tool_from_the_link_frame(self, rig, builder):
         """The invariant everything else is measured against.

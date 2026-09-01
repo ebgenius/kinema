@@ -99,6 +99,14 @@ PROP_SOLVER_MODE = "kinema_solver_mode"
 PROP_ATTACHMENT = "kinema_attachment"
 PROP_ATTACH_SOURCE = "kinema_attach_source"
 
+#: Written onto each link mesh: the URDF link it draws, and the local matrix it
+#: was built with. The matrix is what makes a stray grab undoable -- a link
+#: mesh keeps its whole placement in its transform channels, so there is no
+#: other copy of it anywhere. Doubles as the marker for "Kinema built this",
+#: which the reset operator needs so it never touches a user's own object.
+PROP_LINK_NAME = "kinema_link"
+PROP_LINK_REST = "kinema_link_rest"
+
 
 @dataclass
 class RigBuildOptions:
@@ -396,18 +404,19 @@ def _attach_visuals_iter(
                 yield done, total
                 continue
 
-            # world = link frame * <visual origin> * <mesh scale>
-            world = (
-                _to_matrix(link_frames[link_name])
-                @ _to_matrix(visual.origin)
-                @ Matrix.Diagonal(Vector(visual.scale)).to_4x4()
-            )
+            # world = link frame * <visual origin>. The <mesh scale> is *not*
+            # a factor here: it is applied to the geometry instead, just below.
+            world = _to_matrix(link_frames[link_name]) @ _to_matrix(visual.origin)
             for obj in objects:
                 if visual.material_color and not obj.data.materials:
                     obj.data.materials.append(
                         _link_material(visual.material_color, material_cache)
                     )
-                pending.append((obj, world, bone_name))
+                # Read now, while the object is still unparented: after
+                # parenting, matrix_world is the bone frame and the file's own
+                # correction is no longer recoverable from it.
+                _bake_local_transform(obj, visual.scale, obj.matrix_world.copy())
+                pending.append((obj, world, bone_name, link_name))
                 result.mesh_objects.append(obj)
             yield done, total
 
@@ -420,13 +429,67 @@ def _attach_visuals_iter(
     # evaluation per chunk instead of one for the whole rig, which is the cost
     # the two-pass structure exists to avoid. It may overrun a caller's tick
     # budget, and that is the right trade.
-    for obj, _, bone_name in pending:
+    for obj, _, bone_name, _ in pending:
         obj.parent = armature_object
         obj.parent_type = "BONE"
         obj.parent_bone = bone_name
     bpy.context.view_layer.update()
-    for obj, world, _ in pending:
+    for obj, world, _, link_name in pending:
         obj.matrix_world = world
+        _record_link_rest(obj, link_name)
+
+
+def _bake_local_transform(obj: bpy.types.Object, scale, correction: Matrix) -> None:
+    """Move everything mesh-local into the geometry, leaving the object clean.
+
+    Two things describe the mesh in its own space rather than where the link
+    goes: the URDF's ``<mesh scale>``, and whatever correction the file itself
+    called for -- a COLLADA's unit scale and up-axis, which io/dae.py leaves in
+    ``matrix_world`` because that is the only place it can. Both act before the
+    visual origin and the link frame, so baking them into the vertices is
+    exactly equivalent to multiplying them into the placement.
+
+    Doing it here rather than there buys two things. The object comes out at a
+    scale of 1 -- scale parked in a transform channel is invisible until
+    something works in object space, and then modifiers, physics and exporters
+    that do not bake transforms all quietly use the unscaled mesh. And the
+    file's correction stops being something the placement can overwrite, which
+    is exactly how millimetre COLLADA meshes were arriving a thousand times too
+    large.
+
+    Safe against shared geometry: load_mesh runs once per <visual> and every
+    importer path creates its own datablock.
+    """
+    factors = Vector(tuple(float(v) for v in scale))
+    local = Matrix.Diagonal(factors).to_4x4() @ correction
+    if local == Matrix.Identity(4):
+        return
+    obj.data.transform(local)
+    # A negative determinant mirrors the mesh -- a negative <mesh scale>, which
+    # symmetric robots use to reuse one file for a left and a right part.
+    # Mirroring reverses winding, so the normals have to come back with it.
+    if local.to_3x3().determinant() < 0.0:
+        obj.data.flip_normals()
+
+
+def _record_link_rest(obj: bpy.types.Object, link_name: str) -> None:
+    """Remember where this mesh belongs, so a stray grab can be undone.
+
+    A link mesh's whole placement lives in its transform channels -- unlike an
+    attachment, nothing is held in ``matrix_parent_inverse`` -- so G/R/S
+    overwrites the only copy of it, and nothing on the rig is enough to
+    recompute it. The basis is stored rather than the world matrix because the
+    rig is at rest here: a basis stays correct at any pose.
+    """
+    obj[PROP_LINK_NAME] = link_name
+    obj[PROP_LINK_REST] = [float(v) for v in _np4(obj.matrix_basis).flatten()]
+    # Locked so the accident is harder to have in the first place. The reset
+    # operator exists because a lock can be cleared, and because rigs built
+    # before this was recorded are already disturbed.
+    obj.lock_location = (True, True, True)
+    obj.lock_rotation = (True, True, True)
+    obj.lock_rotation_w = True
+    obj.lock_scale = (True, True, True)
 
 
 def _link_material(rgba, cache) -> bpy.types.Material:
@@ -620,3 +683,33 @@ def attachments(armature_object: bpy.types.Object) -> list[bpy.types.Object]:
         for child in armature_object.children
         if child.parent_type == "BONE" and PROP_ATTACHMENT in child
     ]
+
+
+def link_meshes(armature_object: bpy.types.Object) -> list[bpy.types.Object]:
+    """Every mesh Kinema built for this rig's links, in child order.
+
+    Matched on a marker the builder writes, not on "bone-parented and not an
+    attachment": that negative test would also sweep up anything the user
+    parented to a bone by hand, and this list feeds an operator that overwrites
+    transforms.
+    """
+    if armature_object is None:
+        return []
+    return [
+        child
+        for child in armature_object.children
+        if child.parent_type == "BONE" and PROP_LINK_REST in child
+    ]
+
+
+def link_rest_matrix(obj: bpy.types.Object) -> Matrix | None:
+    """The local matrix a link mesh was built with, or None if not recorded.
+
+    Rigs imported before this was stored carry nothing, and the placement is
+    genuinely unrecoverable from what is on the rig -- the visual origin and
+    the mesh scale that produced it are not kept anywhere.
+    """
+    stored = obj.get(PROP_LINK_REST) if obj is not None else None
+    if stored is None or len(stored) != 16:
+        return None
+    return Matrix([[float(stored[row * 4 + col]) for col in range(4)] for row in range(4)])
