@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-01
+
+Dressing and aiming. A robot can now carry the things that make it a working cell — a
+gripper, a tool, a cable harness — and the solver can be pointed at any bone in the chain,
+keyframe included. The tool frame became something you place and offset from the panel
+rather than something you fight in Edit mode.
+
+Requires Blender 5.2 LTS or newer; every dependency still ships inside the extension zip.
+
 ### Added
 
 - A **Bones** list in the sidebar, one row per bone, that does the two things you reach for
@@ -179,5 +188,6 @@ are rejected, the first IK solve compiles for ~14 s, and Windows needs long path
 
 [PyRoki]: https://github.com/chungmin99/pyroki
 
-[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ebgenius/kinema/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ebgenius/kinema/releases/tag/v0.1.0
