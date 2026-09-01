@@ -8,7 +8,7 @@ limits and multi-turn joints.
 robotics primer written for Blender artists. This README covers building Kinema itself.
 
 > Status: released as [v0.1.0]. Import (URDF, xacro, MJCF, or the 186-robot
-> catalog), rig, pose, solve and bake all function, imports run without blocking
+> catalog), rig, pose, solve and bake all work, imports run without blocking
 > Blender, and the built extension installs and runs from a clean Blender profile.
 
 [v0.1.0]: https://github.com/ebgenius/kinema/releases/tag/v0.1.0
