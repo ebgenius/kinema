@@ -55,13 +55,19 @@ See [the solve budget](../concepts/ik.md#the-solve-budget).
 
 *Default: blank.*
 
-Where downloaded robot descriptions are stored. Blank means the standard location used by
-the underlying `robot_descriptions` library.
+Where downloaded robot descriptions are stored. Blank means `~/.cache/robot_descriptions`,
+the location the underlying `robot_descriptions` library uses.
 
 Point this somewhere specific if you want the cache on a fast drive, want it shared with
 existing tooling, or want it somewhere you can clear easily. Robots already downloaded to
 the old location are not moved — they will simply be fetched again into the new one on
 first use.
+
+!!! warning "Changing it mid-session is only half-applied"
+    A robot description module resolves its repository path once, the first time it is
+    imported. So a robot you have already imported this session keeps using the old
+    location until you restart Blender; robots you have not touched yet pick up the new one
+    immediately.
 
 See [Robot catalog](catalog.md).
 

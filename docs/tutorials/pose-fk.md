@@ -6,7 +6,7 @@ by bone.
 
 Kinema gives you a slider per joint in the **Joints (FK)** panel.
 
-![Screenshot: the catalog picker filtered to ur5e.](../assets/images/kinema_joints_sliders.png){ .screenshot }
+![Screenshot: the Joints (FK) panel, one slider per joint.](../assets/images/kinema_joints_sliders.png){ .screenshot }
 
 ## The sliders
 
