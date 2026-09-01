@@ -371,7 +371,9 @@ def _attach_visuals_iter(
     link_frames = model.link_frames()
     owner_of_link = model.nearest_actuated_ancestor()
 
-    pending: list[tuple[bpy.types.Object, Matrix, str]] = []
+    #: (object, placement, owning bone, link it draws), filled as meshes load
+    #: and drained by the two-pass parent-then-place block at the end.
+    pending: list[tuple[bpy.types.Object, Matrix, str, str]] = []
     material_cache: dict[tuple, bpy.types.Material] = {}
     total = sum(len(link.visuals) for link in model.links.values())
     done = 0

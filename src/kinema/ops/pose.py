@@ -74,14 +74,26 @@ class KINEMA_OT_reset_link_meshes(KinemaRigOperator):
         rig = active_rig(context)
         meshes = builder.link_meshes(rig)
         if not meshes:
-            # Either there are no visuals, or the rig predates the marker.
-            # Guessing is not an option: the visual origin and mesh scale that
-            # produced the placement are recorded nowhere else.
-            self.report(
-                {"WARNING"},
-                "No link meshes to reset. A rig imported before Kinema recorded "
-                "them has to be re-imported",
-            )
+            # Two very different situations, and telling someone to re-import a
+            # rig they deliberately imported without visuals is bad advice. A
+            # bone-parented child that is not an attachment is a link mesh from
+            # before the placement was recorded -- and it cannot be restored,
+            # because the visual origin and scale that produced it are kept
+            # nowhere else.
+            unmarked = [
+                child
+                for child in rig.children
+                if child.parent_type == "BONE"
+                and builder.PROP_ATTACHMENT not in child
+            ]
+            if unmarked:
+                self.report(
+                    {"WARNING"},
+                    "This rig's meshes were imported before Kinema recorded "
+                    "where they belong; re-import it to be able to reset them",
+                )
+            else:
+                self.report({"INFO"}, "This rig has no link meshes")
             return {"CANCELLED"}
 
         moved = 0
@@ -126,9 +138,16 @@ def _matrices_match(a, b, tolerance: float = 1e-6) -> bool:
 
 
 def _deltas_are_clear(obj) -> bool:
+    """Every delta channel, including the one only quaternion mode reads.
+
+    All four have to be tested because _restore_basis clears all four: leaving
+    delta_rotation_quaternion out meant an object could be reported as already
+    in place while still carrying a delta that moves it.
+    """
     return (
         tuple(obj.delta_location) == (0.0, 0.0, 0.0)
         and tuple(obj.delta_rotation_euler) == (0.0, 0.0, 0.0)
+        and tuple(obj.delta_rotation_quaternion) == (1.0, 0.0, 0.0, 0.0)
         and tuple(obj.delta_scale) == (1.0, 1.0, 1.0)
     )
 

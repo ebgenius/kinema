@@ -405,7 +405,7 @@ class TestLinkMeshRestore:
             for col in range(4):
                 assert abs(copy.matrix_world[row][col] - placed[row][col]) < 1e-6
 
-    def test_a_rig_without_the_marker_is_reported(self, arm3_rig, builder):
+    def test_a_rig_without_the_marker_says_to_re_import(self, arm3_rig, builder):
         """Rigs imported before this was recorded cannot be restored, and the
         placement genuinely is not recoverable from anything on the rig."""
         import bpy
@@ -417,6 +417,68 @@ class TestLinkMeshRestore:
 
         bpy.context.view_layer.objects.active = rig
         assert bpy.ops.kinema.reset_link_meshes() == {"CANCELLED"}
+
+    def test_a_rig_with_no_visuals_is_not_told_to_re_import(
+        self, kin, builder, arm3_urdf, clean_scene
+    ):
+        """Importing without visuals is a choice, not damage.
+
+        Both states reach the same early return, so the message has to tell
+        them apart -- "re-import this" is wrong advice for a rig that was
+        deliberately built without meshes.
+        """
+        import bpy
+
+        model = kin.model_from_urdf(arm3_urdf)
+        result = builder.build_rig(model, builder.RigBuildOptions(import_visuals=False))
+        rig = result.armature_object
+
+        assert builder.link_meshes(rig) == []
+        assert not [c for c in rig.children if c.parent_type == "BONE"], (
+            "this rig has bone-parented children, so it cannot test the other branch"
+        )
+
+        bpy.context.view_layer.objects.active = rig
+        assert bpy.ops.kinema.reset_link_meshes() == {"CANCELLED"}
+
+    def test_a_stale_delta_quaternion_is_cleared(self, arm3_rig, builder, addon):
+        """Regression: the "already in place" check ignored one delta channel.
+
+        _restore_basis clears all four, so testing only three could report a
+        mesh as untouched while it still carried a delta that displaces it.
+
+        The predicate is asserted directly as well as end-to-end: whether a
+        delta quaternion also perturbs matrix_basis depends on the rotation
+        mode, so the round-trip alone could pass for the wrong reason.
+        """
+        import bpy
+        from mathutils import Quaternion
+
+        pose_ops = importlib.import_module(f"{addon.__name__}.ops.pose")
+        _, result = arm3_rig
+        rig = result.armature_object
+        obj = next(o for o in result.mesh_objects if o.name.startswith("l2"))
+        bpy.context.view_layer.update()
+        before = obj.matrix_world.copy()
+
+        assert pose_ops._deltas_are_clear(obj), "the fixture starts with deltas set"
+        obj.rotation_mode = "QUATERNION"
+        obj.delta_rotation_quaternion = Quaternion((1.0, 0.0, 1.0, 0.0)).normalized()
+
+        # The check the bug was in, tested for its own sake.
+        assert not pose_ops._deltas_are_clear(obj), (
+            "a delta quaternion reads as no delta at all"
+        )
+
+        bpy.context.view_layer.objects.active = rig
+        bpy.context.view_layer.update()
+        assert bpy.ops.kinema.reset_link_meshes() == {"FINISHED"}
+        bpy.context.view_layer.update()
+
+        assert tuple(obj.delta_rotation_quaternion) == (1.0, 0.0, 0.0, 0.0)
+        for row in range(4):
+            for col in range(4):
+                assert abs(obj.matrix_world[row][col] - before[row][col]) < 1e-6
 
 
 class TestResumableBuild:
