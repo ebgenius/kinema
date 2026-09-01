@@ -51,6 +51,11 @@ Drop into **Pose Mode** and open the bone collections in the Properties editor
     and nothing else. If you were expecting more bones than you can see, they are there —
     just tucked away. Toggle their visibility any time.
 
+Back in the sidebar, the **Bones** panel lists the same bones as rows. That is where you
+point IK at a particular bone, and where you bolt a tool or a cable harness onto a link —
+neither of which you need yet, but it is the panel you will come back to. See
+[the sidebar reference](../reference/sidebar.md#bones).
+
 ## 4. Move it
 
 In the **Joints (FK)** panel there is one slider per joint, labelled with the joint's

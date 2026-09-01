@@ -140,22 +140,34 @@ six control bones, not one per visible segment.
 
 ## Move TCP to Active Bone raises an AttributeError
 
-**Symptom:** clicking **Move TCP to Active Bone** (or **Create TCP from Active Bone**) prints
-a traceback ending in:
+**Symptom:** on **0.1.0 only**, clicking **Move TCP to Active Bone** (or **Create TCP from
+Active Bone**) prints a traceback ending in:
 
 ```
 AttributeError: 'Bone' object has no attribute 'select'
 ```
 
-**Cause:** the button acts on the bone that is *active in Pose Mode*, and it does not cope
-with there being none. A freshly imported robot has no bone selected, so clicking the button
-straight after an import hits this every time.
+**Cause:** the button acted on the bone that was *active in Pose Mode*, and did not cope with
+there being none. A freshly imported robot has no bone selected, so clicking it straight after
+an import hit this every time.
 
-**Fix:** enter Pose Mode and click the bone you want the TCP on, then press the button. That
-is the path the [tool centre point](concepts/tcp.md) page describes, and it works.
+**Fix:** update to 0.2.0, where the TCP's bone is chosen from a **Parent Bone** field in the
+panel and no mode change is needed. On 0.1.0, enter Pose Mode and click a bone first.
 
-Fixed in the next release, where the bone is chosen from a field in the panel and no mode
-change is needed.
+## A link mesh ended up in the wrong place
+
+**Symptom:** part of the robot is floating off on its own, or rotated, and **Rest Pose** does
+not bring it back.
+
+**Cause:** the robot's visual meshes are separate objects parented to the bones. Grabbing one
+by accident moves it, and *Rest Pose* returns the **joints** — a mesh is not a joint, so it
+stays where it was left.
+
+**Fix:** **Reset Meshes**, in the Joints (FK) panel beside *Rest Pose*. It puts every link
+mesh back where the importer placed it, and leaves anything you attached yourself alone.
+
+From 0.2.0 the meshes are also locked, so this is harder to do by accident. A rig imported
+with 0.1.0 has no record of where its meshes belong and cannot be repaired — re-import it.
 
 ## Add IK Target is refused
 

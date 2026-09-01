@@ -102,3 +102,36 @@ A Kinema rig sorts its bones into four collections:
 
 `Kinema/Mechanism` stays hidden because those bones are not controls. Unhiding it is
 useful for understanding how the rig is built, and unhelpful while animating.
+
+## Attaching things to a link
+
+A robot on its own is not a working cell. The gripper, the tool, the cable harness running
+down the forearm — those are yours to add, and the [**Bones**
+panel](../reference/sidebar.md#bones) is where they go: pick an object or a collection in a
+bone's row and a copy rides that link.
+
+It is a **linked copy**. It shares mesh and materials with what you picked, so the same
+harness model can dress six links and still be edited in one place. What it does not share
+is the transform: that belongs to the copy, and it is what positions it on the bone. So
+scaling the original does not resize the attachment — scale the attachment.
+
+### Why the offset is measured from the bone's head
+
+This is the one place Blender's own behaviour and a robot's are at odds, and it is worth
+knowing which you are looking at.
+
+Blender parents to a bone's **tail**. That is sensible for a character, where a bone *is* a
+limb and its far end is where the next thing goes. On a robot rig it is nowhere useful: a
+Kinema bone sits at the **joint**, aligned to the axis it turns about, and its length is a
+display choice, not a measurement. Parenting a gripper the ordinary way would put it a
+handspan past the joint, and every offset typed afterwards would be measured from a frame
+that means nothing.
+
+So Kinema cancels the tail offset. An attachment's plain location, rotation and scale *is*
+its offset from the joint — type it in the panel, drag it with <kbd>G</kbd>, keyframe it like
+any other object channel.
+
+!!! tip "A moved link mesh can be put back"
+    The robot's own meshes are locked, precisely because a stray drag would otherwise be
+    unrecoverable. If one does end up adrift, **Reset Meshes** in the Joints panel returns
+    them; attachments are left alone.

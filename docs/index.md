@@ -27,7 +27,9 @@ animator would build by hand:
 - **Bone collections** — `Kinema/FK`, `Kinema/IK`, `Kinema/TCP`, `Kinema/Mechanism` — so
   you see controls, not machinery.
 - **An IK target you keyframe like any other**, but solved by a proper robotics solver
-  instead of Blender's built-in one.
+  instead of Blender's built-in one — and *what it aims at* is keyframable too.
+- **Somewhere to bolt your tools.** Attach an object or a collection to any link, offset it
+  from the joint, and it rides the robot.
 - **A bake step**, so the finished `.blend` renders anywhere, with or without Kinema
   installed.
 

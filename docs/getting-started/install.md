@@ -12,9 +12,9 @@ file-format reader ship inside the add-on.
 
 | Your machine | File | Size |
 |---|---|---|
-| Windows (Intel/AMD 64-bit) | `kinema-0.1.0-windows_x64.zip` | ~119 MB |
-| Linux (Intel/AMD 64-bit) | `kinema-0.1.0-linux_x64.zip` | ~139 MB |
-| macOS (Apple Silicon) | `kinema-0.1.0-macos_arm64.zip` | ~102 MB |
+| Windows (Intel/AMD 64-bit) | `kinema-0.2.0-windows_x64.zip` | ~119 MB |
+| Linux (Intel/AMD 64-bit) | `kinema-0.2.0-linux_x64.zip` | ~139 MB |
+| macOS (Apple Silicon) | `kinema-0.2.0-macos_arm64.zip` | ~102 MB |
 
 Intel Macs are not currently built. If you need one, open an issue.
 
@@ -34,7 +34,7 @@ Download the zip for your platform from the
 
     1. **Edit → Preferences → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.1.0-windows_x64.zip`
+    3. Select `kinema-0.2.0-windows_x64.zip`
     4. Kinema appears in the add-on list, already enabled
 
     !!! danger "Enable long paths first"
@@ -47,14 +47,14 @@ Download the zip for your platform from the
 
     1. **Blender → Settings → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.1.0-macos_arm64.zip`
+    3. Select `kinema-0.2.0-macos_arm64.zip`
     4. Kinema appears in the add-on list, already enabled
 
 === "Linux"
 
     1. **Edit → Preferences → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.1.0-linux_x64.zip`
+    3. Select `kinema-0.2.0-linux_x64.zip`
     4. Kinema appears in the add-on list, already enabled
 
 ## Check it worked
