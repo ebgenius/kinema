@@ -150,6 +150,15 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
         header.operator("kinema.reset_pose", text="Rest Pose", icon="LOOP_BACK")
         header.operator("kinema.key_joints", text="Key All", icon="DECORATE_KEYFRAME")
 
+        # Beside Rest Pose because it answers the same question -- "put the
+        # robot back" -- for the half Rest Pose cannot reach. Only shown when
+        # there is something to reset, so it does not imply the rig has meshes
+        # when it has none.
+        if builder.link_meshes(rig):
+            layout.operator(
+                "kinema.reset_link_meshes", text="Reset Meshes", icon="LOOP_BACK"
+            )
+
         column = layout.column(align=True)
         for pose_bone in joints:
             bone = pose_bone.bone
@@ -175,6 +184,20 @@ def _joint_indices(rig: bpy.types.Object) -> dict[str, int]:
     keyframable and a bone reference is not.
     """
     return {bone.name: index for index, bone in enumerate(builder.joint_bones(rig))}
+
+
+def tcp_exists(rig: bpy.types.Object) -> bool:
+    """Whether this rig has a TCP marker that is actually there.
+
+    The property outlives the bone -- delete the marker in Edit mode and
+    ``kinema_tcp_bone`` still names it. Testing the property's bare truthiness
+    had the panel say "No TCP on this rig" and offer "Update TCP" in the same
+    breath, so both halves ask this instead.
+    """
+    if rig is None:
+        return False
+    name = rig.get(builder.PROP_TCP_BONE)
+    return bool(name) and name in rig.pose.bones
 
 
 def _rotation_channel(obj: bpy.types.Object) -> str:
@@ -344,12 +367,13 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         rig = active_rig(context)
         tcp_name = rig.get(builder.PROP_TCP_BONE)
 
-        if tcp_name and tcp_name in rig.pose.bones:
+        exists = tcp_exists(rig)
+        if exists:
             self._draw_readout(layout, rig, rig.pose.bones[tcp_name])
         else:
             layout.label(text="No TCP on this rig", icon="INFO")
 
-        self._draw_placement(layout, rig, exists=bool(tcp_name))
+        self._draw_placement(layout, rig, exists=exists)
 
     @staticmethod
     def _draw_readout(layout, rig, tcp) -> None:

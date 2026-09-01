@@ -23,3 +23,7 @@ __pycache__/
 
 .vscode/
 .idea/
+
+# MkDocs build output. The docs sources live on the github-page branch, but
+# building them from this checkout drops the result here.
+/site/

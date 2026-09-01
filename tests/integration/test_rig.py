@@ -214,6 +214,273 @@ class TestVisuals:
         assert result.mesh_objects == []
 
 
+def _world_extent(obj):
+    """The object's bounding-box size in world space, as (x, y, z)."""
+    import bpy
+    from mathutils import Vector
+
+    bpy.context.view_layer.update()
+    points = [obj.matrix_world @ Vector(v.co) for v in obj.data.vertices]
+    return tuple(
+        max(p[axis] for p in points) - min(p[axis] for p in points) for axis in range(3)
+    )
+
+
+@pytest.fixture
+def scale_rig(kin, builder, addon, fixture_dir, clean_scene):
+    """A rig whose visuals are real mesh files with a <mesh scale>.
+
+    Every other fixture uses primitives, so neither the scale attribute nor a
+    mesh file's own unit/up-axis correction was reachable through build_rig.
+    """
+    yourdfpy = pytest.importorskip("yourdfpy")
+    resolve = importlib.import_module(f"{addon.__name__}.io.resolve")
+    path = fixture_dir / "mesh_scale.urdf"
+
+    urdf = yourdfpy.URDF.load(str(path))
+    # Without a resolver the filenames stay relative to the cwd, which is the
+    # repo root rather than the fixture directory.
+    model = kin.model_from_urdf(urdf, resolve.make_mesh_resolver(path))
+    result = builder.build_rig(model, builder.RigBuildOptions())
+    assert not result.warnings, f"visuals failed to load: {result.warnings}"
+    return {obj.name.split(".")[0]: obj for obj in result.mesh_objects}, result
+
+
+class TestMeshScale:
+    def test_the_files_own_units_survive_the_build(self, scale_rig):
+        """Regression: the DAE correction was computed and then overwritten.
+
+        io/dae.py puts the file's millimetre scale and Y-up rotation into
+        matrix_world; the builder then assigned matrix_world outright and threw
+        it away, so this mesh came out 1000x too large and lying on its side.
+        test_dae.py proved the correction was computed; nothing proved it
+        survived a rig build, which is how it lived.
+        """
+        meshes, _ = scale_rig
+        extent = _world_extent(meshes["base"])
+
+        assert extent[0] == pytest.approx(2.0, abs=1e-4), "millimetres were not applied"
+        # Y_UP -> Z_UP sends the file's +Z to Blender's -Y, so the 3 m edge
+        # lands on Y and the mesh is flat in Z.
+        assert extent[1] == pytest.approx(3.0, abs=1e-4), "up-axis was not corrected"
+        assert extent[2] == pytest.approx(0.0, abs=1e-4)
+
+    def test_mesh_scale_lands_in_the_geometry(self, scale_rig):
+        """scale="2 2 2" must double the mesh, not park 2.0 in obj.scale.
+
+        Scale left in the transform channel is invisible until something works
+        in object space -- modifiers, physics, exporters that do not bake
+        transforms all quietly use the unscaled mesh.
+        """
+        meshes, _ = scale_rig
+        obj = meshes["scaled"]
+
+        assert tuple(round(v, 6) for v in obj.scale) == (1.0, 1.0, 1.0)
+        extent = _world_extent(obj)
+        assert extent[0] == pytest.approx(4.0, abs=1e-4)
+        assert extent[1] == pytest.approx(6.0, abs=1e-4)
+
+    def test_single_value_scale_imports(self, scale_rig):
+        """Regression: scale="0.5" aborted the entire rig build.
+
+        The URDF parser hands a bare float back for the shorthand, which became
+        a 0-d array and then a TypeError inside Matrix.Diagonal -- not a
+        MeshLoadError, so it escaped the per-visual handler and took the whole
+        import with it.
+        """
+        meshes, _ = scale_rig
+        assert "shorthand" in meshes, "the single-value scale aborted the build"
+
+        extent = _world_extent(meshes["shorthand"])
+        assert extent[0] == pytest.approx(1.0, abs=1e-4), "0.5 was not applied uniformly"
+        assert extent[1] == pytest.approx(1.5, abs=1e-4)
+
+    def test_a_mirrored_mesh_keeps_its_normals(self, scale_rig):
+        """A negative scale reverses winding; symmetric robots use it to reuse
+        one file for a left and a right part."""
+        meshes, _ = scale_rig
+        obj = meshes["mirrored"]
+
+        assert tuple(round(v, 6) for v in obj.scale) == (1.0, 1.0, 1.0)
+        assert _world_extent(obj)[0] == pytest.approx(2.0, abs=1e-4)
+        # Mirroring flips the winding; flip_normals puts it back, so the
+        # polygon normals still face the way the unmirrored mesh's do.
+        reference = meshes["base"]
+        assert obj.data.polygons and reference.data.polygons
+        mirrored_z = obj.data.polygons[0].normal.z
+        reference_z = reference.data.polygons[0].normal.z
+        assert mirrored_z * reference_z > 0.0, "normals were left inside out"
+
+
+class TestLinkMeshRestore:
+    def test_the_rest_transform_is_recorded(self, arm3_rig, builder):
+        meshes = builder.link_meshes(arm3_rig[1].armature_object)
+        assert meshes, "no link meshes found by the marker"
+        for obj in meshes:
+            assert builder.link_rest_matrix(obj) is not None
+            assert builder.PROP_LINK_NAME in obj
+
+    def test_link_meshes_are_locked(self, arm3_rig, builder):
+        """The accident this prevents is a stray G/R/S in the viewport."""
+        for obj in builder.link_meshes(arm3_rig[1].armature_object):
+            assert tuple(obj.lock_location) == (True, True, True)
+            assert tuple(obj.lock_rotation) == (True, True, True)
+            assert tuple(obj.lock_scale) == (True, True, True)
+
+    def test_a_moved_mesh_goes_back(self, arm3_rig, builder):
+        """The issue: Rest Pose cannot reach a mesh, and nothing else could."""
+        import bpy
+        from mathutils import Euler, Vector
+
+        model, result = arm3_rig
+        rig = result.armature_object
+        obj = next(o for o in result.mesh_objects if o.name.startswith("l2"))
+        bpy.context.view_layer.update()
+        before = obj.matrix_world.copy()
+
+        obj.location = Vector((0.7, -0.3, 1.4))
+        obj.rotation_euler = Euler((0.6, -0.2, 1.1), "XYZ")
+        obj.scale = (2.0, 0.5, 3.0)
+        bpy.context.view_layer.objects.active = rig
+        bpy.context.view_layer.update()
+        assert (obj.matrix_world.translation - before.translation).length > 1e-3
+
+        assert bpy.ops.kinema.reset_link_meshes() == {"FINISHED"}
+        bpy.context.view_layer.update()
+
+        for row in range(4):
+            for col in range(4):
+                assert abs(obj.matrix_world[row][col] - before[row][col]) < 1e-6
+
+        # And it is still where the URDF says, which is the invariant that
+        # matters rather than merely "back where it was".
+        expected = model.link_frames()["l2"][:3, 3] + np.array([0.05, 0, 0])
+        assert np.allclose(np.array(obj.matrix_world.translation), expected, atol=1e-6)
+
+    def test_it_restores_from_a_posed_rig(self, arm3_rig, builder):
+        """Why the *basis* is stored and not the world matrix: the rig need not
+        be at rest when the mistake is noticed."""
+        import bpy
+        from mathutils import Vector
+
+        _, result = arm3_rig
+        rig = result.armature_object
+        obj = next(o for o in result.mesh_objects if o.name.startswith("l2"))
+
+        rig.pose.bones["joint2"].rotation_euler[1] = 0.7
+        bpy.context.view_layer.update()
+        posed = obj.matrix_world.copy()
+
+        obj.location = Vector((1.0, 1.0, 1.0))
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.kinema.reset_link_meshes()
+        bpy.context.view_layer.update()
+
+        for row in range(4):
+            for col in range(4):
+                assert abs(obj.matrix_world[row][col] - posed[row][col]) < 1e-6
+
+    def test_attachments_are_left_alone(self, arm3_rig, builder, addon):
+        """A user's own object must never be moved by this."""
+        import bpy
+        from mathutils import Vector
+
+        attach = importlib.import_module(f"{addon.__name__}.ops.attach")
+        _, result = arm3_rig
+        rig = result.armature_object
+
+        source = bpy.data.objects.new("payload", bpy.data.meshes.new("payload_mesh"))
+        bpy.context.scene.collection.objects.link(source)
+        copy = attach.attach(rig, "joint2", source)
+        copy.location = Vector((0.0, 0.0, 0.25))
+        bpy.context.view_layer.update()
+        placed = copy.matrix_world.copy()
+
+        assert copy not in builder.link_meshes(rig)
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.kinema.reset_link_meshes()
+        bpy.context.view_layer.update()
+
+        for row in range(4):
+            for col in range(4):
+                assert abs(copy.matrix_world[row][col] - placed[row][col]) < 1e-6
+
+    def test_a_rig_without_the_marker_says_to_re_import(self, arm3_rig, builder):
+        """Rigs imported before this was recorded cannot be restored, and the
+        placement genuinely is not recoverable from anything on the rig."""
+        import bpy
+
+        _, result = arm3_rig
+        rig = result.armature_object
+        for obj in builder.link_meshes(rig):
+            del obj[builder.PROP_LINK_REST]
+
+        bpy.context.view_layer.objects.active = rig
+        assert bpy.ops.kinema.reset_link_meshes() == {"CANCELLED"}
+
+    def test_a_rig_with_no_visuals_is_not_told_to_re_import(
+        self, kin, builder, arm3_urdf, clean_scene
+    ):
+        """Importing without visuals is a choice, not damage.
+
+        Both states reach the same early return, so the message has to tell
+        them apart -- "re-import this" is wrong advice for a rig that was
+        deliberately built without meshes.
+        """
+        import bpy
+
+        model = kin.model_from_urdf(arm3_urdf)
+        result = builder.build_rig(model, builder.RigBuildOptions(import_visuals=False))
+        rig = result.armature_object
+
+        assert builder.link_meshes(rig) == []
+        assert not [c for c in rig.children if c.parent_type == "BONE"], (
+            "this rig has bone-parented children, so it cannot test the other branch"
+        )
+
+        bpy.context.view_layer.objects.active = rig
+        assert bpy.ops.kinema.reset_link_meshes() == {"CANCELLED"}
+
+    def test_a_stale_delta_quaternion_is_cleared(self, arm3_rig, builder, addon):
+        """Regression: the "already in place" check ignored one delta channel.
+
+        _restore_basis clears all four, so testing only three could report a
+        mesh as untouched while it still carried a delta that displaces it.
+
+        The predicate is asserted directly as well as end-to-end: whether a
+        delta quaternion also perturbs matrix_basis depends on the rotation
+        mode, so the round-trip alone could pass for the wrong reason.
+        """
+        import bpy
+        from mathutils import Quaternion
+
+        pose_ops = importlib.import_module(f"{addon.__name__}.ops.pose")
+        _, result = arm3_rig
+        rig = result.armature_object
+        obj = next(o for o in result.mesh_objects if o.name.startswith("l2"))
+        bpy.context.view_layer.update()
+        before = obj.matrix_world.copy()
+
+        assert pose_ops._deltas_are_clear(obj), "the fixture starts with deltas set"
+        obj.rotation_mode = "QUATERNION"
+        obj.delta_rotation_quaternion = Quaternion((1.0, 0.0, 1.0, 0.0)).normalized()
+
+        # The check the bug was in, tested for its own sake.
+        assert not pose_ops._deltas_are_clear(obj), (
+            "a delta quaternion reads as no delta at all"
+        )
+
+        bpy.context.view_layer.objects.active = rig
+        bpy.context.view_layer.update()
+        assert bpy.ops.kinema.reset_link_meshes() == {"FINISHED"}
+        bpy.context.view_layer.update()
+
+        assert tuple(obj.delta_rotation_quaternion) == (1.0, 0.0, 0.0, 0.0)
+        for row in range(4):
+            for col in range(4):
+                assert abs(obj.matrix_world[row][col] - before[row][col]) < 1e-6
+
+
 class TestResumableBuild:
     """build_rig_iter is what lets the import operator stay responsive.
 
@@ -333,8 +600,9 @@ class TestImportTeardown:
     def test_abort_still_discards_a_live_partial_build(self, ops, kin, builder,
                                                       arm3_urdf, clean_scene):
         """...while a real cancel must still clean up."""
-        import bpy
         import threading
+
+        import bpy
 
         model = kin.model_from_urdf(arm3_urdf)
         result = builder.RigBuildResult()

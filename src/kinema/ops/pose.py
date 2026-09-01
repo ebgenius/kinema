@@ -62,6 +62,96 @@ class KINEMA_OT_key_joints(KinemaRigOperator):
         return {"FINISHED"}
 
 
+class KINEMA_OT_reset_link_meshes(KinemaRigOperator):
+    bl_idname = "kinema.reset_link_meshes"
+    bl_label = "Reset Meshes"
+    bl_description = (
+        "Put every link mesh back where the importer placed it, undoing a "
+        "stray grab. Objects you attached yourself are left alone"
+    )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        meshes = builder.link_meshes(rig)
+        if not meshes:
+            # Two very different situations, and telling someone to re-import a
+            # rig they deliberately imported without visuals is bad advice. A
+            # bone-parented child that is not an attachment is a link mesh from
+            # before the placement was recorded -- and it cannot be restored,
+            # because the visual origin and scale that produced it are kept
+            # nowhere else.
+            unmarked = [
+                child
+                for child in rig.children
+                if child.parent_type == "BONE"
+                and builder.PROP_ATTACHMENT not in child
+            ]
+            if unmarked:
+                self.report(
+                    {"WARNING"},
+                    "This rig's meshes were imported before Kinema recorded "
+                    "where they belong; re-import it to be able to reset them",
+                )
+            else:
+                self.report({"INFO"}, "This rig has no link meshes")
+            return {"CANCELLED"}
+
+        moved = 0
+        for obj in meshes:
+            rest = builder.link_rest_matrix(obj)
+            if rest is None:
+                continue
+            if _restore_basis(obj, rest):
+                moved += 1
+
+        context.view_layer.update()
+        if not moved:
+            self.report({"INFO"}, "Link meshes were already in place")
+            return {"FINISHED"}
+        self.report({"INFO"}, f"Reset {moved} link mesh{'es' if moved != 1 else ''}")
+        return {"FINISHED"}
+
+
+def _restore_basis(obj, rest) -> bool:
+    """Put ``obj`` back on ``rest``. Returns True if it actually moved.
+
+    The delta channels are cleared first for the same reason attachments clear
+    them: ``matrix_basis`` reads deltas, but writing it only touches the
+    ordinary channels, so a delta left behind would reappear immediately.
+    """
+    if _matrices_match(obj.matrix_basis, rest) and _deltas_are_clear(obj):
+        return False
+    obj.delta_location = (0.0, 0.0, 0.0)
+    obj.delta_rotation_euler = (0.0, 0.0, 0.0)
+    obj.delta_rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    obj.delta_scale = (1.0, 1.0, 1.0)
+    obj.matrix_basis = rest
+    return True
+
+
+def _matrices_match(a, b, tolerance: float = 1e-6) -> bool:
+    return all(
+        abs(a[row][col] - b[row][col]) < tolerance
+        for row in range(4)
+        for col in range(4)
+    )
+
+
+def _deltas_are_clear(obj) -> bool:
+    """Every delta channel, including the one only quaternion mode reads.
+
+    All four have to be tested because _restore_basis clears all four: leaving
+    delta_rotation_quaternion out meant an object could be reported as already
+    in place while still carrying a delta that moves it.
+    """
+    return (
+        tuple(obj.delta_location) == (0.0, 0.0, 0.0)
+        and tuple(obj.delta_rotation_euler) == (0.0, 0.0, 0.0)
+        and tuple(obj.delta_rotation_quaternion) == (1.0, 0.0, 0.0, 0.0)
+        and tuple(obj.delta_scale) == (1.0, 1.0, 1.0)
+    )
+
+
 class KINEMA_OT_set_tcp(KinemaRigOperator):
     bl_idname = "kinema.set_tcp"
     bl_label = "Set TCP"
@@ -102,6 +192,23 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         if rig.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
 
+        # Everything past this point runs with the rig made active and forced
+        # into Object mode, so every exit has to put those back -- not just the
+        # successful one. Cancelling used to leave the user in a different mode
+        # on a different object, which is a worse outcome than the failure it
+        # was reporting.
+        try:
+            return self._place(context, rig, source)
+        finally:
+            if previous_active is not None:
+                context.view_layer.objects.active = previous_active
+            if previous_mode != "OBJECT" and context.object is not None:
+                try:
+                    bpy.ops.object.mode_set(mode=previous_mode)
+                except RuntimeError:
+                    pass
+
+    def _place(self, context: bpy.types.Context, rig, source) -> set[str]:
         # Computed before Edit mode, not inside it: Bone.matrix_local is not
         # live while the armature is open for editing, and the whole placement
         # hangs off it.
@@ -133,15 +240,6 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
             bpy.ops.object.mode_set(mode="OBJECT")
 
         self._finish_tcp(rig, source)
-
-        if previous_active is not None:
-            context.view_layer.objects.active = previous_active
-        if previous_mode != "OBJECT" and context.object is not None:
-            try:
-                bpy.ops.object.mode_set(mode=previous_mode)
-            except RuntimeError:
-                pass
-
         self.report({"INFO"}, f"TCP placed on '{source.name}'")
         return {"FINISHED"}
 
@@ -264,6 +362,7 @@ class KINEMA_OT_reset_tcp_offset(KinemaRigOperator):
 classes = (
     KINEMA_OT_reset_pose,
     KINEMA_OT_key_joints,
+    KINEMA_OT_reset_link_meshes,
     KINEMA_OT_set_tcp,
     KINEMA_OT_reset_tcp_offset,
 )

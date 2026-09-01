@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<!--
+  Mesh-scale and file-correction cases, which no other fixture reaches: every
+  visual elsewhere is a primitive, so <mesh scale> and a mesh file's own units
+  were never exercised through build_rig.
+
+  triangle_yup_mm.dae is 2000 x 3000 units, declares <unit meter="0.001"> and
+  Y_UP, and so measures 2 m x 3 m once its own correction is honoured. Each
+  link below multiplies that by a different <mesh scale>.
+-->
+<robot name="mesh_scale">
+
+  <!-- No scale: the file's own millimetre/Y-up correction and nothing else. -->
+  <link name="base">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="triangle_yup_mm.dae"/></geometry>
+    </visual>
+  </link>
+
+  <!-- Uniform scale, the millimetre-mesh idiom. Doubles the 2 m x 3 m to
+       4 m x 6 m, and must land in the geometry rather than in obj.scale. -->
+  <link name="scaled">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="triangle_yup_mm.dae" scale="2 2 2"/></geometry>
+    </visual>
+  </link>
+
+  <!-- Single-value shorthand. The URDF parser returns a bare float for this,
+       which used to reach Matrix.Diagonal as a 0-d array and abort the whole
+       import rather than this one visual. -->
+  <link name="shorthand">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="triangle_yup_mm.dae" scale="0.5"/></geometry>
+    </visual>
+  </link>
+
+  <!-- Mirrored, as symmetric robots do to reuse one file for a left and a
+       right part. Reverses winding, so the normals have to be flipped back. -->
+  <link name="mirrored">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="triangle_yup_mm.dae" scale="-1 1 1"/></geometry>
+    </visual>
+  </link>
+
+  <joint name="joint1" type="revolute">
+    <parent link="base"/>
+    <child link="scaled"/>
+    <origin xyz="0 0 0.5" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="1"/>
+  </joint>
+
+  <joint name="joint2" type="revolute">
+    <parent link="scaled"/>
+    <child link="shorthand"/>
+    <origin xyz="0 0 0.5" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="1"/>
+  </joint>
+
+  <joint name="joint3" type="revolute">
+    <parent link="shorthand"/>
+    <child link="mirrored"/>
+    <origin xyz="0 0 0.5" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="1"/>
+  </joint>
+
+</robot>

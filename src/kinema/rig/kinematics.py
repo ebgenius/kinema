@@ -249,6 +249,26 @@ def _material_color(visual, material_map) -> tuple[float, float, float, float] |
     return tuple(values[:4])
 
 
+def _scale_vector(scale) -> np.ndarray:
+    """A URDF ``<mesh scale>`` as three floats, whatever shape it arrived in.
+
+    ``scale="0.001"`` is common shorthand, and the URDF parser hands that back
+    as a bare float -- which became a 0-d array and then a TypeError deep in
+    the rig builder, aborting the whole import rather than the one visual. A
+    two-value scale fails the same way. Both are broadcast here instead.
+    """
+    if scale is None:
+        return np.ones(3, dtype=float)
+    values = np.atleast_1d(np.asarray(scale, dtype=float)).ravel()
+    if values.size == 0:
+        return np.ones(3, dtype=float)
+    if values.size == 1:
+        return np.full(3, float(values[0]))
+    if values.size < 3:
+        return np.array([*values, *np.ones(3 - values.size)], dtype=float)
+    return values[:3].astype(float)
+
+
 def _visual_specs(link, material_map, mesh_resolver) -> list[VisualSpec]:
     specs: list[VisualSpec] = []
     for visual in getattr(link, "visuals", ()) or ():
@@ -261,12 +281,7 @@ def _visual_specs(link, material_map, mesh_resolver) -> list[VisualSpec]:
 
         mesh = getattr(geometry, "mesh", None)
         if mesh is not None and getattr(mesh, "filename", None):
-            scale = getattr(mesh, "scale", None)
-            scale = (
-                np.asarray(scale, dtype=float)
-                if scale is not None
-                else np.ones(3, dtype=float)
-            )
+            scale = _scale_vector(getattr(mesh, "scale", None))
             specs.append(
                 VisualSpec(
                     mesh_path=mesh_resolver(mesh.filename),
