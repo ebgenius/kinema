@@ -1,9 +1,8 @@
-"""Turn a catalog key or a file path into a :class:`RobotModel`, off-thread.
+"""Turn a file path into a :class:`RobotModel`, off-thread.
 
 Everything here is deliberately free of ``bpy``. That is the whole point: it
-lets the import operator run this entire half -- HTTPS download, tarball or
-sparse fetch, xacro render, URDF/MJCF parse -- on a worker thread, and keep
-Blender's event loop running meanwhile.
+lets the import operator run this entire half -- xacro render, URDF/MJCF parse
+-- on a worker thread, and keep Blender's event loop running meanwhile.
 
 The remaining half, building the armature and importing meshes, cannot follow:
 ``bpy`` is not thread-safe. It is chunked across modal ticks instead
@@ -17,6 +16,7 @@ in front of the user.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,8 +33,7 @@ class LoadResult:
 
     model: RobotModel | None = None
     #: ``(kind, value)`` written onto the rig so the solver can reload the
-    #: description later: ("catalog", key), ("catalog-mjcf", key), ("file",
-    #: path) or ("mjcf", path).
+    #: description later: ("file", path) or ("mjcf", path).
     source: tuple[str, str] | None = None
     error: str | None = None
     cancelled: bool = False
@@ -60,42 +59,6 @@ def looks_like_mjcf(path: Path) -> bool:
 
 def _cancelled_result() -> LoadResult:
     return LoadResult(cancelled=True, error="Import cancelled")
-
-
-def load_catalog(
-    key: str,
-    *,
-    progress: Callable[[float, int, int], None] | None = None,
-    should_cancel: Callable[[], bool] | None = None,
-) -> LoadResult:
-    """Download (if needed) and parse one catalog description."""
-    from ..catalog import fetch, index
-    from ..rig import kinematics
-
-    entry = index.get(key)
-    if entry is None:
-        return LoadResult(error=f"Unknown robot '{key}'")
-
-    try:
-        if entry.has_urdf:
-            urdf = index.load_urdf(key, progress=progress, should_cancel=should_cancel)
-            model = kinematics.model_from_urdf(
-                urdf, mesh_resolver=getattr(urdf, "_filename_handler", None)
-            )
-            return LoadResult(
-                model=model,
-                source=("catalog", key),
-                resolver=getattr(urdf, "_filename_handler", None),
-            )
-
-        path = index.mjcf_path(key, progress=progress, should_cancel=should_cancel)
-        return _model_from_mjcf(path, ("catalog-mjcf", key))
-    except fetch.FetchCancelled:
-        return _cancelled_result()
-    except kinematics.UnsupportedJointError as exc:
-        return LoadResult(error=str(exc))
-    except Exception as exc:  # noqa: BLE001 - surfaced in the UI by the operator
-        return LoadResult(error=f"Could not load '{key}': {exc}")
 
 
 def load_file(
@@ -150,18 +113,35 @@ def load_file(
 
 
 def _load_xacro(path: Path, resolver):
-    """Render a xacro to URDF first; many ROS descriptions ship only xacro."""
+    """Render a xacro to URDF first; many ROS descriptions ship only xacro.
+
+    xacrodoc's own ``temp_urdf_file_path`` cannot be used. It yields the path of
+    a NamedTemporaryFile it is still holding open, and Windows refuses to open a
+    file that another handle has -- so every xacro import failed there with
+    ``WinError 32``. Writing the render ourselves and closing it first is the
+    fix; the temp directory is fine for it, because ``resolver`` was built from
+    the *xacro's* path and is what yourdfpy defers every mesh filename to.
+    """
+    import tempfile
+
     import yourdfpy
     from xacrodoc import XacroDoc
 
     doc = XacroDoc.from_file(str(path), resolve_packages=True)
-    with doc.temp_urdf_file_path() as urdf_path:
+
+    handle, rendered = tempfile.mkstemp(suffix=".urdf", prefix=f"kinema-{path.stem}-")
+    os.close(handle)
+    rendered_path = Path(rendered)
+    try:
+        rendered_path.write_text(doc.to_urdf_string(), encoding="utf-8")
         return yourdfpy.URDF.load(
-            urdf_path,
+            str(rendered_path),
             build_scene_graph=True,
             load_meshes=False,
             filename_handler=lambda name: resolver(name),
         )
+    finally:
+        rendered_path.unlink(missing_ok=True)
 
 
 def _model_from_mjcf(path: str | Path, source: tuple[str, str]) -> LoadResult:

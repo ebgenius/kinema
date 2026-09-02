@@ -254,15 +254,8 @@ def tip_bone(rig) -> str:
     return tip_bone_for(rig, getattr(rig, "kinema_ik_tip", -1))
 
 
-def _load_source_urdf(rig, *, allow_download: bool = False):
+def _load_source_urdf(rig):
     """Reload the description this rig was built from, if we still can.
-
-    ``allow_download`` defaults to False, and every caller so far leaves it
-    there. This runs from ``pyroki()``, which is reached from a depsgraph
-    handler and from panel draws -- neither of which may start a download.
-    Without the guard, opening a saved .blend and nudging an IK target could
-    silently begin fetching hundreds of megabytes on the main thread and then
-    quietly degrade to the NumPy solver when it failed.
 
     Raises SolverError with a readable reason; the panel shows it. Returns None
     only when the rig records no source at all.
@@ -272,30 +265,24 @@ def _load_source_urdf(rig, *, allow_download: bool = False):
     if not kind or not source:
         return None
 
-    if kind in ("catalog", "catalog-mjcf") and not allow_download:
-        from ..catalog import fetch
-
-        if not fetch.is_cached(source):
-            raise SolverError(
-                f"'{source}' is not downloaded; re-import this robot to fetch it"
-            )
+    if kind in ("catalog", "catalog-mjcf"):
+        # Rigs built by Kinema 0.2.0 and earlier, when the catalog downloaded
+        # descriptions itself. The file may well still be in the old cache, but
+        # nothing records where, so there is nothing honest to do but say so.
+        raise SolverError(
+            f"'{source}' came from the old downloading catalog. Re-import the "
+            "description from disk to restore the PyRoki solver"
+        )
 
     try:
-        if kind == "catalog":
-            from ..catalog.index import load_urdf
-
-            return load_urdf(source)
-
-        if kind in ("mjcf", "catalog-mjcf"):
+        if kind == "mjcf":
             # PyRoki only reads URDF, so re-parse the MJCF and render the
-            # kinematic tree back out as one. Without this a third of the
-            # catalog would be stuck on the NumPy fallback.
-            from ..catalog.index import mjcf_path
+            # kinematic tree back out as one. Without this every MJCF rig would
+            # be stuck on the NumPy fallback.
             from ..io.mjcf import model_from_mjcf
             from .urdf_bridge import urdf_from_model
 
-            path = mjcf_path(source) if kind == "catalog-mjcf" else source
-            return urdf_from_model(model_from_mjcf(path))
+            return urdf_from_model(model_from_mjcf(source))
 
         import os
 

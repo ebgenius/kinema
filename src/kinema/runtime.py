@@ -73,20 +73,31 @@ def configure_jax_env() -> None:
     os.environ.setdefault("JAX_ENABLE_X64", "0")
 
 
+#: Vendored packages that log through loguru, and whose output Kinema silences.
+_LOGURU_MODULES = ("jaxls", "pyroki")
+
+
 def silence_vendor_logging(debug: bool = False) -> None:
     """Mute jaxls' per-solve loguru output unless debugging.
 
     jaxls emits four INFO lines from ``LeastSquaresProblem.analyze()``. That is
     fine in a script and intolerable from a viewport handler firing on every
     mouse move.
+
+    ``logger.disable`` and not ``logger.remove``: loguru's logger is a
+    process-wide singleton shared with every other add-on in the Blender
+    session, and ``remove()`` tears down *their* sinks too. ``disable(name)``
+    silences one package's records and leaves everyone else's logging intact.
     """
     try:
         from loguru import logger
     except ImportError:
         return
-    logger.remove()
-    if debug:
-        logger.add(sys.stderr, level="DEBUG")
+    for name in _LOGURU_MODULES:
+        if debug:
+            logger.enable(name)
+        else:
+            logger.disable(name)
 
 
 # --------------------------------------------------------------------------
@@ -181,7 +192,6 @@ def dependency_report() -> list[tuple[str, str, str]]:
         ("pyroki", "robot kinematics (vendored)"),
         ("yourdfpy", "URDF parsing"),
         ("collada", "COLLADA meshes, from pycollada (Blender 5 removed its own)"),
-        ("robot_descriptions", "robot catalog"),
         ("trimesh", "mesh utilities"),
     ):
         try:

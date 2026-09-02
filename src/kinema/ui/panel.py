@@ -68,6 +68,19 @@ class KinemaSceneProps(PropertyGroup):
         description="Filter the catalog by robot type",
         items=lambda self, context: _tag_items(),
     )
+    catalog_pick: StringProperty(
+        name="Catalog Pick",
+        description="Robot most recently looked up in the catalog",
+        default="",
+    )
+    catalog_show_all: BoolProperty(
+        name="Show All Variants",
+        description=(
+            "Include entries reviewed as duplicates, broken or partially "
+            "supported. Off, only the recommended entry for each robot shows"
+        ),
+        default=False,
+    )
     # Blender reads properties from a class's own __annotations__ and does not
     # walk base classes, so the shared definitions are merged in rather than
     # inherited. Same trick the import operators use.
@@ -86,6 +99,42 @@ def _tag_items():
     ]
 
 
+def _draw_catalog(layout, context: bpy.types.Context) -> None:
+    """The catalogue lookup: search, then what to do with the answer.
+
+    Kinema cannot download the description, so the useful output is the clone
+    command and -- above all -- *which file in the repository to open*. A user
+    who clones mujoco_menagerie and is left to find one robot among 2466 files
+    has not been helped.
+    """
+    from ..catalog import index as catalog
+
+    props = context.scene.kinema
+
+    layout.label(text="Kinema does not download robots.", icon="INFO")
+    layout.operator("kinema.browse_catalog", text="Search Catalog…", icon="VIEWZOOM")
+    layout.prop(props, "catalog_show_all")
+
+    entry = catalog.get(props.catalog_pick) if props.catalog_pick else None
+    if entry is None:
+        return
+
+    box = layout.box()
+    box.label(text=entry.label, icon="OUTLINER_OB_ARMATURE")
+    if entry.status:
+        box.label(text=entry.note or entry.status, icon="ERROR")
+
+    column = box.column(align=True)
+    column.label(text="Clone command copied to clipboard:")
+    column.label(text=f"{entry.clone_dir}", icon="FILE_FOLDER")
+    if entry.file_path:
+        column.label(text=f"then open: {entry.file_path}", icon="FILE_TICK")
+    else:
+        column.label(text="file unknown; look inside after cloning", icon="QUESTION")
+
+    box.operator("kinema.open_catalog_repo", text="Open Repository", icon="URL")
+
+
 class KinemaPanelBase:
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -101,9 +150,12 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
 
         column = layout.column(align=True)
         column.scale_y = 1.2
-        column.operator("kinema.import_catalog", text="Import from Catalog…",
-                        icon="OUTLINER_OB_ARMATURE")
         column.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
+
+        header, body = layout.panel("kinema_find_robot", default_closed=True)
+        header.label(text="Find a Robot")
+        if body is not None:
+            _draw_catalog(body, context)
 
         header, body = layout.panel("kinema_import_options", default_closed=True)
         header.label(text="Import Options")

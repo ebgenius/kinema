@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>kinema_fixture</name>
+  <version>0.0.1</version>
+  <description>Fixture package so $(find kinema_fixture) has something to resolve.</description>
+  <maintainer email="nobody@example.com">nobody</maintainer>
+  <license>MIT</license>
+</package>

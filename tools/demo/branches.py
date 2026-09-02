@@ -20,6 +20,7 @@ import numpy as np
 import bpy
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+import robots  # noqa: E402
 from _blendfile import save_blend  # noqa: E402
 
 EXT = "bl_ext.user_default.kinema"
@@ -35,7 +36,7 @@ def build(robot_key, tcp_bone=None):
     for obj in list(bpy.data.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
 
-    res = bpy.ops.kinema.build_robot(robot_key=robot_key)
+    res = bpy.ops.kinema.build_robot(filepath=robots.resolve(robot_key))
     if "FINISHED" not in res:
         raise RuntimeError(f"import failed for {robot_key}: {res}")
     rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))

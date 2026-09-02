@@ -24,6 +24,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+import robots  # noqa: E402
 from _blendfile import save_blend  # noqa: E402
 
 EXT = "bl_ext.user_default.kinema"
@@ -51,7 +52,7 @@ def log(msg):
 def import_rig(enforce_limits: bool):
     before = set(bpy.data.objects)
     res = bpy.ops.kinema.build_robot(
-        robot_key=ROBOT, enforce_limits=enforce_limits, create_tcp=True
+        filepath=robots.resolve(ROBOT), enforce_limits=enforce_limits, create_tcp=True
     )
     if "FINISHED" not in res:
         raise RuntimeError(f"import failed: {res}")

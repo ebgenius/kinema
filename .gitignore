@@ -14,6 +14,10 @@ __pycache__/
 # Scenes the demo scripts save for inspection: tens of MB of packed robot
 # meshes, and every one is regenerable by re-running its script.
 /tools/demo/blend/
+
+# Where tools/demo/robots.py records the downloaded demo robots. Machine-local
+# absolute paths; regenerate by re-running it.
+/tools/demo/.robots.json
 *.blend
 *.blend[0-9]
 

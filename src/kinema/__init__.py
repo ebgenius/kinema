@@ -1,8 +1,9 @@
 """Kinema -- animation-ready robot rigs in Blender.
 
-Import any robot from the robot_descriptions catalog (or a local URDF/MJCF),
-get a single clean armature with one 1-DoF bone per joint, and drive it with
-PyRoki IK that behaves like an ordinary Blender IK control.
+Import a robot description from disk -- URDF, xacro or MJCF -- get a single
+clean armature with one 1-DoF bone per joint, and drive it with PyRoki IK that
+behaves like an ordinary Blender IK control. A bundled catalogue of 186 robots
+says where to find one; Kinema downloads nothing itself.
 
 Extension metadata lives in ``blender_manifest.toml``; there is deliberately no
 ``bl_info`` here, since Blender 4.2+ extensions take their metadata from the
@@ -36,12 +37,6 @@ def _warm_up_solver() -> None:
 
 
 def _deferred_start() -> None:
-    preferences = prefs.get_prefs()
-    if preferences is not None:
-        # Same reason as _warm_up_solver: preferences are not reliably readable
-        # during register(), and this has to land before the first description
-        # module resolves its REPOSITORY_PATH.
-        prefs.apply_cache_dir(preferences.cache_dir)
     _warm_up_solver()
     return None  # unregister the timer
 

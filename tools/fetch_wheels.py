@@ -91,17 +91,33 @@ PACKAGES: tuple[str, ...] = (
     "pygments", "typing_extensions", "win32-setctime", "colorama",
     # --- URDF parsing ---
     "yourdfpy", "lxml", "trimesh", "six",
-    # --- xacro descriptions (ur5e and many other catalog entries need this) ---
-    "xacrodoc", "xacro", "rospkg", "pyyaml", "pyparsing", "packaging",
-    "python-dateutil", "docutils", "setuptools",
+    # --- xacro descriptions (ur5e and many other robots ship only a xacro) ---
+    #
+    # rospkg's own Requires-Dist names catkin-pkg, which is NOT bundled: rospkg
+    # imports it lazily inside function bodies (rospkg/manifest.py, os_detect.py)
+    # and everything Kinema calls works without it. Its five transitive
+    # requirements -- docutils, packaging, pyparsing, python-dateutil, setuptools
+    # -- were once listed here to satisfy a package that was never present.
+    # Only python-dateutil earns its place, via rospkg itself.
+    "xacrodoc", "xacro", "rospkg", "pyyaml", "python-dateutil",
     # --- COLLADA meshes: Blender 5.0 removed its own .dae importer ---
     "pycollada",
-    # --- robot catalog ---
-    "robot_descriptions", "GitPython", "gitdb", "smmap",
 )
 
 #: Provided by Blender itself -- bundling these would shadow the host's copies.
-EXCLUDED = ("numpy", "requests", "certifi", "idna", "charset-normalizer", "urllib3")
+#: All nine verified present in Blender 5.2's own site-packages.
+HOST_PROVIDED = (
+    "numpy", "requests", "certifi", "idna", "charset-normalizer", "urllib3",
+    "packaging", "setuptools", "docutils",
+)
+
+#: Not provided by Blender, and not wanted either. These are catkin-pkg's
+#: requirements, and catkin-pkg is deliberately absent (see the xacro group
+#: above). They were bundled for years satisfying a package that was never
+#: there; naming them keeps a future edit to PACKAGES from bringing them back.
+UNWANTED = ("pyparsing",)
+
+EXCLUDED = HOST_PROVIDED + UNWANTED
 
 
 def download(platform: str, dest: Path) -> None:
@@ -201,10 +217,15 @@ def main() -> int:
     for platform in platforms:
         download(platform, WHEEL_DIR)
 
+    host = {e.lower().replace("_", "-") for e in HOST_PROVIDED}
+    unwanted = {e.lower().replace("_", "-") for e in UNWANTED}
     for wheel in WHEEL_DIR.glob("*.whl"):
         stem = wheel.name.split("-")[0].lower().replace("_", "-")
-        if stem in {e.lower().replace("_", "-") for e in EXCLUDED}:
+        if stem in host:
             print(f"  removing host-provided package: {wheel.name}")
+            wheel.unlink()
+        elif stem in unwanted:
+            print(f"  removing unwanted package: {wheel.name}")
             wheel.unlink()
 
     names = [w.name for w in WHEEL_DIR.glob("*.whl")]

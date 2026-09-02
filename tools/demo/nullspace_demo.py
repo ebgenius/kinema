@@ -19,6 +19,7 @@ import numpy as np
 from mathutils import Vector
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+import robots  # noqa: E402
 from _blendfile import save_blend  # noqa: E402
 
 EXT = "bl_ext.user_default.kinema"
@@ -44,7 +45,7 @@ def main():
         bpy.data.objects.remove(obj, do_unlink=True)
 
     log(f"importing {ROBOT} ...")
-    bpy.ops.kinema.build_robot(robot_key=ROBOT)
+    bpy.ops.kinema.build_robot(filepath=robots.resolve(ROBOT))
     rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
     joints = builder.joint_bones(rig)
 

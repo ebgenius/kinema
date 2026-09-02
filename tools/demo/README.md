@@ -14,6 +14,9 @@ what keeps them small — see the note in `make_gif.py`. Palette size is the las
 argument to either composer.
 
 ```bash
+# 0. fetch the demo robots (once; downloads on first run)
+uv run python tools/demo/robots.py
+
 # 1. the comparison
 blender --background --python tools/dev_bootstrap.py \
         --python tools/demo/sweep.py -- measurements.csv LEGACY
@@ -34,9 +37,17 @@ blender --background --python tools/dev_bootstrap.py \
         --python tools/demo/branches.py -- 40
 ```
 
-Needs `ur5e_description` and `panda_mj_description` in the robot-descriptions
-cache. `dev_bootstrap.py` supplies `KINEMA_EXT_ID` and the dev site-packages, as
-for `dev.py test`.
+Step 0 is the one that is easy to forget. Kinema itself does not download robot
+descriptions — its catalogue is an offline index that hands you a `git clone`
+command — so the demos cannot ask the add-on to fetch a UR5e for them. Instead
+`robots.py` downloads `ur5e_description` and `panda_mj_description` in the dev
+venv, where `robot_descriptions` is still a dependency, and records the
+resulting paths in `tools/demo/.robots.json`. The Blender-side scripts read that
+map and import from disk like any other local file. Set `KINEMA_DEMO_ROBOTS` to
+keep the map elsewhere.
+
+`dev_bootstrap.py` supplies `KINEMA_EXT_ID` and the dev site-packages, as for
+`dev.py test`.
 
 ## What the GIF shows
 

@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fixture_arm">
+
+  <!-- Properties and a macro: the xacro features a plain URDF cannot express,
+       so rendering this proves the xacro wheel really ran. -->
+  <xacro:property name="link_len" value="0.4"/>
+  <xacro:property name="mesh_pkg" value="$(find kinema_fixture)"/>
+
+  <xacro:macro name="revolute" params="name parent child axis_xyz origin_z">
+    <joint name="${name}" type="revolute">
+      <parent link="${parent}"/>
+      <child link="${child}"/>
+      <origin xyz="0 0 ${origin_z}" rpy="0 0 0"/>
+      <axis xyz="${axis_xyz}"/>
+      <limit lower="-3.14" upper="3.14" effort="100" velocity="2.0"/>
+    </joint>
+  </xacro:macro>
+
+  <link name="base_link"/>
+  <link name="link_1"/>
+  <link name="link_2"/>
+  <link name="tool">
+    <!-- package:// through the property above: this is the path that makes
+         xacrodoc resolve a ROS package, which is what needs rospkg. -->
+    <visual>
+      <geometry><box size="0.05 0.05 0.05"/></geometry>
+    </visual>
+  </link>
+
+  <xacro:revolute name="joint_1" parent="base_link" child="link_1"
+                  axis_xyz="0 0 1" origin_z="0.1"/>
+  <xacro:revolute name="joint_2" parent="link_1" child="link_2"
+                  axis_xyz="0 1 0" origin_z="${link_len}"/>
+  <xacro:revolute name="joint_3" parent="link_2" child="tool"
+                  axis_xyz="0 1 0" origin_z="${link_len}"/>
+
+</robot>

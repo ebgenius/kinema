@@ -20,7 +20,6 @@ dependencies = [
     "loguru",
     "lxml",
     "pycollada",
-    "robot-descriptions",
     "scipy",
     "trimesh",            # deliberately WITHOUT [easy]: the extras add ~90 MB
     "xacrodoc",
@@ -39,6 +38,10 @@ dev = [
     # Ground truth for the MJCF reader's tests. Never bundled: the wheel is
     # ~50 MB per platform, for a parser we only need the kinematic subset of.
     "mujoco",
+    # Source of the offline catalogue. tools/build_catalog.py reads its tables
+    # and writes src/kinema/catalog/robots.json; the add-on never imports it,
+    # and it is not in the wheel payload.
+    "robot-descriptions",
 ]
 
 [tool.uv]
