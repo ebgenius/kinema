@@ -137,6 +137,18 @@ class CatalogEntry:
             command += f"\n# then open: {self.file_path}"
         return command
 
+    @property
+    def handoff_hint(self) -> str:
+        """One line naming what to do after cloning, for the status bar.
+
+        Kept beside :attr:`clone_command` because it has the same conditional:
+        one description's path could not be resolved offline, and naming a file
+        we do not know is worse than admitting we do not know it.
+        """
+        if self.file_path:
+            return f"then open {self.clone_dir}/{self.file_path}"
+        return f"file unknown; look inside {self.clone_dir} after cloning"
+
 
 def _entry(key: str, record: dict, curation: dict) -> CatalogEntry:
     marks = curation.get(key) or {}

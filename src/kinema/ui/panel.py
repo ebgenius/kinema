@@ -129,6 +129,8 @@ def _draw_catalog(layout, context: bpy.types.Context) -> None:
     column.label(text=f"{entry.clone_dir}", icon="FILE_FOLDER")
     if entry.file_path:
         column.label(text=f"then open: {entry.file_path}", icon="FILE_TICK")
+    else:
+        column.label(text="file unknown; look inside after cloning", icon="QUESTION")
 
     box.operator("kinema.open_catalog_repo", text="Open Repository", icon="URL")
 

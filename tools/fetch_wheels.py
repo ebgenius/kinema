@@ -105,13 +105,19 @@ PACKAGES: tuple[str, ...] = (
 )
 
 #: Provided by Blender itself -- bundling these would shadow the host's copies.
-#: packaging, setuptools and docutils are here so a future re-resolve cannot
-#: quietly reintroduce them: a runtime payload carrying a build backend is
-#: indistinguishable from someone shipping their development environment.
-EXCLUDED = (
+#: All nine verified present in Blender 5.2's own site-packages.
+HOST_PROVIDED = (
     "numpy", "requests", "certifi", "idna", "charset-normalizer", "urllib3",
     "packaging", "setuptools", "docutils",
 )
+
+#: Not provided by Blender, and not wanted either. These are catkin-pkg's
+#: requirements, and catkin-pkg is deliberately absent (see the xacro group
+#: above). They were bundled for years satisfying a package that was never
+#: there; naming them keeps a future edit to PACKAGES from bringing them back.
+UNWANTED = ("pyparsing",)
+
+EXCLUDED = HOST_PROVIDED + UNWANTED
 
 
 def download(platform: str, dest: Path) -> None:
@@ -211,10 +217,15 @@ def main() -> int:
     for platform in platforms:
         download(platform, WHEEL_DIR)
 
+    host = {e.lower().replace("_", "-") for e in HOST_PROVIDED}
+    unwanted = {e.lower().replace("_", "-") for e in UNWANTED}
     for wheel in WHEEL_DIR.glob("*.whl"):
         stem = wheel.name.split("-")[0].lower().replace("_", "-")
-        if stem in {e.lower().replace("_", "-") for e in EXCLUDED}:
+        if stem in host:
             print(f"  removing host-provided package: {wheel.name}")
+            wheel.unlink()
+        elif stem in unwanted:
+            print(f"  removing unwanted package: {wheel.name}")
             wheel.unlink()
 
     names = [w.name for w in WHEEL_DIR.glob("*.whl")]

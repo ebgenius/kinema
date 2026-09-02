@@ -179,6 +179,28 @@ class TestCloneCommand:
         assert "then open" not in entry.clone_command
 
 
+class TestHandoffHint:
+    """The status-bar line the picker reports after copying the command."""
+
+    def test_names_the_file(self):
+        entry = catalog.get("panda_description")
+        assert entry.handoff_hint == (
+            "then open example-robot-data/robots/panda_description/urdf/panda.urdf"
+        )
+
+    def test_says_so_when_the_path_is_unknown(self):
+        """It used to interpolate None into the message, promising a file
+        called 'None' inside the repository."""
+        entry = catalog.get("eve_r3_description")
+        assert entry.file_path is None
+        assert "None" not in entry.handoff_hint
+        assert entry.clone_dir in entry.handoff_hint
+
+    def test_never_promises_a_missing_file_for_any_entry(self):
+        for entry in catalog.all_entries():
+            assert "None" not in entry.handoff_hint, entry.key
+
+
 # --------------------------------------------------------------------------
 # search
 # --------------------------------------------------------------------------

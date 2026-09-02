@@ -405,10 +405,11 @@ def _catalog_items(self, context):
     item strings is a well-known way to get garbage-collected labels.
     """
     props = getattr(context.scene, "kinema", None)
-    entries = catalog.search(
-        supported_only=True,
-        include_curated_out=bool(getattr(props, "catalog_show_all", False)),
-    )
+    show_all = bool(getattr(props, "catalog_show_all", False))
+    # Both filters move together, or the toggle cannot keep its promise: an
+    # entry with no resolved file path is *also* unsupported, so leaving
+    # supported_only on would hide it however the toggle is set.
+    entries = catalog.search(supported_only=not show_all, include_curated_out=show_all)
     if not entries:
         return [("", "Catalog unavailable", "robots.json could not be read")]
     return [
@@ -489,9 +490,7 @@ class KINEMA_OT_browse_catalog(Operator):
         context.window_manager.clipboard = entry.clone_command
         context.scene.kinema.catalog_pick = key
         self.report(
-            {"INFO"},
-            f"{entry.label}: clone command copied — then open "
-            f"{entry.clone_dir}/{entry.file_path}",
+            {"INFO"}, f"{entry.label}: clone command copied — {entry.handoff_hint}"
         )
         return {"FINISHED"}
 
