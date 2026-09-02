@@ -23,27 +23,8 @@ from .ui import panel
 _MODULES = (prefs, panel, import_dae, import_robot, pose, ik, attach)
 
 
-def _warm_up_solver() -> None:
-    """Kick off a background import of the solver stack, if enabled.
-
-    Runs from a one-shot timer rather than directly in ``register()``: during
-    Blender startup the add-on is registered on the main thread before the UI
-    exists, and preferences are not reliably readable that early.
-    """
-    preferences = prefs.get_prefs()
-    if preferences is None or not preferences.warm_up_on_startup:
-        return
-    runtime.warm_up_async(debug=preferences.debug_logging)
-
-
-def _deferred_start() -> None:
-    _warm_up_solver()
-    return None  # unregister the timer
-
-
 def register() -> None:
     runtime.ensure_vendor_path()
-    runtime.configure_jax_env()
 
     for module in _MODULES:
         for cls in module.classes:
@@ -54,13 +35,9 @@ def register() -> None:
             module.register_props()
 
     handlers.register_handlers()
-    bpy.app.timers.register(_deferred_start, first_interval=0.1)
 
 
 def unregister() -> None:
-    if bpy.app.timers.is_registered(_deferred_start):
-        bpy.app.timers.unregister(_deferred_start)
-
     handlers.unregister_handlers()
 
     for module in reversed(_MODULES):

@@ -24,14 +24,6 @@ class KinemaPreferences(AddonPreferences):
         ],
         default="PYROKI",
     )
-    warm_up_on_startup: BoolProperty(
-        name="Preload Solver in Background",
-        description=(
-            "Import the JAX solver stack on a worker thread when Blender starts. "
-            "Costs a few seconds of background work but removes the first-solve pause"
-        ),
-        default=True,
-    )
     solve_timeout_ms: IntProperty(
         name="Solve Budget (ms)",
         description=(
@@ -51,7 +43,6 @@ class KinemaPreferences(AddonPreferences):
 
         column = layout.column(align=True)
         column.prop(self, "solver_backend")
-        column.prop(self, "warm_up_on_startup")
         column.prop(self, "solve_timeout_ms")
         column.prop(self, "debug_logging")
 

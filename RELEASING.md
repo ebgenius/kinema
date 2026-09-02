@@ -105,8 +105,23 @@ about to create duplicates. You are not.
 Paste the release notes into the version's description field.
 
 Reviewers check the manifest, the declared permissions and the licensing. Kinema declares
-`network` and `files` with reasons, and dual GPL-3.0-or-later / MIT licensing with the full
-texts in `LICENSES/`.
+`files` only — the `network` permission went away in 0.3.0 when the catalogue stopped
+downloading — and dual GPL-3.0-or-later / MIT licensing with the full texts in `LICENSES/`.
+
+Staff review is strict about what an extension may do at runtime, and the v0.2.0 submission
+was rejected over it. What the current tree deliberately does **not** do, all verified from
+a clean-profile install rather than by reading the source:
+
+- start a thread, or use `queue` or `subprocess`;
+- write to the process environment (`import jax` sets two variables of its own, which is the
+  wheel's doing and cannot be undone safely);
+- touch `sys.modules`, monkey-patch a dependency, or reach the network.
+
+The one thing it still does is add `<addon>/vendor` to `sys.path`, because `pyroki` and
+`jaxls` are vendored from source — neither is installable from PyPI, and they import each
+other by their canonical names. Whether that is acceptable is an open question with the
+reviewers; if it is not, the fix is rewriting the vendored trees' imports to relative ones so
+they resolve inside the add-on's own namespace.
 
 The manifest **cannot be edited on the website** — a change means a new upload, or
 converting the extension to a draft. Get `website`, `tagline`, `tags` and `permissions`

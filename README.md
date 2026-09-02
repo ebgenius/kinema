@@ -4,13 +4,14 @@
 armature you can actually animate — with IK that understands singularities, joint limits and
 multi-turn joints. A built-in catalogue of 186 real robots says where to find one.
 
-> Status: released as [v0.1.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
-> bake all function, imports run without blocking Blender, and the built extension
-> installs and runs from a clean Blender profile.
+> Status: released as [v0.3.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
+> bake all function, and the built extension installs and runs from a clean Blender
+> profile. Nothing is downloaded, no threads are started, and no environment
+> variable is written — an import blocks Blender while it works.
 >
 > Docs: <https://ebgenius.github.io/kinema/>
 
-[v0.1.0]: https://github.com/ebgenius/kinema/releases/tag/v0.1.0
+[v0.3.0]: https://github.com/ebgenius/kinema/releases/tag/v0.3.0
 
 ## Why this exists
 

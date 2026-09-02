@@ -7,24 +7,23 @@ here came out of the M0 feasibility spike against Blender 5.2.0 LTS.
 Design rules:
 
 * **Nothing heavy is imported at add-on registration time.** Importing JAX costs
-  roughly 2-5 s and Blender registers add-ons on the main thread during startup.
-  The solver stack is imported on first use, and can be warmed in the
-  background; until then the NumPy fallback backend answers every solve.
-* **``JAX_PLATFORMS`` is set before JAX is ever imported.** Left unset, JAX
-  probes for GPU/TPU backends, which inside Blender produces console noise and
-  can stall. Kinema is a CPU workload -- IK on a 6-DoF arm is microseconds of
-  actual maths.
+  roughly 2-5 s and Blender registers add-ons during startup. The solver stack
+  is imported on first use; until then the NumPy fallback backend answers every
+  solve.
+* **Nothing here runs on a thread, and nothing here writes to the environment.**
+  Blender's extension guidelines forbid both. JAX's 64-bit mode is set through
+  ``jax.config`` after the import instead of ``JAX_ENABLE_X64`` before it, and
+  the CPU pin is simply gone -- only the CPU ``jaxlib`` wheels are bundled, so
+  there is no other backend to pin away from.
 * **jaxls logs at INFO through loguru on every ``analyze()``.** In a live
   viewport handler that is several lines of console spam per mouse move, so its
-  sink is muted unless the user turns on debug logging.
+  records are disabled unless the user turns on debug logging.
 """
 
 from __future__ import annotations
 
 import importlib
-import os
 import sys
-import threading
 from pathlib import Path
 from types import ModuleType
 
@@ -33,7 +32,6 @@ VENDOR_DIR = ADDON_DIR / "vendor"
 
 #: Populated by :func:`load_solver_stack`. Never import these at module scope.
 _stack: dict[str, ModuleType] = {}
-_load_lock = threading.Lock()
 _load_error: str | None = None
 
 
@@ -66,11 +64,21 @@ def remove_vendor_path() -> None:
         sys.path.remove(path)
 
 
-def configure_jax_env() -> None:
-    """Pin JAX to CPU. Must run before the first ``import jax``."""
-    os.environ.setdefault("JAX_PLATFORMS", "cpu")
-    # JAX preallocates and probes at import; neither helps a CPU IK workload.
-    os.environ.setdefault("JAX_ENABLE_X64", "0")
+def configure_jax(jax) -> None:
+    """Settle JAX's configuration, after the import rather than before it.
+
+    This used to be two ``os.environ`` writes: ``JAX_PLATFORMS=cpu`` and
+    ``JAX_ENABLE_X64=0``, both set before the first ``import jax``. Writing to
+    the process environment is not something a Blender extension may do, and
+    neither write needs to be there:
+
+    * The CPU pin has nothing to pin. Only the CPU ``jaxlib`` wheels are
+      bundled, so there is no GPU or TPU backend in the payload for JAX to
+      probe for and choose.
+    * 64-bit mode is a plain config flag, and ``jax.config.update`` is the
+      documented way to set it.
+    """
+    jax.config.update("jax_enable_x64", False)
 
 
 #: Vendored packages that log through loguru, and whose output Kinema silences.
@@ -116,55 +124,37 @@ def solver_error() -> str | None:
 def load_solver_stack(debug: bool = False) -> dict[str, ModuleType] | None:
     """Import JAX + jaxls + PyRoki. Returns the modules, or None on failure.
 
-    Safe to call repeatedly and from any thread; the work happens once. Failure
-    is not fatal -- the caller falls back to the NumPy backend, which is why
-    this returns None rather than raising.
+    Safe to call repeatedly; the work happens once. Costs 2-5 s the first time,
+    which is why it is not done at registration. Failure is not fatal -- the
+    caller falls back to the NumPy backend, which is why this returns None
+    rather than raising.
+
+    There is no lock, because there is no longer a second thread to race with.
     """
     global _load_error
     if _stack:
         return _stack
-    with _load_lock:
-        if _stack:
-            return _stack
-        try:
-            ensure_vendor_path()
-            configure_jax_env()
+    try:
+        ensure_vendor_path()
 
-            import jax
-            import jax.numpy as jnp
-            import jax_dataclasses as jdc
-            import jaxlie
-            import jaxls
-            import pyroki
+        import jax
+        import jax.numpy as jnp
+        import jax_dataclasses as jdc
+        import jaxlie
+        import jaxls
+        import pyroki
 
-            silence_vendor_logging(debug=debug)
-            _stack.update(
-                jax=jax, jnp=jnp, jdc=jdc, jaxlie=jaxlie, jaxls=jaxls, pyroki=pyroki
-            )
-            _load_error = None
-        except Exception as exc:  # noqa: BLE001 - surfaced in the UI, never fatal
-            _load_error = f"{type(exc).__name__}: {exc}"
-            _stack.clear()
-            return None
+        configure_jax(jax)
+        silence_vendor_logging(debug=debug)
+        _stack.update(
+            jax=jax, jnp=jnp, jdc=jdc, jaxlie=jaxlie, jaxls=jaxls, pyroki=pyroki
+        )
+        _load_error = None
+    except Exception as exc:  # noqa: BLE001 - surfaced in the UI, never fatal
+        _load_error = f"{type(exc).__name__}: {exc}"
+        _stack.clear()
+        return None
     return _stack
-
-
-def warm_up_async(on_done=None, debug: bool = False) -> threading.Thread:
-    """Load the solver stack on a worker thread.
-
-    Only the import is backgrounded. JIT warmup needs a built robot model, so
-    it happens in the solver backend once a robot exists. Nothing here touches
-    ``bpy`` -- Blender's API is not thread-safe, so the callback must marshal
-    back to the main thread (a one-shot timer) before touching scene data.
-    """
-    def _work() -> None:
-        load_solver_stack(debug=debug)
-        if on_done is not None:
-            on_done(solver_available())
-
-    thread = threading.Thread(target=_work, name="kinema-solver-warmup", daemon=True)
-    thread.start()
-    return thread
 
 
 def unload_solver_stack() -> None:

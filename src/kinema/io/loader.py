@@ -1,17 +1,12 @@
-"""Turn a file path into a :class:`RobotModel`, off-thread.
+"""Turn a file path into a :class:`RobotModel`.
 
-Everything here is deliberately free of ``bpy``. That is the whole point: it
-lets the import operator run this entire half -- xacro render, URDF/MJCF parse
--- on a worker thread, and keep Blender's event loop running meanwhile.
+Everything here is deliberately free of ``bpy``: reading a description is a
+parsing problem, and keeping Blender out of it means this half can be tested in
+a plain Python venv, which is where most of the suite runs.
 
-The remaining half, building the armature and importing meshes, cannot follow:
-``bpy`` is not thread-safe. It is chunked across modal ticks instead
-(``rig.builder.build_rig_iter``).
-
-Failures are returned, not raised. A worker thread has no useful way to report
-an exception to Blender's UI, so every entry point answers with a
+Failures are returned, not raised. Every entry point answers with a
 :class:`LoadResult` carrying either a model or a message the operator can put
-in front of the user.
+in front of the user, so a malformed URDF never raises out of an operator.
 """
 
 from __future__ import annotations
