@@ -85,7 +85,9 @@ PROP_ROBOT_NAME = "kinema_robot"
 PROP_TCP_BONE = "kinema_tcp_bone"
 PROP_TCP_LINK = "kinema_tcp_link"
 #: Where this rig came from, so the solver can reload the description it needs.
-#: ("catalog", <robot_descriptions key>) or ("file", <path to the URDF>).
+#: ("file", <path to the URDF>) or ("mjcf", <path to the MJCF>). Rigs built by
+#: 0.2.0 and earlier may also carry ("catalog", <key>); those can no longer be
+#: reloaded -- see ``solver.manager._load_source_urdf``.
 PROP_SOURCE_KIND = "kinema_source_kind"
 PROP_SOURCE = "kinema_source"
 #: IK state, all stored on the rig so it survives save/reload.

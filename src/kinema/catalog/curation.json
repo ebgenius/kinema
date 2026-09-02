@@ -1,0 +1,6 @@
+{
+ "eve_r3_description": {
+  "status": "broken",
+  "note": "No usable file path: the description rewrites its URDF at import time, so there is nothing to point at in a fresh clone."
+ }
+}

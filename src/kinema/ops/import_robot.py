@@ -1,22 +1,23 @@
 """Operators that turn a robot description into a Kinema rig.
 
-Two entry points, because they answer two different questions:
+One import path -- **Import URDF File**: a local URDF, xacro or MJCF, with
+``package://`` references resolved by searching the file's own tree.
 
-* **Import from Catalog** -- "I want a UR5e." Picks from the 186-robot
-  robot_descriptions catalog and downloads on demand.
-* **Import URDF File** -- "I want *my* robot." Reads a local URDF, xacro or
-  MJCF, resolving ``package://`` references by searching the file's own tree.
+Alongside it sits **Browse Robot Catalog**, which imports nothing. It searches
+the offline catalogue (``catalog.index``) and hands back a ``git clone``
+command plus the path of the description file inside that repository, for the
+user to fetch by hand. Kinema does not download robots.
 
-Both hand off to one modal worker, :class:`KINEMA_OT_build_robot`, because both
-are slow enough to freeze Blender if run straight through. A catalog import can
-download hundreds of megabytes, and a humanoid costs one Blender mesh-importer
-call per visual -- a couple of hundred of them. Run synchronously that is long
-enough for Windows to decide the process has hung and offer to kill it.
+The import hands off to a modal worker, :class:`KINEMA_OT_build_robot`, because
+it is slow enough to freeze Blender if run straight through: a humanoid costs
+one Blender mesh-importer call per visual -- a couple of hundred of them. Run
+synchronously that is long enough for Windows to decide the process has hung
+and offer to kill it.
 
 So the work is split by what may touch ``bpy``:
 
-* **Download and parse** go to a worker thread (``io.loader``, which imports no
-  ``bpy`` at all).
+* **Parsing** goes to a worker thread (``io.loader``, which imports no ``bpy``
+  at all).
 * **Armature and mesh building** stay on the main thread, because Blender's API
   is not thread-safe, but run in short slices across modal timer ticks
   (``rig.builder.build_rig_iter``).
@@ -48,21 +49,9 @@ from ..rig import builder
 _TIMER_INTERVAL = 0.01
 _TICK_BUDGET = 0.04
 
-#: One import at a time. The fetch hooks in ``catalog.fetch`` are process-global,
-#: and two concurrent builds would interleave objects in the scene.
+#: One import at a time: two concurrent builds would interleave objects in the
+#: scene.
 _JOB_LOCK = threading.Lock()
-
-
-def _online_ready(operator: Operator) -> bool:
-    """Blender's offline mode is a user setting the guidelines require honouring."""
-    if bpy.app.online_access:
-        return True
-    operator.report(
-        {"ERROR"},
-        "Blender is in offline mode; enable Preferences > System > Allow Online Access "
-        "to download robot descriptions",
-    )
-    return False
 
 
 def import_settings() -> dict:
@@ -157,23 +146,21 @@ class _Shared:
 
 
 class KINEMA_OT_build_robot(Operator):
-    """Fetch, parse and build a robot without blocking Blender.
+    """Parse and build a robot without blocking Blender.
 
-    Not exposed in any menu: it is the shared engine behind the catalog picker
-    and the URDF file browser, both of which invoke it with the robot already
-    chosen.
+    Not exposed in any menu: it is the engine behind the URDF file browser,
+    which invokes it with the file already chosen.
     """
 
     bl_idname = "kinema.build_robot"
     bl_label = "Build Robot Rig"
-    bl_description = "Download, parse and rig a robot description"
+    bl_description = "Parse and rig a robot description"
     # UNDO so Ctrl+Z removes the rig; deliberately no REGISTER, because the redo
     # panel would re-run the whole import on every parameter tweak.
     bl_options = {"UNDO"}
 
-    # SKIP_SAVE throughout: these are passed in by the caller, and without it
-    # Blender restores the previous invocation's values over them.
-    robot_key: StringProperty(options={"SKIP_SAVE"})
+    # SKIP_SAVE: passed in by the caller, and without it Blender restores the
+    # previous invocation's value over it.
     filepath: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})
     __annotations__.update(import_settings())
 
@@ -211,7 +198,7 @@ class KINEMA_OT_build_robot(Operator):
         self._steps = None
         self._result = None
         self._load: loader.LoadResult | None = None
-        self._label = self.robot_key or Path(self.filepath).name
+        self._label = Path(self.filepath).name
 
         self._thread = threading.Thread(
             target=self._work, name="kinema-import", daemon=True
@@ -220,7 +207,7 @@ class KINEMA_OT_build_robot(Operator):
 
         window_manager = context.window_manager
         window_manager.progress_begin(0, 1000)
-        self._set_status(context, f"Kinema: fetching {self._label}… (Esc to cancel)")
+        self._set_status(context, f"Kinema: reading {self._label}… (Esc to cancel)")
         self._timer = window_manager.event_timer_add(
             _TIMER_INTERVAL, window=context.window
         )
@@ -232,16 +219,7 @@ class KINEMA_OT_build_robot(Operator):
         """Runs on the worker thread. Must not touch bpy in any way."""
         shared = self._shared
         try:
-            if self.robot_key:
-                result = loader.load_catalog(
-                    self.robot_key,
-                    progress=shared.progress,
-                    should_cancel=self._cancel.is_set,
-                )
-            else:
-                result = loader.load_file(
-                    self.filepath, should_cancel=self._cancel.is_set
-                )
+            result = loader.load_file(self.filepath, should_cancel=self._cancel.is_set)
         except Exception as exc:  # noqa: BLE001 - a thread must not raise into nothing
             result = loader.LoadResult(error=f"{type(exc).__name__}: {exc}")
         with shared.lock:
@@ -396,10 +374,7 @@ class KINEMA_OT_build_robot(Operator):
     # ----------------------------------------------------------- background
     def _run_synchronously(self, context: bpy.types.Context) -> set[str]:
         """Whole import in one call, for background Blender and headless tests."""
-        if self.robot_key:
-            result = loader.load_catalog(self.robot_key)
-        else:
-            result = loader.load_file(self.filepath)
+        result = loader.load_file(self.filepath)
         if result.error:
             self.report({"ERROR"}, result.error)
             return {"CANCELLED"}
@@ -429,14 +404,18 @@ def _catalog_items(self, context):
     Built fresh on each invoke: the list is small, and caching Blender enum
     item strings is a well-known way to get garbage-collected labels.
     """
-    entries = catalog.search(supported_only=True)
+    props = getattr(context.scene, "kinema", None)
+    entries = catalog.search(
+        supported_only=True,
+        include_curated_out=bool(getattr(props, "catalog_show_all", False)),
+    )
     if not entries:
-        return [("", "Catalog unavailable", "robot_descriptions could not be loaded")]
+        return [("", "Catalog unavailable", "robots.json could not be read")]
     return [
         (
             entry.key,
-            entry.label,
-            f"{entry.key} · {entry.format_label} — {entry.description}",
+            f"{entry.label} — {entry.status}" if entry.status else entry.label,
+            f"{entry.key} · {entry.format_label} — {entry.note or entry.description}",
         )
         for entry in entries
     ]
@@ -475,12 +454,21 @@ def _hand_off(context: bpy.types.Context, **properties) -> None:
     bpy.app.timers.register(launch, first_interval=0.0)
 
 
-class KINEMA_OT_import_catalog(Operator):
-    bl_idname = "kinema.import_catalog"
-    bl_label = "Import Robot from Catalog"
-    bl_description = "Pick a robot from the robot_descriptions catalog and build a rig"
-    # No UNDO or REGISTER: this operator only picks. The worker it hands off to
-    # owns the undo step and must not get a redo panel.
+class KINEMA_OT_browse_catalog(Operator):
+    """Look a robot up and hand back the command to fetch it.
+
+    Kinema does not download robot descriptions. What this offers instead is
+    the part that is actually hard to find by hand: which repository holds a
+    given robot, at which commit, and which of its files -- out of up to 2466 --
+    is the one to open.
+    """
+
+    bl_idname = "kinema.browse_catalog"
+    bl_label = "Browse Robot Catalog"
+    bl_description = (
+        "Search 186 robot descriptions and copy the git command to download one"
+    )
+    # No UNDO or REGISTER: nothing in the scene changes.
     bl_options = set()
     # Makes invoke_search_popup show a fuzzy-searchable list of every robot.
     bl_property = "robot_key"
@@ -493,17 +481,37 @@ class KINEMA_OT_import_catalog(Operator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         key = self.robot_key
-        if catalog.get(key) is None:
+        entry = catalog.get(key)
+        if entry is None:
             self.report({"ERROR"}, f"Unknown robot '{key}'")
             return {"CANCELLED"}
 
-        # Only hit the network when the description is not already cached.
-        from ..catalog import fetch
+        context.window_manager.clipboard = entry.clone_command
+        context.scene.kinema.catalog_pick = key
+        self.report(
+            {"INFO"},
+            f"{entry.label}: clone command copied — then open "
+            f"{entry.clone_dir}/{entry.file_path}",
+        )
+        return {"FINISHED"}
 
-        if not fetch.is_cached(key) and not _online_ready(self):
+
+class KINEMA_OT_open_catalog_repo(Operator):
+    """Open the picked robot's repository in a browser."""
+
+    bl_idname = "kinema.open_catalog_repo"
+    bl_label = "Open Repository"
+    bl_description = "Open this robot's source repository in your web browser"
+    bl_options = set()
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        entry = catalog.get(context.scene.kinema.catalog_pick)
+        if entry is None:
+            self.report({"ERROR"}, "No robot picked")
             return {"CANCELLED"}
-
-        _hand_off(context, robot_key=key, **setting_values(context.scene.kinema))
+        # Strip the .git suffix: that URL is for git, not for a browser.
+        url = entry.repo_url.removesuffix(".git")
+        bpy.ops.wm.url_open(url=url)
         return {"FINISHED"}
 
 
@@ -542,7 +550,12 @@ def menu_draw(self, context: bpy.types.Context) -> None:
     self.layout.operator(KINEMA_OT_import_urdf.bl_idname, text="Robot URDF (.urdf/.xacro)")
 
 
-classes = (KINEMA_OT_build_robot, KINEMA_OT_import_catalog, KINEMA_OT_import_urdf)
+classes = (
+    KINEMA_OT_build_robot,
+    KINEMA_OT_browse_catalog,
+    KINEMA_OT_open_catalog_repo,
+    KINEMA_OT_import_urdf,
+)
 
 
 def register_props() -> None:

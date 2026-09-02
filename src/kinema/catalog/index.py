@@ -1,19 +1,38 @@
-"""Browse the robot_descriptions catalog.
+"""The offline robot catalogue.
 
-``robot_descriptions`` ships a metadata table for 186 robots -- maker, degrees
-of freedom, licence, tags, and which formats each provides. That is enough to
-present a real picker instead of an alphabetical wall of module names, so this
-module exposes it in a form Blender's UI can consume directly.
+186 robots with maker, degrees of freedom, licence, tags, formats -- and, for
+185 of them, the exact path of the description file *inside* its repository.
+That is enough to present a real picker instead of an alphabetical wall of
+module names, and enough to tell a user precisely what to clone and which file
+to open afterwards.
 
-Nothing here downloads anything. Importing a *description module* triggers a
-download at import time, but the metadata table is a plain dict that is safe to
-read offline.
+Nothing here reaches the network, and nothing here imports
+``robot_descriptions``. The data is generated from it by
+``tools/build_catalog.py`` and shipped as JSON; see that script for how the
+paths are resolved.
+
+Two files back this module:
+
+``robots.json``
+    Generated. Never edit by hand -- ``build_catalog.py --check`` will notice.
+
+``curation.json``
+    Hand-maintained, and *subtractive*: a robot absent from it is shown
+    normally, and reviewing the catalogue means crossing entries out. Each
+    value is ``{"status": ..., "note": ..., "prefer": ...}`` where status is one
+    of :data:`CURATED_OUT` and ``prefer`` names the entry to use instead.
 """
 
 from __future__ import annotations
 
-import os
+import json
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+_DATA_DIR = Path(__file__).resolve().parent
+_ROBOTS_JSON = _DATA_DIR / "robots.json"
+_CURATION_JSON = _DATA_DIR / "curation.json"
 
 #: Tags the catalog uses, in the order worth showing them.
 KNOWN_TAGS = (
@@ -28,19 +47,30 @@ KNOWN_TAGS = (
     "drone",
 )
 
+#: Curation statuses that hide an entry from the default listing.
+CURATED_OUT = ("duplicate", "broken", "partial")
+
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """One robot in the catalog, with everything needed to show and load it."""
+    """One robot in the catalog, with everything needed to show and fetch it."""
 
     key: str
     robot: str
     maker: str
     dof: int
     tags: tuple[str, ...]
-    has_urdf: bool
-    has_mjcf: bool
+    formats: tuple[str, ...]
     license_spdx: str | None
+    repo_url: str
+    clone_dir: str
+    commit: str
+    urdf_path: str | None
+    xacro_path: str | None
+    mjcf_path: str | None
+    status: str = ""
+    note: str = ""
+    prefer: str = ""
 
     @property
     def label(self) -> str:
@@ -55,55 +85,104 @@ class CatalogEntry:
         return " · ".join(parts)
 
     @property
-    def is_supported(self) -> bool:
-        """Kinema reads both formats, so anything with either can be rigged."""
-        return self.has_urdf or self.has_mjcf
+    def file_path(self) -> str | None:
+        """The description file to open after cloning, relative to the repo.
+
+        URDF first, then xacro, then MJCF -- the order Kinema handles them best.
+        None for the one description whose path could not be resolved.
+        """
+        return self.urdf_path or self.xacro_path or self.mjcf_path
 
     @property
     def format_label(self) -> str:
-        return "URDF" if self.has_urdf else "MJCF"
+        path = self.file_path or ""
+        if path.endswith(".xacro"):
+            return "xacro"
+        return "MJCF" if path.endswith(".xml") else "URDF"
+
+    @property
+    def is_supported(self) -> bool:
+        """Kinema reads all three formats, so any resolved path can be rigged."""
+        return self.file_path is not None
+
+    @property
+    def is_curated_out(self) -> bool:
+        return self.status in CURATED_OUT
+
+    @property
+    def short_commit(self) -> str:
+        """The pinned revision, abbreviated only if it is a hash.
+
+        Six of the 83 repositories are pinned to a tag rather than a SHA
+        (``v0.7.7``, ``release-1.0.0``); truncating those would produce a ref
+        that does not resolve.
+        """
+        is_sha = len(self.commit) == 40 and all(c in "0123456789abcdef" for c in self.commit)
+        return self.commit[:12] if is_sha else self.commit
+
+    @property
+    def clone_command(self) -> str:
+        """What goes on the clipboard.
+
+        Two lines, but paste-safe: the second is a shell comment, so pasting
+        the block into a terminal clones the repository and does nothing else.
+        It carries the two facts the user cannot get from the clone -- the
+        revision the description was written against, and which file to open
+        out of up to 2466 of them.
+        """
+        command = f"git clone {self.repo_url}"
+        if self.commit:
+            command += f"\n# cd {self.clone_dir} && git checkout {self.short_commit}"
+        if self.file_path:
+            command += f"\n# then open: {self.file_path}"
+        return command
 
 
-def _load_table() -> dict:
-    # GitPython refuses to import without a git binary; the catalog metadata
-    # itself needs no git at all, so quiet that check before touching it.
-    os.environ.setdefault("GIT_PYTHON_REFRESH", "quiet")
-    from robot_descriptions._descriptions import DESCRIPTIONS
+def _entry(key: str, record: dict, curation: dict) -> CatalogEntry:
+    marks = curation.get(key) or {}
+    return CatalogEntry(
+        key=key,
+        robot=str(record.get("robot") or key),
+        maker=str(record.get("maker") or ""),
+        dof=int(record.get("dof") or 0),
+        tags=tuple(record.get("tags") or ()),
+        formats=tuple(record.get("formats") or ()),
+        license_spdx=record.get("license_spdx"),
+        repo_url=str(record.get("repo_url") or ""),
+        clone_dir=str(record.get("clone_dir") or ""),
+        commit=str(record.get("commit") or ""),
+        urdf_path=record.get("urdf_path"),
+        xacro_path=record.get("xacro_path"),
+        mjcf_path=record.get("mjcf_path"),
+        status=str(marks.get("status") or ""),
+        note=str(marks.get("note") or ""),
+        prefer=str(marks.get("prefer") or ""),
+    )
 
-    return DESCRIPTIONS
+
+def _read(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # A corrupt or missing data file degrades the picker to empty rather
+        # than raising out of a UI callback.
+        return {}
 
 
-_cache: list[CatalogEntry] | None = None
+@lru_cache(maxsize=1)
+def _entries() -> tuple[CatalogEntry, ...]:
+    robots = _read(_ROBOTS_JSON).get("robots") or {}
+    curation = _read(_CURATION_JSON)
+    entries = [_entry(key, record, curation) for key, record in robots.items()]
+    entries.sort(key=lambda e: (e.maker.lower(), e.robot.lower()))
+    return tuple(entries)
 
 
 def all_entries(refresh: bool = False) -> list[CatalogEntry]:
     """Every catalog entry, sorted by maker then robot name."""
-    global _cache
-    if _cache is not None and not refresh:
-        return _cache
-
-    try:
-        table = _load_table()
-    except Exception:  # noqa: BLE001 - catalog is optional; UI degrades gracefully
-        _cache = []
-        return _cache
-
-    entries = [
-        CatalogEntry(
-            key=key,
-            robot=str(getattr(value, "robot", key)),
-            maker=str(getattr(value, "maker", "") or ""),
-            dof=int(getattr(value, "dof", 0) or 0),
-            tags=tuple(sorted(getattr(value, "tags", ()) or ())),
-            has_urdf=bool(getattr(value, "has_urdf", False)),
-            has_mjcf=bool(getattr(value, "has_mjcf", False)),
-            license_spdx=getattr(value, "license_spdx", None),
-        )
-        for key, value in table.items()
-    ]
-    entries.sort(key=lambda e: (e.maker.lower(), e.robot.lower()))
-    _cache = entries
-    return _cache
+    if refresh:
+        _entries.cache_clear()
+    return list(_entries())
 
 
 def search(
@@ -111,12 +190,19 @@ def search(
     *,
     tag: str = "",
     supported_only: bool = True,
+    include_curated_out: bool = False,
 ) -> list[CatalogEntry]:
-    """Filter the catalog by free text and tag."""
+    """Filter the catalog by free text and tag.
+
+    Curated-out entries are hidden by default: of the three UR5e entries only
+    the one worth using shows up until the caller asks for the rest.
+    """
     needle = text.strip().lower()
     results = []
     for entry in all_entries():
         if supported_only and not entry.is_supported:
+            continue
+        if entry.is_curated_out and not include_curated_out:
             continue
         if tag and tag not in entry.tags:
             continue
@@ -135,62 +221,3 @@ def available_tags() -> list[str]:
     present = {tag for entry in all_entries() for tag in entry.tags}
     ordered = [tag for tag in KNOWN_TAGS if tag in present]
     return ordered + sorted(present - set(ordered))
-
-
-def load_urdf(key: str, progress=None, should_cancel=None):
-    """Download (if needed) and parse one description into a ``yourdfpy.URDF``.
-
-    Raises RuntimeError if the description is not available offline and Blender
-    is in offline mode. The extension declares the ``network`` permission, and
-    the guidelines require honouring ``bpy.app.online_access`` before using it.
-
-    Touches no ``bpy``, so this runs whole on the import worker thread.
-    """
-    from . import fetch
-
-    fetch.install_git_free_loader()
-
-    # Resolved before the real import, not during it: the probe in
-    # package_subtree imports the same module, and doing that from inside
-    # clone_to_cache would be re-entrant.
-    subtree = fetch.package_subtree(key)
-
-    with fetch.hooks(progress=progress, should_cancel=should_cancel,
-                     subtree=subtree, label=subtree or key):
-        return _load_urdf_now(key)
-
-
-def _load_urdf_now(key: str):
-    from robot_descriptions.loaders.yourdfpy import load_robot_description
-
-    # load_meshes defaults to True, which parses every visual through
-    # trimesh/pycollada -- work that is then thrown away, because the meshes are
-    # re-imported through Blender's own importers in rig.builder. On a humanoid
-    # that is a full redundant parse of every file. The local-file path already
-    # passes load_meshes=False; this makes the catalog path agree.
-    #
-    # build_scene_graph must stay on: yourdfpy only computes ``base_link`` when
-    # it is set, and ``kinematics.model_from_urdf`` reads it.
-    return load_robot_description(key, build_scene_graph=True, load_meshes=False)
-
-
-def mjcf_path(key: str, progress=None, should_cancel=None) -> str:
-    """Download (if needed) and return the MJCF file path for a description.
-
-    Touches no ``bpy``, so this runs whole on the import worker thread.
-    """
-    import importlib
-
-    from . import fetch
-
-    fetch.install_git_free_loader()
-    subtree = fetch.package_subtree(key)  # before the import; see load_urdf
-
-    with fetch.hooks(progress=progress, should_cancel=should_cancel,
-                     subtree=subtree, label=subtree or key):
-        module = importlib.import_module(f"robot_descriptions.{key}")
-
-    path = getattr(module, "MJCF_PATH", None)
-    if not path:
-        raise RuntimeError(f"'{key}' has no MJCF file")
-    return str(path)

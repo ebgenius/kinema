@@ -91,17 +91,27 @@ PACKAGES: tuple[str, ...] = (
     "pygments", "typing_extensions", "win32-setctime", "colorama",
     # --- URDF parsing ---
     "yourdfpy", "lxml", "trimesh", "six",
-    # --- xacro descriptions (ur5e and many other catalog entries need this) ---
-    "xacrodoc", "xacro", "rospkg", "pyyaml", "pyparsing", "packaging",
-    "python-dateutil", "docutils", "setuptools",
+    # --- xacro descriptions (ur5e and many other robots ship only a xacro) ---
+    #
+    # rospkg's own Requires-Dist names catkin-pkg, which is NOT bundled: rospkg
+    # imports it lazily inside function bodies (rospkg/manifest.py, os_detect.py)
+    # and everything Kinema calls works without it. Its five transitive
+    # requirements -- docutils, packaging, pyparsing, python-dateutil, setuptools
+    # -- were once listed here to satisfy a package that was never present.
+    # Only python-dateutil earns its place, via rospkg itself.
+    "xacrodoc", "xacro", "rospkg", "pyyaml", "python-dateutil",
     # --- COLLADA meshes: Blender 5.0 removed its own .dae importer ---
     "pycollada",
-    # --- robot catalog ---
-    "robot_descriptions", "GitPython", "gitdb", "smmap",
 )
 
 #: Provided by Blender itself -- bundling these would shadow the host's copies.
-EXCLUDED = ("numpy", "requests", "certifi", "idna", "charset-normalizer", "urllib3")
+#: packaging, setuptools and docutils are here so a future re-resolve cannot
+#: quietly reintroduce them: a runtime payload carrying a build backend is
+#: indistinguishable from someone shipping their development environment.
+EXCLUDED = (
+    "numpy", "requests", "certifi", "idna", "charset-normalizer", "urllib3",
+    "packaging", "setuptools", "docutils",
+)
 
 
 def download(platform: str, dest: Path) -> None:

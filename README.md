@@ -1,12 +1,12 @@
 # Kinema
 
-**Animation-ready robot rigs in Blender.** Import any of 186 real robots and get a single
-clean armature you can actually animate — with IK that understands singularities, joint
-limits and multi-turn joints.
+**Animation-ready robot rigs in Blender.** Import a robot description and get a single clean
+armature you can actually animate — with IK that understands singularities, joint limits and
+multi-turn joints. A built-in catalogue of 186 real robots says where to find one.
 
-> Status: released as [v0.1.0]. Import (URDF, xacro, MJCF, or the 186-robot
-> catalog), rig, pose, solve and bake all function, imports run without blocking
-> Blender, and the built extension installs and runs from a clean Blender profile.
+> Status: released as [v0.1.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
+> bake all function, imports run without blocking Blender, and the built extension
+> installs and runs from a clean Blender profile.
 >
 > Docs: <https://ebgenius.github.io/kinema/>
 
@@ -205,31 +205,27 @@ Both vendored projects are MIT licensed; see `LICENSES/`. `tools/vendor.py` keep
 vendored trees byte-identical to upstream except for dropping PyRoki's `viewer/`
 subpackage, which depends on `viser` (a web 3D visualiser — pointless inside Blender).
 
-Robot descriptions are downloaded on first use. `robot_descriptions` normally shells out to
-a `git` binary, which most Blender artists do not have; Kinema replaces that one function
-with an HTTPS fetch (`src/kinema/catalog/fetch.py`).
+Parsing runs on a worker thread and rig building is spread across modal timer ticks, so an
+import never blocks Blender's event loop and can be cancelled with Esc.
 
-Downloads run on a worker thread and rig building is spread across modal timer ticks, so
-the import never blocks Blender's event loop and can be cancelled with Esc.
+### The robot catalogue
 
-### Per-robot downloads
+Kinema downloads nothing. It ships a catalogue of the 186 robots in
+[`robot_descriptions`](https://github.com/robot-descriptions/robot_descriptions.py) as
+static JSON, and *Browse Robot Catalog* turns a search into a `git clone` command on your
+clipboard — with the pinned revision and, crucially, the path of the description file
+*inside* that repository. `mujoco_menagerie` alone holds 2466 files and backs 49 of the
+robots, so "clone this and find it yourself" would not be much of an answer.
 
-`mujoco_menagerie` is 1.64 GB and backs 49 of the 186 catalog robots, so a naive fetch pulls
-the whole Menagerie to get one quadruped. Description modules only call `os.path.join` at
-import time, so the directory a robot needs is derivable offline; GitHub's tree API plus the
-raw CDN then fetch just that. A Unitree Go2 costs **31 MB instead of 1.7 GB**.
+`tools/build_catalog.py` generates `src/kinema/catalog/robots.json`. Resolving those inner
+paths is the interesting part: a description module builds them with `os.path.join` over
+whatever its cloning function returned, so importing it with that function stubbed to a
+sentinel string yields every path relative to the repository root, offline. One of the 186
+(`eve_r3_description`) rewrites its URDF at import and cannot be probed this way.
 
-The cache layout is unchanged — the repository-named directory stays and only one
-subdirectory inside it is populated — so paths still resolve, an existing full checkout is
-reused rather than re-fetched, and a second robot from the same repository is added
-incrementally. Sparse fetching is opt-in per repository (`SPARSE_REPOSITORIES`), because a
-subtree referencing shared assets outside itself would fetch cleanly and then fail at
-mesh-load time with only a warning.
-
-Kinema shares `~/.cache/robot_descriptions` with robot_descriptions itself and honours
-`ROBOT_DESCRIPTIONS_CACHE`; the *Robot Cache* preference sets the same variable. Sharing is
-one-way: Kinema reuses an existing git clone, but plain robot_descriptions sees no `.git` in
-Kinema's cache and will re-clone.
+`src/kinema/catalog/curation.json` sits alongside it, hand-maintained and *subtractive*: an
+entry named there is marked a duplicate, broken or partial and hidden from the picker until
+**Show all variants** is ticked. Everything not named there shows normally.
 
 ## Known limitations
 

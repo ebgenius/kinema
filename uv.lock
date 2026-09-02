@@ -421,7 +421,6 @@ dependencies = [
     { name = "loguru" },
     { name = "lxml" },
     { name = "pycollada" },
-    { name = "robot-descriptions" },
     { name = "scipy" },
     { name = "trimesh" },
     { name = "xacrodoc" },
@@ -435,6 +434,7 @@ dev = [
     { name = "mujoco" },
     { name = "pip" },
     { name = "pytest" },
+    { name = "robot-descriptions" },
     { name = "ruff" },
 ]
 
@@ -448,7 +448,6 @@ requires-dist = [
     { name = "loguru" },
     { name = "lxml" },
     { name = "pycollada" },
-    { name = "robot-descriptions" },
     { name = "scipy" },
     { name = "trimesh" },
     { name = "xacrodoc" },
@@ -462,6 +461,7 @@ dev = [
     { name = "mujoco" },
     { name = "pip" },
     { name = "pytest" },
+    { name = "robot-descriptions" },
     { name = "ruff" },
 ]
 

@@ -16,6 +16,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+import robots  # noqa: E402
 from _blendfile import save_blend  # noqa: E402
 
 EXT = "bl_ext.user_default.kinema"
@@ -41,7 +42,9 @@ def log(m):
 def import_rig(enforce_limits: bool):
     builder = sys.modules[f"{EXT}.rig.builder"]
     before = set(bpy.data.objects)
-    bpy.ops.kinema.build_robot(robot_key=ROBOT, enforce_limits=enforce_limits)
+    bpy.ops.kinema.build_robot(
+        filepath=robots.resolve(ROBOT), enforce_limits=enforce_limits
+    )
     return next(o for o in bpy.data.objects
                 if o not in before and builder.is_kinema_rig(o))
 
