@@ -10,11 +10,20 @@ Design rules:
   roughly 2-5 s and Blender registers add-ons during startup. The solver stack
   is imported on first use; until then the NumPy fallback backend answers every
   solve.
-* **Nothing here runs on a thread, and nothing here writes to the environment.**
-  Blender's extension guidelines forbid both. JAX's 64-bit mode is set through
-  ``jax.config`` after the import instead of ``JAX_ENABLE_X64`` before it, and
-  the CPU pin is simply gone -- only the CPU ``jaxlib`` wheels are bundled, so
-  there is no other backend to pin away from.
+* **Nothing here runs on a thread, writes to the environment, or touches
+  ``sys.path``.** Blender's extension policy forbids all three, and enforces the
+  last two itself: ``addon_utils`` walks ``sys.modules`` and flags every module
+  whose file sits inside the extension but whose name is not under
+  ``bl_ext.<repo>.<addon>``, plus any ``sys.path`` entry inside the extension.
+  JAX's 64-bit mode is set through ``jax.config`` after the import instead of
+  ``JAX_ENABLE_X64`` before it, and the CPU pin is gone -- only the CPU
+  ``jaxlib`` wheels are bundled, so there is no other backend to pin away from.
+* **The vendored solver imports as part of this package.** ``pyroki`` and
+  ``jaxls`` are vendored rather than bundled as wheels because neither is
+  installable from PyPI (see ``tools/vendor.py``), and they are imported as
+  ``.vendor.pyroki`` and ``.vendor.jaxls`` so their modules are named under the
+  add-on. ``tools/vendor.py`` rewrites their three absolute self-imports to
+  relative ones to make that possible.
 * **jaxls logs at INFO through loguru on every ``analyze()``.** In a live
   viewport handler that is several lines of console spam per mouse move, so its
   records are disabled unless the user turns on debug logging.
@@ -23,45 +32,11 @@ Design rules:
 from __future__ import annotations
 
 import importlib
-import sys
-from pathlib import Path
 from types import ModuleType
-
-ADDON_DIR = Path(__file__).resolve().parent
-VENDOR_DIR = ADDON_DIR / "vendor"
 
 #: Populated by :func:`load_solver_stack`. Never import these at module scope.
 _stack: dict[str, ModuleType] = {}
 _load_error: str | None = None
-
-
-# --------------------------------------------------------------------------
-# sys.path and environment
-# --------------------------------------------------------------------------
-def ensure_vendor_path() -> None:
-    """Put the vendored packages on ``sys.path``.
-
-    ``pyroki`` and ``jaxls`` are vendored rather than bundled as wheels because
-    neither is installable from PyPI (see ``tools/vendor.py``). They must be
-    importable under their canonical top-level names: pyroki does ``import
-    jaxls``, and jaxls does ``from jaxls._preconditioning import ...``.
-
-    Aliasing them into ``sys.modules`` under ``kinema.vendor.*`` instead would
-    let the same source be imported under two names, producing two distinct
-    module objects -- and jax_dataclasses registers JAX pytree nodes at import
-    time, so a double import raises a duplicate-registration error. One path
-    entry, one module identity.
-    """
-    path = str(VENDOR_DIR)
-    if path not in sys.path:
-        sys.path.insert(0, path)
-
-
-def remove_vendor_path() -> None:
-    """Undo :func:`ensure_vendor_path` when the add-on is disabled."""
-    path = str(VENDOR_DIR)
-    while path in sys.path:
-        sys.path.remove(path)
 
 
 def configure_jax(jax) -> None:
@@ -82,7 +57,16 @@ def configure_jax(jax) -> None:
 
 
 #: Vendored packages that log through loguru, and whose output Kinema silences.
-_LOGURU_MODULES = ("jaxls", "pyroki")
+#:
+#: These are the *dotted module paths*, not the bare names: loguru matches on
+#: the record's own ``__name__``, and the vendored packages import as submodules
+#: of this add-on, so a record from jaxls is named
+#: ``bl_ext.<repo>.kinema.vendor.jaxls._problem``. Naming them ``"jaxls"`` here
+#: would match nothing and quietly restore four INFO lines per solve.
+_LOGURU_MODULES = (
+    f"{__package__}.vendor.jaxls",
+    f"{__package__}.vendor.pyroki",
+)
 
 
 def silence_vendor_logging(debug: bool = False) -> None:
@@ -135,8 +119,6 @@ def load_solver_stack(debug: bool = False) -> dict[str, ModuleType] | None:
     if _stack:
         return _stack
     try:
-        ensure_vendor_path()
-
         import jax
 
         # Before anything else imports: x64 decides how JAX canonicalises
@@ -151,8 +133,11 @@ def load_solver_stack(debug: bool = False) -> dict[str, ModuleType] | None:
         import jax.numpy as jnp
         import jax_dataclasses as jdc
         import jaxlie
-        import jaxls
-        import pyroki
+
+        # Relative, so these land in sys.modules under the add-on's own package
+        # and Blender's extension policy check stays quiet. pyroki imports jaxls
+        # itself, also relatively -- see tools/vendor.py.
+        from .vendor import jaxls, pyroki
 
         silence_vendor_logging(debug=debug)
         _stack.update(
@@ -179,24 +164,29 @@ def dependency_report() -> list[tuple[str, str, str]]:
 
     Used to tell a user with a broken install *which* piece is missing, rather
     than failing with an opaque ImportError deep in a handler.
+
+    The two vendored packages are imported by their real dotted paths but
+    reported under their short names: the row label is what a user reads back
+    in a bug report, and ``bl_ext.user_default.kinema.vendor.jaxls`` tells them
+    nothing that ``jaxls`` does not.
     """
-    ensure_vendor_path()
+    vendored = f"{__package__}.vendor"
     rows: list[tuple[str, str, str]] = []
-    for name, why in (
-        ("numpy", "array maths (provided by Blender)"),
-        ("scipy", "required by JAX"),
-        ("jax", "solver core"),
-        ("jaxlib", "solver core (compiled)"),
-        ("jaxls", "least-squares optimiser (vendored)"),
-        ("pyroki", "robot kinematics (vendored)"),
-        ("yourdfpy", "URDF parsing"),
-        ("collada", "COLLADA meshes, from pycollada (Blender 5 removed its own)"),
-        ("trimesh", "mesh utilities"),
+    for label, import_name, why in (
+        ("numpy", "numpy", "array maths (provided by Blender)"),
+        ("scipy", "scipy", "required by JAX"),
+        ("jax", "jax", "solver core"),
+        ("jaxlib", "jaxlib", "solver core (compiled)"),
+        ("jaxls", f"{vendored}.jaxls", "least-squares optimiser (vendored)"),
+        ("pyroki", f"{vendored}.pyroki", "robot kinematics (vendored)"),
+        ("yourdfpy", "yourdfpy", "URDF parsing"),
+        ("collada", "collada", "COLLADA meshes, from pycollada (Blender 5 removed its own)"),
+        ("trimesh", "trimesh", "mesh utilities"),
     ):
         try:
-            module = importlib.import_module(name)
+            module = importlib.import_module(import_name)
             version = getattr(module, "__version__", "")
-            rows.append((name, "ok", version or why))
+            rows.append((label, "ok", version or why))
         except Exception as exc:  # noqa: BLE001
-            rows.append((name, "missing", f"{type(exc).__name__}: {exc}"[:80]))
+            rows.append((label, "missing", f"{type(exc).__name__}: {exc}"[:80]))
     return rows

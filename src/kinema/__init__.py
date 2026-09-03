@@ -24,8 +24,6 @@ _MODULES = (prefs, panel, import_dae, import_robot, pose, ik, attach)
 
 
 def register() -> None:
-    runtime.ensure_vendor_path()
-
     for module in _MODULES:
         for cls in module.classes:
             bpy.utils.register_class(cls)
@@ -49,4 +47,3 @@ def unregister() -> None:
             bpy.utils.unregister_class(cls)
 
     runtime.unload_solver_stack()
-    runtime.remove_vendor_path()

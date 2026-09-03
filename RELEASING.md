@@ -115,13 +115,34 @@ a clean-profile install rather than by reading the source:
 - start a thread, or use `queue` or `subprocess`;
 - write to the process environment (`import jax` sets two variables of its own, which is the
   wheel's doing and cannot be undone safely);
-- touch `sys.modules`, monkey-patch a dependency, or reach the network.
+- touch `sys.modules`, monkey-patch a dependency, or reach the network;
+- add anything to `sys.path`, or register a module outside its own namespace.
 
-The one thing it still does is add `<addon>/vendor` to `sys.path`, because `pyroki` and
-`jaxls` are vendored from source — neither is installable from PyPI, and they import each
-other by their canonical names. Whether that is acceptable is an open question with the
-reviewers; if it is not, the fix is rewriting the vendored trees' imports to relative ones so
-they resolve inside the add-on's own namespace.
+### Check the policy warnings before submitting
+
+Blender enforces the last of those itself, and says so in *Preferences → Add-ons*: a warning
+triangle, listing every offence. `addon_utils` walks `sys.modules` and flags each module
+whose file is inside the extension but whose name is not under `bl_ext.<repo>.<addon>`, plus
+any `sys.path` entry inside the extension. 0.2.0 and 0.3.0 shipped with **28** of these —
+one per vendored `jaxls`/`pyroki` module, plus the `sys.path` entry that put them there.
+
+This is worth checking on the built zip every release, because the check is invisible until
+someone opens the preferences:
+
+```python
+# blender --background --factory-startup --python <script>, with an empty
+# BLENDER_USER_RESOURCES. Install the zip, then *exercise* it -- load the solver
+# and import a robot -- because an unimported module cannot be flagged and a
+# lazy check looks clean while proving nothing.
+import addon_utils
+addon_utils._extensions_warnings_get._is_first = True
+print(addon_utils._extensions_warnings_get())    # must be {}
+```
+
+Vendored source is fine; it just has to import under the add-on's own package name.
+`tools/vendor.py` rewrites the trees' absolute self-imports to relative ones to make that
+true, and fails the vendor run if any survive — `tests/integration/test_extension_policy.py`
+asserts the same thing against the dev checkout.
 
 The manifest **cannot be edited on the website** — a change means a new upload, or
 converting the extension to a draft. Get `website`, `tagline`, `tags` and `permissions`

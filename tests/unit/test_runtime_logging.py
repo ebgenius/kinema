@@ -30,6 +30,18 @@ def sink():
         logger.enable(name)
 
 
+def test_the_names_are_dotted_paths_under_the_addon():
+    """loguru matches a record's own ``__name__``, and the vendored packages
+    import as submodules of the add-on -- so a jaxls record is named
+    ``...kinema.vendor.jaxls._problem``. Left as the bare ``"jaxls"`` these
+    would match nothing, silently restoring four INFO lines per solve. Nothing
+    else in the suite would notice, so assert it here."""
+    assert runtime._LOGURU_MODULES, "expected at least one module to silence"
+    for name in runtime._LOGURU_MODULES:
+        assert name.startswith(f"{runtime.__package__}.vendor."), name
+        assert name not in ("jaxls", "pyroki"), f"{name} is a bare top-level name"
+
+
 def test_a_foreign_sink_survives(sink):
     """The actual bug: another add-on's logging must keep working."""
     runtime.silence_vendor_logging()

@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-09-03
+## [0.3.1] - 2026-09-03
+
+Clears the warning triangle Blender puts on Kinema in *Preferences → Add-ons*. Nothing about
+using the add-on changes.
+
+### Fixed
+
+- **28 extension policy violations.** Blender flags any module loaded from inside an
+  extension's folder that is not named under the extension's own package, and any
+  `sys.path` entry pointing inside it. Kinema tripped both: the vendored PyRoki and jaxls
+  source was put on `sys.path` and imported under its own top-level names, giving one
+  warning per vendored module plus one for the path. Present since 0.2.0.
+
+  The two packages now import as part of the add-on, so nothing goes on `sys.path` and every
+  module is namespaced. This is what the extensions.blender.org review was asking for, and
+  it confirms vendored source is allowed — it just has to live under the add-on's name.
+
+### Removed
+
+- **`jaxls/_py310`** from the vendored payload: 13 files selected by `sys.version_info` for
+  Python 3.10 and 3.11, which Blender 5.2's Python 3.13 can never reach.
 
 Kinema no longer downloads anything, starts no threads, and writes nothing to your
 environment. The robot catalogue stays, and gets better at the part it was always best at —
@@ -248,7 +268,9 @@ are rejected, the first IK solve compiles for ~14 s, and Windows needs long path
 
 [PyRoki]: https://github.com/chungmin99/pyroki
 
-[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ebgenius/kinema/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ebgenius/kinema/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ebgenius/kinema/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ebgenius/kinema/releases/tag/v0.1.0
+
