@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "kinema"
-version = "0.2.0"
+version = "0.3.0"
 name = "Kinema"
 tagline = "Animation-ready robot rigs with correct IK, from URDF or MJCF"
 maintainer = "Eugenio Bernardi"
@@ -59,9 +59,7 @@ wheels = [
   "./wheels/scipy-1.18.1-cp313-cp313-win_amd64.whl",
   "./wheels/six-1.17.0-py2.py3-none-any.whl",
   "./wheels/termcolor-3.3.0-py3-none-any.whl",
-  "./wheels/tqdm-4.70.0-py3-none-any.whl",
   "./wheels/trimesh-5.1.0-py3-none-any.whl",
-  "./wheels/typeguard-4.6.0-py3-none-any.whl",
   "./wheels/typing_extensions-4.16.0-py3-none-any.whl",
   "./wheels/wadler_lindig-0.1.7-py3-none-any.whl",
   "./wheels/win32_setctime-1.2.0-py3-none-any.whl",

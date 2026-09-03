@@ -82,12 +82,24 @@ PLATFORM_TAGS: dict[str, tuple[str, ...]] = {
 }
 
 #: Every runtime import, named explicitly. Grouped by why it is here.
+#:
+#: Nothing goes in this list without something that imports it. Two audits have
+#: found packages here that satisfied nothing at all, so the bar is: either a
+#: hard ``Requires-Dist`` of something else in the list, or a real ``import``
+#: in Kinema or in the vendored solver source. "It might be needed" is not a
+#: reason -- tools/fetch_wheels.py --clean plus a clean-profile install is how
+#: to find out.
 PACKAGES: tuple[str, ...] = (
     # --- solver core (vendored pyroki + jaxls import these) ---
     "jax", "jaxlib", "ml_dtypes", "opt_einsum", "scipy",
-    "jaxlie", "jax_dataclasses", "jaxtyping", "wadler-lindig", "typeguard",
+    "jaxlie", "jax_dataclasses", "jaxtyping", "wadler-lindig",
     # --- jaxls runtime deps ---
-    "loguru", "termcolor", "tqdm", "rich", "markdown-it-py", "mdurl",
+    #
+    # rich is imported lazily, inside jaxls/utils.py, to render a diagnostic
+    # panel to stderr. Dropping it would turn that error path into an
+    # ImportError that hides the error it was reporting -- so it stays, and so
+    # does its own chain: pygments, markdown-it-py and mdurl.
+    "loguru", "termcolor", "rich", "markdown-it-py", "mdurl",
     "pygments", "typing_extensions", "win32-setctime", "colorama",
     # --- URDF parsing ---
     "yourdfpy", "lxml", "trimesh", "six",
@@ -98,10 +110,11 @@ PACKAGES: tuple[str, ...] = (
     # and everything Kinema calls works without it. Its five transitive
     # requirements -- docutils, packaging, pyparsing, python-dateutil, setuptools
     # -- were once listed here to satisfy a package that was never present.
-    # Only python-dateutil earns its place, via rospkg itself.
-    "xacrodoc", "xacro", "rospkg", "pyyaml", "python-dateutil",
+    "xacrodoc", "xacro", "rospkg", "pyyaml",
     # --- COLLADA meshes: Blender 5.0 removed its own .dae importer ---
-    "pycollada",
+    # python-dateutil is pycollada's, not rospkg's: it is a hard Requires-Dist
+    # of pycollada, which imports it at module scope.
+    "pycollada", "python-dateutil",
 )
 
 #: Provided by Blender itself -- bundling these would shadow the host's copies.

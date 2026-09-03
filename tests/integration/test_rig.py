@@ -565,62 +565,61 @@ class TestResumableBuild:
         assert stop.value.value.armature_object is not None
 
 
-class TestImportTeardown:
-    """A late cancel must not eat a finished import.
+class TestFailedImportCleanup:
+    """A build that dies part-way must not leave its wreckage in the scene.
 
-    Blender calls cancel() on a modal operator it tears down from outside --
-    closing the window, loading a file. If that lands after modal() already
-    returned FINISHED, _abort would otherwise discard_rig() the completed
-    result and free datablocks that are already gone.
+    This used to be the modal operator's ``_abort``, which ran on Esc or when
+    Blender tore the operator down from outside. The import no longer has a
+    modal lifecycle -- it is one blocking call -- so the only way it ends early
+    is an exception, and the cleanup moved into that handler.
     """
 
     @pytest.fixture
     def ops(self, addon):
         return importlib.import_module(f"{addon.__name__}.ops.import_robot")
 
-    def test_abort_is_a_no_op_once_torn_down(self, ops, kin, builder, arm3_urdf,
-                                             clean_scene):
+    def test_a_failure_part_way_leaves_nothing_behind(self, ops, builder,
+                                                      fixture_dir, clean_scene,
+                                                      monkeypatch):
         import bpy
 
-        model = kin.model_from_urdf(arm3_urdf)
-        finished = builder.build_rig(model, builder.RigBuildOptions())
-        name = finished.armature_object.name
+        # A generator that builds the armature for real, hands back the step it
+        # actually reached, then dies -- the shape of a mesh importer failing
+        # half way. The point is that `rig` is *partially* populated when it
+        # does. The inner generator is closed in a finally: it is suspended
+        # mid-build and holds Blender state, which leaking would make this test
+        # non-representative and the next one flaky.
+        real_iter = builder.build_rig_iter
 
-        # Stand in for an operator that already finished and tore down. The
-        # real lifecycle is not reachable from a background Blender, which has
-        # no modal handlers at all.
-        class Stub:
-            _torn_down = True
-            _steps = None
-            _result = finished
+        def explode(model, options=None, result=None):
+            steps = real_iter(model, options, result=result)
+            try:
+                yield next(steps)
+                raise RuntimeError("mesh importer fell over")
+            finally:
+                steps.close()
 
-        assert ops.KINEMA_OT_build_robot._abort(Stub(), bpy.context) == {"CANCELLED"}
-        assert name in bpy.data.objects, "a late cancel deleted the finished rig"
+        monkeypatch.setattr(builder, "build_rig_iter", explode)
 
-    def test_abort_still_discards_a_live_partial_build(self, ops, kin, builder,
-                                                      arm3_urdf, clean_scene):
-        """...while a real cancel must still clean up."""
-        import threading
+        with pytest.raises(RuntimeError, match="Could not build rig"):
+            bpy.ops.kinema.build_robot(filepath=str(fixture_dir / "arm3.urdf"))
 
+        # The shared WGT-kinema-* bone shapes survive on purpose -- they are
+        # created once and reused by every rig, so discard_rig leaves them. The
+        # half-built rig itself must be gone.
+        assert not [o for o in bpy.data.objects if builder.is_kinema_rig(o)]
+        assert not [o for o in bpy.data.objects if not o.name.startswith("WGT-")]
+
+    def test_a_missing_file_creates_nothing(self, ops, clean_scene):
+        """bpy.ops turns a reported ERROR into a RuntimeError, so the operator
+        cannot simply be compared to CANCELLED here -- but the scene must still
+        come out untouched."""
         import bpy
 
-        model = kin.model_from_urdf(arm3_urdf)
-        result = builder.RigBuildResult()
-        steps = builder.build_rig_iter(model, builder.RigBuildOptions(), result=result)
-        next(steps)
-        name = result.armature_object.name
-
-        class Stub:
-            _torn_down = False
-            _steps = steps
-            _result = result
-            _cancel = threading.Event()
-
-            def _teardown(self, context):
-                pass
-
-        assert ops.KINEMA_OT_build_robot._abort(Stub(), bpy.context) == {"CANCELLED"}
-        assert name not in bpy.data.objects
+        before = set(bpy.data.objects)
+        with pytest.raises(RuntimeError, match="No such file"):
+            bpy.ops.kinema.build_robot(filepath="no-such-robot.urdf")
+        assert set(bpy.data.objects) == before
 
 
 class TestRigIdentification:

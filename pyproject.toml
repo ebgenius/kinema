@@ -1,6 +1,6 @@
 [project]
 name = "kinema"
-version = "0.2.0"
+version = "0.3.0"
 description = "Animation-ready robot rigs in Blender: import any robot, get a clean armature with correct IK."
 readme = "README.md"
 requires-python = "==3.13.*"          # must match Blender 5.2 LTS (Python 3.13.13)

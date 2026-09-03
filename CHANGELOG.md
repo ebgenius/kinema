@@ -7,14 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Kinema no longer downloads anything. The robot catalogue stays, and gets better at the part
-it was always best at — telling you which of 186 robots exists, where it lives and which
-file to open — but fetching one is now your `git clone`, not a hidden network call from an
-add-on. This is what the Blender extension guidelines ask for, and it makes the add-on
-honest about what it does when you press a button.
+## [0.3.0] - 2026-09-03
+
+Kinema no longer downloads anything, starts no threads, and writes nothing to your
+environment. The robot catalogue stays, and gets better at the part it was always best at —
+telling you which of 186 robots exists, where it lives and which file to open — but fetching
+one is now your `git clone`, not a hidden network call from an add-on.
+
+All of this is what the Blender extension guidelines ask for, and every piece of it makes
+the add-on more honest about what it does when you press a button. The one visible cost is
+that importing a robot now blocks Blender while it works.
 
 ### Changed
 
+- **Importing a robot blocks.** It used to parse on a background thread and build the rig
+  across timer ticks, so the viewport stayed live and Esc could cancel. Extensions may not
+  start threads, and that machinery bought responsiveness and nothing else — so an import is
+  now a wait cursor and a pause: a second or two for an arm, longer for a humanoid, where
+  the time goes on one Blender mesh-importer call per visual.
 - **The catalogue is offline.** *Import from Catalog* is now **Browse Robot Catalog**: search
   186 robots by name, maker or category, pick one, and Kinema puts a `git clone` command on
   your clipboard along with the pinned revision and the path of the description file inside
@@ -39,13 +49,20 @@ honest about what it does when you press a button.
 ### Removed
 
 - The **network permission**. The extension no longer declares or uses one.
-- The **Robot Cache** preference, and with it the `ROBOT_DESCRIPTIONS_CACHE` environment
-  variable Kinema used to set on the process.
-- Eight wheels from the payload: `robot-descriptions`, `GitPython`, `gitdb` and `smmap` with
-  the downloading catalogue, plus `packaging`, `setuptools`, `docutils` and `pyparsing`,
-  which satisfied nothing at all — transitive requirements of a package that was never
-  bundled. Three of the four are already provided by Blender. The payload is 40 wheels, down
-  from 48.
+- **Every thread.** The solver's background preload and the import worker are both gone, and
+  with them the **Preload Solver in Background** preference. The solver stack is imported on
+  first use instead, which costs 2–5 s once per session at the first solve.
+- **Every environment variable Kinema set**: `JAX_PLATFORMS`, `JAX_ENABLE_X64` and
+  `ROBOT_DESCRIPTIONS_CACHE`. 64-bit mode moved to `jax.config.update` after the import; the
+  CPU pin turned out to have nothing to pin, since only the CPU `jaxlib` wheels are bundled;
+  and the cache variable went with the **Robot Cache** preference, which is also gone.
+- Ten wheels from the payload. `robot-descriptions`, `GitPython`, `gitdb` and `smmap` went
+  with the downloading catalogue. `packaging`, `setuptools`, `docutils` and `pyparsing`
+  satisfied nothing at all — transitive requirements of a package that was never bundled,
+  and three of them Blender already provides. `tqdm` and `typeguard` turned out to be the
+  same story: nothing in Kinema or the vendored solver imports either, and nothing requires
+  them. The payload is **38 wheels, down from 48** — 28 per platform, since five are
+  compiled once each for Windows, Linux and macOS.
 
 Rigs built by 0.2.0 or earlier from the downloading catalogue will report that their
 description can no longer be reloaded; re-import it from disk to restore the PyRoki solver.
@@ -231,6 +248,7 @@ are rejected, the first IK solve compiles for ~14 s, and Windows needs long path
 
 [PyRoki]: https://github.com/chungmin99/pyroki
 
-[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ebgenius/kinema/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ebgenius/kinema/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ebgenius/kinema/releases/tag/v0.1.0
