@@ -37,10 +37,23 @@ def loaded(addon):
 
     Not a no-op fixture: an unimported module cannot appear in ``sys.modules``,
     so every assertion below would pass vacuously on a lazy add-on.
+
+    A failed import **fails** rather than skipping, because it is the exact
+    symptom of the bug these tests exist to catch: a missed rewrite leaves an
+    absolute ``import jaxls`` that resolves in the dev venv and dies under
+    Blender with ``ModuleNotFoundError``. That is precisely what happened while
+    writing them, and a skip reported it as four green-ish tests. The stack is
+    a hard requirement of the ``dev.py test`` environment, so its absence is a
+    failure however it arose.
     """
     stack = runtime.load_solver_stack()
     if not stack:
-        pytest.skip(f"solver stack unavailable: {runtime.solver_error()}")
+        pytest.fail(
+            f"solver stack failed to import: {runtime.solver_error()}\n"
+            "If this is ModuleNotFoundError for jaxls or pyroki, a vendored "
+            "absolute import was missed -- re-run tools/vendor.py, which now "
+            "refuses to stage a tree containing one."
+        )
     return stack
 
 

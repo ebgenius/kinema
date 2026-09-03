@@ -49,7 +49,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import re
+import ast
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -220,14 +221,37 @@ def _rewrite_imports(
 
 #: Package names that must never appear in an absolute import inside a
 #: vendored tree, because both are vendored and neither is installed.
-_VENDORED_NAMES = ("jaxls", "pyroki")
+_VENDORED_NAMES = frozenset({"jaxls", "pyroki"})
 
-_ABSOLUTE_SELF_IMPORT = re.compile(
-    r"^\s*(?:from\s+(?:{names})[\w.]*\s+import\b|import\s+(?:{names})\b)".format(
-        names="|".join(_VENDORED_NAMES)
-    ),
-    re.MULTILINE,
-)
+
+def _absolute_self_imports(path: Path) -> list[str]:
+    """Every absolute import of a vendored package in one file.
+
+    Parsed rather than pattern-matched. A regex over source text gets this
+    wrong in both directions: it misses ``import os, jaxls`` and
+    ``x(); import pyroki``, and it falsely matches ``from jaxls_extra import
+    ...``. Since the whole point of this check is to be trustworthy when the
+    hand-written rewrite list is not, a false negative defeats it entirely.
+
+    ``ast.walk`` also reaches imports nested inside functions and ``try``
+    blocks, which upstream uses for optional dependencies.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in _VENDORED_NAMES:
+                    found.append(f"line {node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            # level > 0 is already relative, which is the goal state.
+            if node.level == 0 and node.module:
+                if node.module.split(".")[0] in _VENDORED_NAMES:
+                    names = ", ".join(a.name for a in node.names)
+                    found.append(
+                        f"line {node.lineno}: from {node.module} import {names}"
+                    )
+    return found
 
 
 def _assert_no_absolute_self_imports(package_root: Path) -> None:
@@ -244,11 +268,9 @@ def _assert_no_absolute_self_imports(package_root: Path) -> None:
     """
     offenders = []
     for path in sorted(package_root.rglob("*.py")):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for match in _ABSOLUTE_SELF_IMPORT.finditer(text):
-            line = match.group(0).strip()
-            relative = path.relative_to(package_root).as_posix()
-            offenders.append(f"  {relative}: {line}")
+        relative = path.relative_to(package_root).as_posix()
+        for entry in _absolute_self_imports(path):
+            offenders.append(f"  {relative}: {entry}")
     if offenders:
         raise SystemExit(
             f"vendor: {package_root.name} still has absolute self-imports:\n"
@@ -277,15 +299,37 @@ def _clone_at(url: str, commit: str, dest: Path) -> str:
     return _run(["git", "rev-parse", "HEAD"], cwd=dest)
 
 
-def recorded_commit(dest: Path) -> str | None:
-    """The commit a vendored tree was built from, or None if it is not there."""
+def recipe_fingerprint(pkg: VendoredPackage) -> str:
+    """A short hash of everything this script does to the tree after cloning.
+
+    The commit alone is not enough to say a vendored tree is current. The trees
+    are gitignored, so they persist across branches and pulls, and *this file*
+    changes independently of the pins: adding a rewrite or a dropped directory
+    leaves an existing tree stale in a way the SHA cannot see. Without this, a
+    tree vendored before the import rewrites passes ``--check`` and builds a
+    release with the old absolute imports in it.
+    """
+    recipe = repr((pkg.drop_dirs, pkg.drop_init_lines, pkg.rewrite_imports))
+    return hashlib.sha256(recipe.encode()).hexdigest()[:12]
+
+
+def recorded_state(dest: Path) -> tuple[str, str] | None:
+    """``(commit, recipe)`` a vendored tree was built from, or None if absent.
+
+    A tree stamped before recipes were fingerprinted has no ``recipe:`` line;
+    it reads back as empty, which never matches and correctly forces a
+    re-vendor.
+    """
     stamp = dest / STAMP_NAME
     if not (dest / "__init__.py").is_file() or not stamp.is_file():
         return None
+    commit = recipe = ""
     for line in stamp.read_text(encoding="utf-8").splitlines():
         if line.startswith("commit:"):
-            return line.split(":", 1)[1].strip()
-    return None
+            commit = line.split(":", 1)[1].strip()
+        elif line.startswith("recipe:"):
+            recipe = line.split(":", 1)[1].strip()
+    return (commit, recipe) if commit else None
 
 
 def vendor(pkg: VendoredPackage, *, check: bool) -> bool:
@@ -293,15 +337,22 @@ def vendor(pkg: VendoredPackage, *, check: bool) -> bool:
 
     if check:
         # Now that the pin is a SHA, the stamp answers this without a clone.
-        recorded = recorded_commit(dest)
-        if recorded is None:
+        state = recorded_state(dest)
+        if state is None:
             print(f"    MISSING: {dest}")
             return False
+        recorded, recipe = state
         if recorded != pkg.commit:
             print(f"    STALE: vendored at {recorded[:10]}, "
                   f"pinned at {pkg.commit[:10]}")
             return False
-        print(f"    present at {recorded[:10]}")
+        expected = recipe_fingerprint(pkg)
+        if recipe != expected:
+            print(f"    STALE: vendored with recipe {recipe or '(none)'}, "
+                  f"tools/vendor.py now specifies {expected}")
+            print("           re-run: uv run python tools/vendor.py")
+            return False
+        print(f"    present at {recorded[:10]} (recipe {recipe})")
         return True
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -330,6 +381,7 @@ def vendor(pkg: VendoredPackage, *, check: bool) -> bool:
         )
         (staged / STAMP_NAME).write_text(
             f"{pkg.name}\nsource: {pkg.url}\ncommit: {sha}\n"
+            f"recipe: {recipe_fingerprint(pkg)}\n"
             f"dropped: {', '.join(pkg.drop_dirs) or '(nothing)'}\n"
             f"rewritten imports:\n{rewrites or '  (none)'}\n",
             encoding="utf-8",
@@ -375,4 +427,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 

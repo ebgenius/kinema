@@ -22,8 +22,9 @@ Design rules:
   ``jaxls`` are vendored rather than bundled as wheels because neither is
   installable from PyPI (see ``tools/vendor.py``), and they are imported as
   ``.vendor.pyroki`` and ``.vendor.jaxls`` so their modules are named under the
-  add-on. ``tools/vendor.py`` rewrites their three absolute self-imports to
-  relative ones to make that possible.
+  add-on. ``tools/vendor.py`` rewrites their seven absolute self-imports to
+  relative ones to make that possible, and refuses to stage a tree where one
+  survives.
 * **jaxls logs at INFO through loguru on every ``analyze()``.** In a live
   viewport handler that is several lines of console spam per mouse move, so its
   records are disabled unless the user turns on debug logging.
