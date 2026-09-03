@@ -125,8 +125,9 @@ the first time you drag the control, which is worse.
 
 Two things affect when you feel it:
 
-- **Preload Solver in Background** (on by default) imports the solver stack on a worker
-  thread at Blender startup, removing part of the delay from your first interaction.
+- **The first time in a session there is a second cost**, before the compile: importing the
+  solver stack itself, 2–5 seconds. It happens on first use rather than at Blender startup,
+  so a session where you never touch a robot never pays it.
 - Loading a *second* robot of a different structure compiles again. Same robot, same
   session, no recompile.
 

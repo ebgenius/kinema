@@ -16,10 +16,13 @@ Three things happen:
 3. The solver compiles for this robot, behind a wait cursor.
 
 !!! warning "The first solve takes about 15 seconds"
-    That wait cursor is a one-off compilation for this specific robot. It is paid up
-    front, on purpose, rather than landing on your first drag of the control. Every solve
-    afterwards is a few milliseconds. See
-    [Forward and inverse kinematics](../concepts/ik.md#why-the-first-solve-is-slow).
+    That wait cursor is a one-off compilation. It is paid up front, on purpose, rather than
+    landing on your first drag of the control. Every solve afterwards is a few milliseconds.
+    See [Forward and inverse kinematics](../concepts/ik.md#why-the-first-solve-is-slow).
+
+    It is once per **bone you aim at**, not once per robot — so pointing the target at a new
+    bone pays it again. A handful of recent ones stay compiled, so scrubbing over a hand-off
+    is free after the first pass.
 
 > 📷 *Screenshot: the Inverse Kinematics panel just after adding a target.*
 
@@ -40,6 +43,9 @@ Blender rig you already know how to build.
 |---|---|
 | **Live IK** toggle | Solve continuously as the target moves. On by default after you add a target. |
 | **Solver** dropdown | PyRoki, NumPy, or Off — see below |
+| **Target Bone** | Which bone the solver aims at — see below |
+| **Key Target Bone** | Keyframe that choice, so a shot can hand the goal from one bone to another |
+| **Solving to '⟨bone⟩'** | Which bone that resolves to right now |
 | **Snap to Tool** | Jump the target back onto the tool's current position |
 | **✕** | Remove the IK target, returning the rig to plain FK |
 | **Bake to Keyframes** | [Solve every frame and key the joints](bake.md) |
@@ -67,6 +73,34 @@ NumPy solver, or simply keep working and bake at the end.
   Useful on huge rigs, or if PyRoki is unavailable.
 - **Off** — leave the target in place but stop it driving the rig. Hands control back to
   the [FK sliders](pose-fk.md).
+
+## Aiming at a different bone
+
+By default the solver aims at the [tool centre point](../concepts/tcp.md). It does not have
+to. Every joint bone gets a radio button in the [**Bones**
+panel](../reference/sidebar.md#bones), and clicking one re-roots the chain there.
+
+This matters on redundant robots. A Panda imports with its tool frame on a fingertip, which
+leaves both gripper joints inside the chain — **9 degrees of freedom against a 6-DoF task**.
+The solver duly satisfies the goal, by holding the fingertip perfectly still while spinning
+the whole hand around it. Nothing is wrong, and the result is unusable. Aim at the flange
+instead and the chain is the seven arm joints it should be.
+
+Switching snaps the control onto the new target, so the arm does not jump.
+
+### Keyframing which bone
+
+The choice is animatable, so a shot can hand the goal from the wrist to the elbow part-way
+through — useful when one part of a move is led by the tool and the next by the arm.
+
+Use **Key Target Bone** beside the field rather than <kbd>I</kbd>. The target is an index,
+not a quantity, and its keys have to *step* between values. Interpolated, a hand-off from
+the tool point to joint 3 would pass through joints 1 and 2 on the frames in between and
+solve two chains you never asked for. The button forces the channel to step; the keyframe
+menu does not.
+
+[Baking](bake.md) follows a keyed target, and keys every joint that is active anywhere in
+the range.
 
 ## Snap to Tool
 

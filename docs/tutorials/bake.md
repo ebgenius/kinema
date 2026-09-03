@@ -24,7 +24,16 @@ With an IK target on the rig, click **Bake to Keyframes** in the Inverse Kinemat
 Start and End are prefilled from your scene's frame range, so the common case is to open
 the dialog and confirm.
 
-Kinema then steps through every frame, solves, and keys each joint. A progress bar runs in
+Kinema then steps through every frame, solves, and keys the joints. Live solving is
+suspended while it runs, so each frame is solved once — by the bake — rather than twice.
+
+If the [target bone](animate-ik.md#keyframing-which-bone) is keyframed, the bake follows it:
+the chain it solves changes with the target, and every joint that is active anywhere in the
+range gets a key on every frame. A joint that drops out of the chain part-way through still
+has a value, and a channel that simply stopped being keyed would hold its last one — a
+different pose than the one baked.
+
+A progress bar runs in
 the status bar; long ranges on big rigs take a while, because it is doing the real solve
 once per frame.
 

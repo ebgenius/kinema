@@ -1,8 +1,9 @@
 # Import your own robot
 
-The [catalog](../reference/catalog.md) covers 186 robots. When yours is not one of them —
-a client's machine, an in-house design, something you downloaded from a manufacturer —
-use **Import URDF File…**.
+**Import URDF File…** is how every robot gets into Blender — a client's machine, an in-house
+design, something a manufacturer published, or one of the 186 the
+[catalog](../reference/catalog.md) pointed you at and you cloned. Kinema does not download
+robot descriptions; it reads the files you already have.
 
 ## What you can import
 

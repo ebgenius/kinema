@@ -20,21 +20,6 @@ compiling on rigs you were not going to solve. You can still add IK per rig afte
 
 See [the two solvers](../concepts/ik.md#the-two-solvers).
 
-## Preload Solver in Background
-
-*Default: on.*
-
-Imports the solver stack on a worker thread when Blender starts, rather than waiting until
-you first need it.
-
-It costs a few seconds of background work at startup and removes the corresponding pause
-from your first interaction. It does **not** eliminate the per-robot compile — that is a
-separate cost, paid when you add an IK target. See
-[why the first solve is slow](../concepts/ik.md#why-the-first-solve-is-slow).
-
-Turn it off if you use Blender for non-robot work most of the time and would rather not
-pay the startup cost.
-
 ## Solve Budget (ms)
 
 *Default: 33. Range: 4–1000.*
@@ -50,26 +35,6 @@ if you want the guard to trip sooner. Baking ignores this entirely: it solves ev
 however long that takes.
 
 See [the solve budget](../concepts/ik.md#the-solve-budget).
-
-## Robot Cache
-
-*Default: blank.*
-
-Where downloaded robot descriptions are stored. Blank means `~/.cache/robot_descriptions`,
-the location the underlying `robot_descriptions` library uses.
-
-Point this somewhere specific if you want the cache on a fast drive, want it shared with
-existing tooling, or want it somewhere you can clear easily. Robots already downloaded to
-the old location are not moved — they will simply be fetched again into the new one on
-first use.
-
-!!! warning "Changing it mid-session is only half-applied"
-    A robot description module resolves its repository path once, the first time it is
-    imported. So a robot you have already imported this session keeps using the old
-    location until you restart Blender; robots you have not touched yet pick up the new one
-    immediately.
-
-See [Robot catalog](catalog.md).
 
 ## Debug Logging
 
@@ -91,8 +56,14 @@ The preferences also list every component Kinema depends on and whether it loade
 version number or the import error.
 
 This is the detailed version of the [Solver panel](sidebar.md#solver) status, and it is the
-right thing to screenshot when reporting a problem. Ten entries, all of which should read
+right thing to screenshot when reporting a problem. Nine entries, all of which should read
 `ok`:
 
-`numpy`, `scipy`, `jax`, `jaxlib`, `jaxls`, `pyroki`, `yourdfpy`, `collada`,
-`robot_descriptions`, `trimesh`.
+`numpy`, `scipy`, `jax`, `jaxlib`, `jaxls`, `pyroki`, `yourdfpy`, `collada`, `trimesh`.
+
+!!! info "Changed in 0.3.0"
+    Two preferences went away. **Robot Cache** pointed at a download directory, and there
+    are no downloads any more. **Preload Solver in Background** imported the solver on a
+    worker thread at startup, and Blender extensions may not start threads — the solver is
+    imported on first use instead, which is where the 2–5 second pause now falls. The
+    `robot_descriptions` row left the dependency list with the downloading catalog.
