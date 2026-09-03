@@ -3,7 +3,9 @@
 ## Requirements
 
 Blender **5.2 LTS or newer**. Nothing else — the solver, the robot catalog and every
-file-format reader ship inside the add-on.
+file-format reader ship inside the add-on, and none of it is downloaded at runtime. Kinema
+asks for one permission, **files**, to read the robot descriptions and meshes you point it
+at.
 
 !!! warning "Downloads are per-platform"
     Kinema bundles a compiled maths library, so there is a **separate build for each
@@ -12,9 +14,9 @@ file-format reader ship inside the add-on.
 
 | Your machine | File | Size |
 |---|---|---|
-| Windows (Intel/AMD 64-bit) | `kinema-0.2.0-windows_x64.zip` | ~119 MB |
-| Linux (Intel/AMD 64-bit) | `kinema-0.2.0-linux_x64.zip` | ~139 MB |
-| macOS (Apple Silicon) | `kinema-0.2.0-macos_arm64.zip` | ~102 MB |
+| Windows (Intel/AMD 64-bit) | `kinema-0.3.0-windows_x64.zip` | ~117 MB |
+| Linux (Intel/AMD 64-bit) | `kinema-0.3.0-linux_x64.zip` | ~136 MB |
+| macOS (Apple Silicon) | `kinema-0.3.0-macos_arm64.zip` | ~100 MB |
 
 Intel Macs are not currently built. If you need one, open an issue.
 
@@ -34,7 +36,7 @@ Download the zip for your platform from the
 
     1. **Edit → Preferences → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.2.0-windows_x64.zip`
+    3. Select `kinema-0.3.0-windows_x64.zip`
     4. Kinema appears in the add-on list, already enabled
 
     !!! danger "Enable long paths first"
@@ -47,14 +49,14 @@ Download the zip for your platform from the
 
     1. **Blender → Settings → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.2.0-macos_arm64.zip`
+    3. Select `kinema-0.3.0-macos_arm64.zip`
     4. Kinema appears in the add-on list, already enabled
 
 === "Linux"
 
     1. **Edit → Preferences → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.2.0-linux_x64.zip`
+    3. Select `kinema-0.3.0-linux_x64.zip`
     4. Kinema appears in the add-on list, already enabled
 
 ## Check it worked
@@ -83,3 +85,4 @@ platform mismatch in the download. See
 ## Next
 
 You have a working install. Now [load a robot and pose it](first-robot.md).
+

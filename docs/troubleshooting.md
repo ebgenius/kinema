@@ -37,12 +37,12 @@ and some missing. The report will show `missing` against several entries at once
 
 **Fix:** [enable long paths](#windows-winerror-206), remove the extension, and reinstall.
 
-### Cause 3: it is still loading
+### Cause 3: it has not been loaded yet
 
-Right after Blender starts, the panel may say **Solver loading…**. The stack imports on a
-background thread and takes a few seconds.
+The solver stack is imported the first time something needs it, not at startup, so a fresh
+Blender session reports nothing until you ask for a solve.
 
-**Fix:** wait, then click **Re-check**.
+**Fix:** click **Re-check**, which imports it. Expect a 2–5 second pause the first time.
 
 ### Still stuck?
 
@@ -120,10 +120,15 @@ a repository web page is the usual mistake.
 is positioned, so for a moment the robot is a heap at the world origin. It resolves itself on
 the next redraw.
 
-## A second import is refused while one is running
+## Blender freezes while a robot imports
 
-**Not a bug.** Kinema imports one robot at a time. Wait for the first to finish, or press
-`Esc` to cancel it.
+**Not a bug, as of 0.3.0.** An import blocks: Blender puts up a wait cursor and stops
+responding until the rig is built. A second or two for an arm, longer for a humanoid, where
+most of the time goes on one mesh-importer call per visual.
+
+It used to run in the background with a progress bar and `Esc` to cancel, which meant a
+worker thread — and Blender extensions may not start threads. There is no cancel any more;
+if you picked the wrong file, wait for it to finish and undo.
 
 ## There are fewer bones than I expected
 
@@ -213,13 +218,17 @@ equivalent. Exactly one catalog robot — **Cassie** — is affected.
 For a local file, the other common causes are a xacro missing a required argument (the
 error names it), or a file that is not actually a robot description.
 
-## The catalog will not download
+## The catalog does not import anything
 
-Importing from the catalog fetches the robot the first time. Failures usually mean no
-network, a firewall blocking the host, or an upstream repository that has moved.
+**Not a bug, as of 0.3.0.** The catalog is a directory, not a downloader. Picking a robot
+copies a `git clone` command to your clipboard and names the file to open; you run the
+clone and then load that file with **Import URDF File…**.
 
-The cache is safe to delete — the next import re-fetches. See
-[Robot catalog](reference/catalog.md#downloads-and-the-cache).
+If the clone itself fails, the repository has usually moved since the Kinema release you
+have — the catalog is a snapshot of URLs and pinned commits. Search for the project by name,
+or [open an issue](https://github.com/ebgenius/kinema/issues) so the entry gets fixed.
+
+See [Robot catalog](reference/catalog.md#what-you-get).
 
 ## The baked animation looks wrong
 

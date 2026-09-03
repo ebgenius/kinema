@@ -14,11 +14,26 @@ The top-level panel. Always available.
 
 | Control | What it does |
 |---|---|
-| **Import from Catalog…** | Open the [186-robot picker](catalog.md) |
 | **Import URDF File…** | [Import a local file](../tutorials/import-your-own.md) — URDF, xacro or MJCF |
+| **Find a Robot** | Collapsible. The [186-robot catalog](catalog.md) — see below |
+| **Import Options** | Collapsible. Settings applied to the *next* import |
 
-With a Kinema rig selected it also shows the robot's name and its degree-of-freedom count
-— `6 DoF` for a typical industrial arm.
+### Find a Robot
+
+Closed by default. It looks a robot up; it does not fetch one.
+
+| Control | What it does |
+|---|---|
+| **Search Catalog…** | Open the fuzzy-search picker over all 186 entries |
+| **Show all variants** | Include entries curated out as duplicates, broken or partial |
+| **Open Repository** | Open the last-picked robot's project page in your browser |
+
+Picking a robot copies a `git clone` command to your clipboard and shows which file to open
+once the clone finishes. Load that file with **Import URDF File…**. See
+[Robot catalog](catalog.md).
+
+With a Kinema rig selected the panel also shows the robot's name and its degree-of-freedom
+count — `6 DoF` for a typical industrial arm.
 
 With nothing selected it says **No robot selected**. That is the empty state, not an
 error.

@@ -1,8 +1,8 @@
 # <img src="assets/images/logo.svg" alt="" style="height:1.15em; vertical-align:-0.18em; margin-right:0.15em"/> Kinema
 
-**Animation-ready robot rigs in Blender.** Import any of 186 real robots and get a single
-clean armature you can actually animate — with IK that understands singularities, joint
-limits and multi-turn joints.
+**Animation-ready robot rigs in Blender.** Import a robot description and get a single clean
+armature you can actually animate — with IK that understands singularities, joint limits and
+multi-turn joints. A built-in catalog of 186 real robots tells you where to find one.
 
 ![Screenshot: a UR5e loaded in the viewport with the Kinema sidebar open.](assets/images/kinema_viewport_overview.png){ .screenshot }
 
@@ -43,7 +43,7 @@ animator would build by hand:
 
 - :material-robot-industrial: **[Your first robot](getting-started/first-robot.md)**
 
-    Catalog to posed arm in about five minutes.
+    Catalog to posed arm in about ten minutes.
 
 - :material-school: **[Concepts](concepts/links-and-joints.md)**
 
