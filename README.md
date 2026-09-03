@@ -7,7 +7,7 @@ multi-turn joints. A built-in catalogue of 186 real robots says where to find on
 > Status: released as [v0.3.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
 > bake all function, and the built extension installs and runs from a clean Blender
 > profile. Nothing is downloaded, no threads are started, and no environment
-> variable is written — an import blocks Blender while it works.
+> variables are written — an import blocks Blender while it works.
 >
 > Docs: <https://ebgenius.github.io/kinema/>
 
