@@ -583,16 +583,21 @@ class TestFailedImportCleanup:
                                                       monkeypatch):
         import bpy
 
-        # A generator that builds the armature for real, hands control back
-        # once, then dies -- the shape of a mesh importer failing half way. The
-        # point is that `rig` is *partially* populated when it does.
+        # A generator that builds the armature for real, hands back the step it
+        # actually reached, then dies -- the shape of a mesh importer failing
+        # half way. The point is that `rig` is *partially* populated when it
+        # does. The inner generator is closed in a finally: it is suspended
+        # mid-build and holds Blender state, which leaking would make this test
+        # non-representative and the next one flaky.
         real_iter = builder.build_rig_iter
 
         def explode(model, options=None, result=None):
             steps = real_iter(model, options, result=result)
-            next(steps)
-            yield 0, 1
-            raise RuntimeError("mesh importer fell over")
+            try:
+                yield next(steps)
+                raise RuntimeError("mesh importer fell over")
+            finally:
+                steps.close()
 
         monkeypatch.setattr(builder, "build_rig_iter", explode)
 

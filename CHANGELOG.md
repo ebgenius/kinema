@@ -56,11 +56,13 @@ that importing a robot now blocks Blender while it works.
   `ROBOT_DESCRIPTIONS_CACHE`. 64-bit mode moved to `jax.config.update` after the import; the
   CPU pin turned out to have nothing to pin, since only the CPU `jaxlib` wheels are bundled;
   and the cache variable went with the **Robot Cache** preference, which is also gone.
-- Eight wheels from the payload: `robot-descriptions`, `GitPython`, `gitdb` and `smmap` with
-  the downloading catalogue, plus `packaging`, `setuptools`, `docutils` and `pyparsing`,
-  which satisfied nothing at all — transitive requirements of a package that was never
-  bundled. Three of the four are already provided by Blender. The payload is 40 wheels, down
-  from 48.
+- Ten wheels from the payload. `robot-descriptions`, `GitPython`, `gitdb` and `smmap` went
+  with the downloading catalogue. `packaging`, `setuptools`, `docutils` and `pyparsing`
+  satisfied nothing at all — transitive requirements of a package that was never bundled,
+  and three of them Blender already provides. `tqdm` and `typeguard` turned out to be the
+  same story: nothing in Kinema or the vendored solver imports either, and nothing requires
+  them. The payload is **38 wheels, down from 48** — 28 per platform, since five are
+  compiled once each for Windows, Linux and macOS.
 
 Rigs built by 0.2.0 or earlier from the downloading catalogue will report that their
 description can no longer be reloaded; re-import it from disk to restore the PyRoki solver.
@@ -246,7 +248,7 @@ are rejected, the first IK solve compiles for ~14 s, and Windows needs long path
 
 [PyRoki]: https://github.com/chungmin99/pyroki
 
-[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/ebgenius/kinema/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ebgenius/kinema/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ebgenius/kinema/releases/tag/v0.1.0
