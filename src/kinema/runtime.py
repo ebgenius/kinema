@@ -138,13 +138,22 @@ def load_solver_stack(debug: bool = False) -> dict[str, ModuleType] | None:
         ensure_vendor_path()
 
         import jax
+
+        # Before anything else imports: x64 decides how JAX canonicalises
+        # dtypes at array-creation time, so a module that builds an array while
+        # it is loading would bake in whatever was set at that moment. jaxlie,
+        # jaxls and pyroki all do work at import. jax.numpy is already loaded by
+        # `import jax` itself and cannot be got in front of, which is the reason
+        # to settle this at the earliest point that exists rather than the
+        # earliest that would be ideal.
+        configure_jax(jax)
+
         import jax.numpy as jnp
         import jax_dataclasses as jdc
         import jaxlie
         import jaxls
         import pyroki
 
-        configure_jax(jax)
         silence_vendor_logging(debug=debug)
         _stack.update(
             jax=jax, jnp=jnp, jdc=jdc, jaxlie=jaxlie, jaxls=jaxls, pyroki=pyroki
