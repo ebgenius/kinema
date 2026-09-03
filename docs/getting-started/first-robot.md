@@ -23,8 +23,9 @@ That is the starting state.
 
 Expand **Find a Robot** and click **Search Catalog…**.
 
-A picker opens listing 186 robots — arms, humanoids, quadrupeds, drones, grippers — with
-the maker and joint count for each. Type `ur5e` to filter, select it, and confirm.
+A picker opens over the catalog's 186 robots — arms, humanoids, quadrupeds, drones,
+grippers — with the maker and joint count for each. Type `ur5e` to filter, select it, and
+confirm.
 
 ![Screenshot: the catalog picker filtered to ur5e.](../assets/images/kinema_catalog_picker.png){ .screenshot }
 

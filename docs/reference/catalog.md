@@ -1,9 +1,12 @@
 # Robot catalog
 
-**Kinema panel → Find a Robot → Search Catalog…** opens a picker listing 186 real robots —
-arms, humanoids, quadrupeds, drones, grippers and mobile manipulators.
+Kinema ships a catalog of 186 real robots — arms, humanoids, quadrupeds, drones, grippers
+and mobile manipulators. **Kinema panel → Find a Robot → Search Catalog…** opens the picker.
 
 It tells you where to get one. It does not fetch it.
+
+The picker shows the entries worth using, which is not quite all 186: a few are hidden as
+duplicates or known-broken until you tick [**Show all variants**](#show-all-variants).
 
 ![Screenshot: the catalog picker filtered to ur5e.](../assets/images/kinema_catalog_picker.png){ .screenshot }
 

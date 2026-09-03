@@ -10,7 +10,7 @@ being solved by the simpler NumPy backend — but you have lost the singularity-
 limit-aware solving that is the reason to use Kinema.
 
 **Diagnose it.** The error line is the actual Python import failure. Read it. Then open
-**Edit → Preferences → Add-ons → Kinema** for the full dependency report: ten components,
+**Edit → Preferences → Add-ons → Kinema** for the full dependency report: nine components,
 each `ok` with a version or `missing` with the reason.
 
 ### Cause 1: the wrong build for your platform

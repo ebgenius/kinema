@@ -24,8 +24,8 @@ Closed by default. It looks a robot up; it does not fetch one.
 
 | Control | What it does |
 |---|---|
-| **Search Catalog…** | Open the fuzzy-search picker over all 186 entries |
-| **Show all variants** | Include entries curated out as duplicates, broken or partial |
+| **Search Catalog…** | Open the fuzzy-search picker over the catalog's 186 entries |
+| **Show all variants** | Also list the entries curated out as duplicates, broken or partial, which the picker hides by default |
 | **Open Repository** | Open the last-picked robot's project page in your browser |
 
 Picking a robot copies a `git clone` command to your clipboard and shows which file to open
@@ -118,7 +118,7 @@ Before you add a target, this panel has one button:
 |---|---|
 | **Add IK Target** | Create a keyframable control at the TCP |
 
-Adding a target compiles the solver — roughly 15 seconds. It happens once per **link** you
+Adding a target compiles the solver — roughly 15 seconds. It happens once per **bone** you
 aim at, not once per robot, so pointing the target at a bone the solver has not seen before
 pays it again. A handful of recent ones stay compiled, so scrubbing back and forth over a
 hand-off is free after the first pass. It requires a TCP.
@@ -161,7 +161,7 @@ when something is wrong.
 | It says | It means |
 |---|---|
 | ✓ **PyRoki ready** | The full solver is loaded. This is what you want. |
-| **Solver loading…** / Using NumPy fallback | Still importing in the background. Wait a moment. |
+| **Solver loading…** / Using NumPy fallback | The solver stack has not been imported yet. It loads on first use, so click **Re-check** or add an IK target — expect a 2–5 second pause. |
 | **PyRoki unavailable** + an error + Using NumPy fallback | The solver stack failed to load. The add-on still works, with the simpler solver. |
 
 | Control | What it does |

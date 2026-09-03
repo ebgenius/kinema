@@ -43,7 +43,8 @@ Blender rig you already know how to build.
 |---|---|
 | **Live IK** toggle | Solve continuously as the target moves. On by default after you add a target. |
 | **Solver** dropdown | PyRoki, NumPy, or Off — see below |
-| **Target Bone** + **Key** | Which bone the solver aims at, and the button that keyframes it — see below |
+| **Target Bone** | Which bone the solver aims at — see below |
+| **Key Target Bone** | Keyframe that choice, so a shot can hand the goal from one bone to another |
 | **Solving to '⟨bone⟩'** | Which bone that resolves to right now |
 | **Snap to Tool** | Jump the target back onto the tool's current position |
 | **✕** | Remove the IK target, returning the rig to plain FK |
