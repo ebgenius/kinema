@@ -219,6 +219,12 @@ def preflight() -> None:
     only parses the manifest -- so both pass. Both directories are gitignored,
     so a fresh clone has neither, and an extension built without them installs
     cleanly and fails at the first solve, in front of a user.
+
+    Being gitignored also means they *persist* across branches and pulls, so a
+    tree can be present, at the right commit, and still wrong: ``vendor.py``
+    changes what it does to a tree after cloning -- dropped directories,
+    rewritten imports -- independently of the pins. The recipe fingerprint is
+    checked alongside the commit for exactly that case.
     """
     sys.path.insert(0, str(REPO_ROOT / "tools"))
     import fetch_wheels
@@ -227,13 +233,21 @@ def preflight() -> None:
     problems: list[str] = []
 
     for pkg in vendor.PACKAGES:
-        recorded = vendor.recorded_commit(VENDOR_DIR / pkg.name)
-        if recorded is None:
+        state = vendor.recorded_state(VENDOR_DIR / pkg.name)
+        if state is None:
             problems.append(f"vendored {pkg.name} is missing from {VENDOR_DIR}")
-        elif recorded != pkg.commit:
+            continue
+        recorded, recipe = state
+        if recorded != pkg.commit:
             problems.append(
                 f"vendored {pkg.name} is at {recorded[:10]}, "
                 f"pinned at {pkg.commit[:10]}"
+            )
+        expected = vendor.recipe_fingerprint(pkg)
+        if recipe != expected:
+            problems.append(
+                f"vendored {pkg.name} was built with recipe "
+                f"{recipe or '(none)'}, tools/vendor.py now specifies {expected}"
             )
 
     wheels = sorted(w.name for w in WHEEL_DIR.glob("*.whl"))
