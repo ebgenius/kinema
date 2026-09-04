@@ -84,11 +84,50 @@ class TestPackageSearchRoot:
         result = resolve.package_search_root(root / "robot_pkg" / "urdf")
         assert result is None
 
-    def test_a_file_sitting_at_a_drive_root_yields_none(self, monkeypatch, tmp_path):
-        root = Path(tmp_path.anchor)
+    def test_a_file_sitting_at_a_root_yields_none(self, monkeypatch, tmp_path):
+        """A description saved directly at ``C:\\`` has nothing to search but
+        the drive.
+
+        With a *real* file, deliberately: the first version of this pointed at a
+        ``C:\\robot.urdf`` that was never created, so ``is_file()`` was false,
+        the walk started at the file path itself and the assertion never saw a
+        root at all.
+        """
+        robot = tmp_path / "robot.urdf"
+        robot.write_text("<robot name='r'/>", encoding="utf-8")
         monkeypatch.setattr(resolve, "is_package_dir", lambda d: False)
         monkeypatch.setattr(resolve, "_BOUNDARY_MARKERS", ())
-        assert resolve.package_search_root(root / "robot.urdf") is None
+        real_is_root = resolve._is_filesystem_root
+        monkeypatch.setattr(
+            resolve,
+            "_is_filesystem_root",
+            lambda d: real_is_root(d) or d == tmp_path,
+        )
+        assert resolve.package_search_root(robot) is None
+
+    def test_walking_through_a_root_does_not_cancel_the_search(self, monkeypatch,
+                                                               tmp_path):
+        """Reaching a filesystem root on the way up says nothing about the file.
+
+        On POSIX a loose file two levels down reaches ``/`` well inside the
+        depth budget, so refusing there would decline to search the directory
+        the file is actually sitting in. This never fired on Windows, where a
+        temp path is already six levels deep -- the shape is simulated rather
+        than waiting for a Linux CI run to find it.
+        """
+        directory = tmp_path / "robots"
+        directory.mkdir()
+        robot = directory / "robot.urdf"
+        robot.write_text("<robot name='r'/>", encoding="utf-8")
+
+        real_is_root = resolve._is_filesystem_root
+        monkeypatch.setattr(
+            resolve,
+            "_is_filesystem_root",
+            lambda d: real_is_root(d) or d == tmp_path.parent,
+        )
+
+        assert resolve.package_search_root(robot) == directory
 
     def test_it_never_returns_a_filesystem_root(self, tmp_path):
         """The bug that made this bounded. A root here means rglob over an
@@ -212,6 +251,10 @@ def test_search_root_is_cheap_at_any_depth(tmp_path, depth):
     robot.write_text("<robot name='r'/>", encoding="utf-8")
 
     root = resolve.package_search_root(robot)
+    assert root is not None, (
+        "a file nested under a temp directory has a perfectly good directory to "
+        "search; walking past the filesystem root on the way must not cancel it"
+    )
     assert root != Path(root.anchor)
     assert tmp_path in root.parents or root == tmp_path or root == directory
 

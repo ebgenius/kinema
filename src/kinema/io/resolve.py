@@ -68,14 +68,17 @@ def package_search_root(path: str | Path) -> Path | None:
 
     current = start
     for _ in range(_MAX_SEARCH_DEPTH):
-        if _is_filesystem_root(current):
-            return None
-        if any((current / marker).exists() for marker in _BOUNDARY_MARKERS):
-            # The checkout root. Its children are the packages.
-            return current
-        if is_package_dir(current):
-            parent = current.parent
-            return None if _is_filesystem_root(parent) else parent
+        # A root is never an answer, but walking *through* one is fine and says
+        # nothing about the file: on POSIX any loose file a few levels down
+        # reaches ``/`` within six steps, and giving up there would refuse to
+        # search the directory the file is actually sitting in.
+        if not _is_filesystem_root(current):
+            if any((current / marker).exists() for marker in _BOUNDARY_MARKERS):
+                # The checkout root. Its children are the packages.
+                return current
+            if is_package_dir(current):
+                parent = current.parent
+                return None if _is_filesystem_root(parent) else parent
         if current.parent == current:
             break
         current = current.parent
