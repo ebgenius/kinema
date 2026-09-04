@@ -41,6 +41,33 @@ class TestParsing:
         """Rather than guessed at -- a bare word has no defensible meaning."""
         assert xacro_args.parse_args("name:=ur5e rubbish") == {"name": "ur5e"}
 
+    def test_a_quoted_value_may_contain_spaces(self):
+        """`str.split` truncated this to `"left`, silently."""
+        assert xacro_args.parse_args('prefix:="left arm "') == {
+            "prefix": "left arm "
+        }
+
+    def test_quotes_are_stripped_not_passed_through(self):
+        assert xacro_args.parse_args('name:="ur5e"') == {"name": "ur5e"}
+
+    def test_a_windows_path_survives(self):
+        """The reason the lexer's escape character is cleared. Four of the
+        Universal Robots arguments take file paths, and shlex's default escape
+        turns C:\\ws\\config.yaml into C:wsconfig.yaml."""
+        assert xacro_args.parse_args(
+            r"joint_limit_params:=C:\ws\ur\config\joint_limits.yaml"
+        ) == {"joint_limit_params": r"C:\ws\ur\config\joint_limits.yaml"}
+
+    def test_a_quoted_path_with_spaces(self):
+        assert xacro_args.parse_args(
+            r'kinematics_params:="C:\Program Files\ur\kin.yaml"'
+        ) == {"kinematics_params": r"C:\Program Files\ur\kin.yaml"}
+
+    def test_an_unbalanced_quote_does_not_raise(self):
+        """The import's own error about the missing argument is more useful
+        than a complaint about the field's syntax."""
+        assert xacro_args.parse_args('name:="ur5e') == {"name": '"ur5e'}
+
     def test_round_trip(self):
         text = "name:=ur5e ur_type:=ur5e"
         assert xacro_args.format_args(xacro_args.parse_args(text)) == text

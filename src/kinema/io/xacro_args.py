@@ -1,6 +1,6 @@
 """Xacro substitution arguments: reading them, and asking the user for them.
 
-A xacro can require arguments, and one of the most-used descriptions there is
+A xacro can require arguments, and one of the most widely used descriptions
 does exactly that. ``ur.urdf.xacro`` opens::
 
     <robot xmlns:xacro="http://wiki.ros.org/xacro" name="$(arg name)">
@@ -21,6 +21,7 @@ for.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -29,15 +30,38 @@ from xml.etree import ElementTree
 _ASSIGNMENT = ":="
 
 
+def _tokenise(text: str) -> list[str]:
+    """Split on whitespace, honouring quotes, without eating backslashes.
+
+    ``str.split`` cannot do the first: ``prefix:="left arm "`` becomes three
+    tokens and the value silently truncates to ``"left``.
+
+    ``shlex`` can, but its default escape character is the backslash, which
+    turns ``joint_limit_params:=C:\\ws\\config.yaml`` into
+    ``C:wsconfig.yaml``. That is not hypothetical -- four of the Universal
+    Robots arguments take file paths. Clearing ``escape`` keeps quoting and
+    leaves Windows paths alone, at the cost of no way to escape a quote inside
+    a value, which no xacro argument has ever needed.
+    """
+    lexer = shlex.shlex(text or "", posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        # An unbalanced quote. The import will report the missing argument,
+        # which is more useful than complaining about the field's syntax.
+        return (text or "").split()
+
+
 def parse_args(text: str) -> dict[str, str]:
     """Parse ``name:=value`` pairs, in the syntax the xacro CLI uses.
 
-    Whitespace-separated, so a value cannot contain a space -- which matches
-    what the command line allows and keeps the field predictable. An entry
+    Quote a value that contains spaces, as on the command line. An entry
     without ``:=`` is ignored rather than guessed at.
     """
     parsed: dict[str, str] = {}
-    for token in (text or "").split():
+    for token in _tokenise(text):
         name, sep, value = token.partition(_ASSIGNMENT)
         if sep and name:
             parsed[name] = value

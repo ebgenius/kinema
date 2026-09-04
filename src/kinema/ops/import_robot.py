@@ -302,6 +302,26 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper):
     )
     __annotations__.update(import_settings())
 
+    def invoke(self, context: bpy.types.Context, event) -> set[str]:
+        """Start from whatever the sidebar's Import Options say.
+
+        Without this the panel is decorative. It writes to
+        ``scene.kinema``, the file browser reads the operator's own properties,
+        and nothing ever copies between them -- so settings chosen in the
+        sidebar had no effect on an import. That went unnoticed because the
+        catalogue used to be the panel's reader, and it stopped importing in
+        0.3.0.
+
+        The browser's own fields still win for a single import; this only
+        decides where they start.
+        """
+        props = getattr(context.scene, "kinema", None)
+        if props is not None:
+            for name in SETTING_NAMES:
+                if hasattr(props, name):
+                    setattr(self, name, getattr(props, name))
+        return super().invoke(context, event)
+
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         layout.use_property_split = True

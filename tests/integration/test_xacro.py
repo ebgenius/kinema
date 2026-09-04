@@ -164,6 +164,67 @@ class TestCrossPackageIncludes:
         names = {j.name for j in urdf.robot.joints}
         assert {"joint_1", "joint_2"} <= names
 
+    def test_the_reload_uses_the_arguments_stored_on_the_rig(self, fixture_dir):
+        """A description that needs an argument needs it on reload too.
+
+        Without the stored arguments this raises exactly as the import would
+        have -- and the manager answers any reload failure by falling back to
+        NumPy without saying so, which is the whole reason PROP_XACRO_ARGS
+        exists. Asserting the rendered name proves the value arrived rather
+        than merely that something parsed.
+        """
+        pytest.importorskip("bpy")
+
+        from ..conftest import load_addon_module
+
+        manager = load_addon_module("solver.manager")
+        builder_mod = load_addon_module("rig.builder")
+
+        needs_args = (
+            fixture_dir / "ros_ws" / "Renamed_Package_Dir"
+            / "urdf" / "needs_args.urdf.xacro"
+        )
+
+        class FakeRig(dict):
+            def get(self, key, default=None):
+                return dict.get(self, key, default)
+
+        rig = FakeRig({
+            builder_mod.PROP_SOURCE_KIND: "file",
+            builder_mod.PROP_SOURCE: str(needs_args),
+            builder_mod.PROP_XACRO_ARGS: "name:=reloaded_arm",
+        })
+        urdf = manager._load_source_urdf(rig)
+        assert urdf is not None
+        assert urdf.robot.name == "reloaded_arm"
+
+    def test_the_reload_fails_loudly_without_them(self, fixture_dir):
+        """The other half: drop the property and the reload must raise rather
+        than quietly produce something. If this ever passes, the test above is
+        no longer proving anything."""
+        pytest.importorskip("bpy")
+
+        from ..conftest import load_addon_module
+
+        manager = load_addon_module("solver.manager")
+        builder_mod = load_addon_module("rig.builder")
+
+        needs_args = (
+            fixture_dir / "ros_ws" / "Renamed_Package_Dir"
+            / "urdf" / "needs_args.urdf.xacro"
+        )
+
+        class FakeRig(dict):
+            def get(self, key, default=None):
+                return dict.get(self, key, default)
+
+        rig = FakeRig({
+            builder_mod.PROP_SOURCE_KIND: "file",
+            builder_mod.PROP_SOURCE: str(needs_args),
+        })
+        with pytest.raises(manager.SolverError):
+            manager._load_source_urdf(rig)
+
     def test_a_package_outside_the_checkout_is_not_found(self, ws_robot):
         """The bound is real, not decorative: resolution stops at the workspace
         rather than searching upwards until something matches."""
