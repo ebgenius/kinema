@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>orphan_robot</name>
+  <version>0.0.1</version>
+  <description>
+    Depends on fixture_common, which is deliberately NOT in this workspace.
+    Importing this must fail -- and it only fails if package resolution was
+    reset since the last import, because ros_ws does provide fixture_common.
+  </description>
+  <maintainer email="nobody@example.com">nobody</maintainer>
+  <license>MIT</license>
+  <depend>fixture_common</depend>
+</package>

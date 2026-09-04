@@ -22,6 +22,12 @@ def xacro_path(fixture_dir):
     return fixture_dir / "kinema_fixture" / "urdf" / "arm.urdf.xacro"
 
 
+@pytest.fixture(scope="module")
+def ws_robot(fixture_dir):
+    """A robot in a two-package workspace, reaching across to its sibling."""
+    return fixture_dir / "ros_ws" / "fixture_robot" / "urdf" / "arm.urdf.xacro"
+
+
 def test_xacro_renders_and_parses(xacro_path):
     """Macros, properties and $(find) all have to survive the render.
 
@@ -54,3 +60,118 @@ def test_source_is_recorded_as_the_xacro_not_the_render(xacro_path):
     the time the solver wants to reload it."""
     result = loader.load_file(xacro_path)
     assert result.source == ("file", str(xacro_path))
+
+
+class TestCrossPackageIncludes:
+    """`$(find <sibling package>)`, which is how real vendor descriptions are
+    laid out and which failed outright until 0.3.2.
+
+    kroshu/kuka_robot_descriptions is the case that surfaced it: an LBR iiwa in
+    `kuka_lbr_iiwa_support` includes materials from `kuka_resources` beside it,
+    and the import died with `PackageNotFoundError: kuka_resources` even though
+    the package was sitting in the same clone. The fixture is that shape,
+    reduced.
+    """
+
+    def test_a_sibling_package_include_resolves(self, ws_robot):
+        result = loader.load_file(ws_robot)
+        assert result.error is None, result.error
+        assert result.model is not None
+
+    def test_the_macro_from_the_sibling_actually_ran(self, ws_robot):
+        """A resolved include that produced nothing would still parse. The links
+        only exist because a macro defined in the *other* package expanded."""
+        model = loader.load_file(ws_robot).model
+        assert {"base_link", "link_1", "link_2"} <= set(model.links)
+
+    def test_the_joints_survive_the_render(self, ws_robot):
+        model = loader.load_file(ws_robot).model
+        assert [j.name for j in model.actuated_joints] == ["joint_1", "joint_2"]
+
+    def test_packages_do_not_leak_between_imports(self, ws_robot, fixture_dir):
+        """xacrodoc's package finder is module-global, so one import's packages
+        stay resolvable in the next unless it is reset.
+
+        `orphan_ws` exists to make that visible. Its robot needs
+        `fixture_common`, which lives only in `ros_ws` -- so importing ros_ws
+        first and orphan_ws second must still fail. Without the reset it would
+        succeed, silently rendering one workspace's robot against another's
+        materials.
+
+        Asserting the failure is the only way to catch this: two workspaces with
+        different package names both resolve either way, which is why the first
+        version of this test passed with the reset removed.
+        """
+        assert loader.load_file(ws_robot).error is None, "ros_ws should import"
+
+        orphan = fixture_dir / "orphan_ws" / "orphan_robot" / "urdf" / "arm.urdf.xacro"
+        result = loader.load_file(orphan)
+
+        assert result.error is not None, (
+            "orphan_ws resolved fixture_common, which it does not contain -- "
+            "packages leaked from the previous import"
+        )
+        assert "fixture_common" in result.error
+
+    def test_the_orphan_fails_for_the_right_reason(self, fixture_dir):
+        """The other half. `orphan_ws` must fail *because its package is
+        missing*, not because the file is malformed -- otherwise the leak test
+        above passes on a broken fixture and detects nothing."""
+        orphan = fixture_dir / "orphan_ws" / "orphan_robot" / "urdf" / "arm.urdf.xacro"
+        error = loader.load_file(orphan).error
+        assert error is not None
+        assert "fixture_common" in error, error
+
+    def test_importing_twice_gives_the_same_answer(self, ws_robot, fixture_dir):
+        first = loader.load_file(ws_robot)
+        loader.load_file(fixture_dir / "kinema_fixture" / "urdf" / "arm.urdf.xacro")
+        again = loader.load_file(ws_robot)
+
+        assert first.error is None and again.error is None
+        assert [j.name for j in first.model.actuated_joints] == [
+            j.name for j in again.model.actuated_joints
+        ]
+
+    def test_the_solver_can_reload_a_xacro_rig(self, ws_robot):
+        """The solver reloads the description later to build PyRoki's model, and
+        used to hand the xacro to yourdfpy raw -- so `$(arg …)` hit a float
+        parser and the rig fell back to NumPy with "could not convert string to
+        float: '$(arg'". Silently, because falling back is what the manager does
+        with any reload failure.
+
+        Checked at the reload seam rather than through a solve, so it holds even
+        where the JAX stack is unavailable -- but the seam lives behind
+        ``rig.builder``, which needs bpy, so this one is Blender-tier only.
+        """
+        pytest.importorskip("bpy")
+
+        from ..conftest import load_addon_module
+
+        manager = load_addon_module("solver.manager")
+
+        class FakeRig(dict):
+            def get(self, key, default=None):
+                return dict.get(self, key, default)
+
+        builder_mod = load_addon_module("rig.builder")
+        rig = FakeRig({
+            builder_mod.PROP_SOURCE_KIND: "file",
+            builder_mod.PROP_SOURCE: str(ws_robot),
+        })
+
+        urdf = manager._load_source_urdf(rig)
+        assert urdf is not None
+        names = {j.name for j in urdf.robot.joints}
+        assert {"joint_1", "joint_2"} <= names
+
+    def test_a_package_outside_the_checkout_is_not_found(self, ws_robot):
+        """The bound is real, not decorative: resolution stops at the workspace
+        rather than searching upwards until something matches."""
+        from ..conftest import load_addon_module
+
+        resolve = load_addon_module("io.resolve")
+        index = resolve._index_packages(resolve.package_search_root(ws_robot))
+        assert "kinema_fixture" not in index, (
+            "the single-package fixture lives outside ros_ws and must not be "
+            "reachable from inside it"
+        )

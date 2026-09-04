@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!-- The sibling package. Reached only through $(find fixture_common), which is
+     the thing being tested: this file is in a *different* package from the
+     robot that includes it. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <material name="fixture_grey">
+    <color rgba="0.6 0.6 0.6 1.0"/>
+  </material>
+
+  <!-- A macro defined here and invoked from the other package, so a failure to
+       resolve shows up as a missing macro rather than a missing material. -->
+  <xacro:macro name="fixture_link" params="name">
+    <link name="${name}">
+      <visual>
+        <geometry><box size="0.1 0.1 0.3"/></geometry>
+        <material name="fixture_grey"/>
+      </visual>
+    </link>
+  </xacro:macro>
+
+</robot>

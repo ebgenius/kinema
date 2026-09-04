@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!-- Reaches for fixture_common, which lives in the *other* fixture workspace
+     (tests/fixtures/ros_ws) and not in this one.
+
+     Importing this must fail. It only does so if xacrodoc's package finder was
+     reset since the previous import: that finder is module-global, so once
+     ros_ws has been loaded, fixture_common stays resolvable and this file would
+     quietly render against another workspace's materials. A leak here is
+     silent rather than loud, which is why the fixture exists. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="orphan_arm">
+
+  <xacro:include filename="$(find fixture_common)/urdf/common_materials.xacro"/>
+
+  <link name="base_link"/>
+  <xacro:fixture_link name="link_1"/>
+
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="2.0"/>
+  </joint>
+
+</robot>

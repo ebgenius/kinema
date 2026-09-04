@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Xacro robots that reach into a sibling package now import.** A ROS description
+  repository puts packages side by side, and a robot in one routinely includes files from
+  another — a KUKA LBR iiwa pulls its materials from `kuka_resources` next door. Kinema never
+  told the xacro renderer where those packages were, so any cross-package `$(find …)` failed
+  with `PackageNotFoundError` even though the package was sitting in the same clone. This
+  blocked most vendor description repos, not one robot.
+- **Mesh paths in rendered xacros resolved to the wrong place on Windows.** Rendering a xacro
+  rewrites every `package://` reference into a `file://` URI, and on Windows the drive letter
+  ends up in the URI's authority rather than its path — so Kinema, which read only the path,
+  either got nothing at all or a path with the drive silently removed. It fell back to the
+  description's own directory, which exists, so the robot imported without a single mesh and
+  without an error.
+- **Xacro rigs no longer lose the PyRoki solver.** The solver reloads the description to
+  build its model, and handed the xacro to the URDF parser unrendered — so `$(arg …)` reached
+  a float parser and the rig dropped to the NumPy fallback with
+  `could not convert string to float: '$(arg'`. Silently, because falling back is what
+  happens whenever the reload fails, and 38 of the catalogue's robots ship only a xacro.
+
+### Changed
+
+- **Package discovery is bounded to the checkout.** Kinema used to look for ROS packages by
+  scanning several directories above the description, which for a robot saved anywhere near
+  a drive root meant scanning the entire drive — no error, just an import that never
+  finished. It now searches the containing package's parent, stops at a repository boundary,
+  and never walks to a filesystem root.
+
 ## [0.3.1] - 2026-09-03
 
 Clears the warning triangle Blender puts on Kinema in *Preferences → Add-ons*. Nothing about

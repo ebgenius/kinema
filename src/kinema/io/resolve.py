@@ -17,29 +17,99 @@ Handled forms:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+#: ``C:`` at the start of what urlparse took for an authority: the signature of
+#: a Windows path in a ``file://`` URI that has no third slash.
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
 #: A directory containing one of these is a ROS package root.
 _PACKAGE_MARKERS = ("package.xml", "manifest.xml", "CATKIN_IGNORE")
 #: How far above the URDF to look for sibling packages.
 _MAX_SEARCH_DEPTH = 6
+#: A directory containing one of these is the top of a checkout. Package
+#: discovery stops here: whatever is above it belongs to somebody else.
+_BOUNDARY_MARKERS = (".git", ".hg", ".svn", ".repo", "COLCON_IGNORE")
 
 
-def _index_packages(roots: list[Path]) -> dict[str, Path]:
-    """Map package name -> directory, by scanning for package markers."""
+def is_package_dir(directory: Path) -> bool:
+    return any((directory / marker).exists() for marker in _PACKAGE_MARKERS)
+
+
+def _is_filesystem_root(directory: Path) -> bool:
+    """``C:\\``, ``/``, or a UNC share root -- never safe to scan."""
+    return bool(directory.anchor) and directory == Path(directory.anchor)
+
+
+def package_search_root(path: str | Path) -> Path | None:
+    """The one directory worth scanning for ROS packages near ``path``.
+
+    A ROS description repository puts sibling packages side by side, so the
+    place to look is the *parent* of the package containing the file:
+    ``kuka_lbr_iiwa_support`` and ``kuka_resources`` are neighbours, and a robot
+    in the first reaches materials in the second.
+
+    Bounded deliberately, and that is the point rather than a detail. The
+    obvious implementation -- walk up a few levels and scan each -- reaches the
+    filesystem root for a description saved anywhere shallow, and scanning a
+    whole drive for ``package.xml`` does not fail, it just never finishes.
+
+    Returns **None** when no directory qualifies, rather than falling back to
+    something plausible. A package unpacked directly at ``C:\\`` has siblings,
+    but they are every top-level folder on the drive; there is no honest answer
+    there, and returning the root would hand callers precisely the scan this
+    exists to prevent. Callers skip indexing instead, which costs cross-package
+    resolution for that one layout and keeps the import responsive.
+    """
+    path = Path(path).resolve()
+    start = path.parent if path.is_file() else path
+
+    current = start
+    for _ in range(_MAX_SEARCH_DEPTH):
+        # A root is never an answer, but walking *through* one is fine and says
+        # nothing about the file: on POSIX any loose file a few levels down
+        # reaches ``/`` within six steps, and giving up there would refuse to
+        # search the directory the file is actually sitting in.
+        if not _is_filesystem_root(current):
+            if any((current / marker).exists() for marker in _BOUNDARY_MARKERS):
+                # The checkout root. Its children are the packages.
+                return current
+            if is_package_dir(current):
+                parent = current.parent
+                return None if _is_filesystem_root(parent) else parent
+        if current.parent == current:
+            break
+        current = current.parent
+
+    return None if _is_filesystem_root(start) else start
+
+
+def _index_packages(root: Path) -> dict[str, Path]:
+    """Map package name -> directory, by scanning one root for markers.
+
+    One root, not a list of ancestors: this is the expensive call, and its cost
+    is the size of whatever it is pointed at. See :func:`package_search_root`.
+    """
     found: dict[str, Path] = {}
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for marker in _PACKAGE_MARKERS:
-            for path in root.rglob(marker):
-                package_dir = path.parent
-                found.setdefault(package_dir.name, package_dir)
+    if not root.is_dir():
+        return found
+    for marker in _PACKAGE_MARKERS:
+        for path in root.rglob(marker):
+            package_dir = path.parent
+            found.setdefault(package_dir.name, package_dir)
     return found
 
 
 def _search_roots(urdf_path: Path, extra: list[Path] | None) -> list[Path]:
+    """Ancestors to try for the cheap ``root / name`` lookup.
+
+    Still walks broadly, unlike :func:`package_search_root`, because every use
+    of this list is a single ``is_dir()`` check rather than a tree scan. It is
+    also what rescues a description vendored into a repo without a
+    ``package.xml`` anywhere.
+    """
     roots: list[Path] = list(extra or [])
     current = urdf_path.parent if urdf_path.is_file() else urdf_path
     for _ in range(_MAX_SEARCH_DEPTH):
@@ -74,7 +144,12 @@ def make_mesh_resolver(
     def packages() -> dict[str, Path]:
         nonlocal package_index
         if package_index is None:
-            package_index = _index_packages(_search_roots(urdf_path, extra))
+            root = package_search_root(urdf_path)
+            package_index = _index_packages(root) if root is not None else {}
+            for extra_root in extra:
+                # Caller-supplied roots are explicit, so scan them too.
+                for name, directory in _index_packages(extra_root).items():
+                    package_index.setdefault(name, directory)
         return package_index
 
     def find_package(name: str) -> Path | None:
@@ -108,8 +183,42 @@ def make_mesh_resolver(
                 # directory is then the package root.
                 result = base_dir / relative
         elif parsed.scheme == "file":
+            # Three shapes arrive here, and the authority is what separates
+            # them.
+            #
+            # A well-formed URI has no authority and carries everything in
+            # ``path``: ``file:///home/u/x``, or ``file:///C:/x`` keeping a
+            # leading slash urlparse does not strip. ``localhost`` is defined as
+            # equivalent to empty.
+            #
+            # A real authority means UNC: ``file://server/share/x`` is
+            # ``\\server\share\x``, and dropping the leading slashes would turn
+            # it into a relative path.
+            #
+            # xacrodoc emits the third, in two spellings. Rendering a xacro
+            # with resolve_packages=True rewrites every ``package://`` into
+            # ``file://<absolute path>``, and on Windows the drive letter lands
+            # in the authority either way:
+            #
+            #   file://C:\pkg\mesh.stl   netloc='C:\\pkg\\mesh.stl'  path=''
+            #   file://C:/pkg/mesh.stl   netloc='C:'  path='/pkg/mesh.stl'
+            #
+            # Which one appears depends on how the package was registered:
+            # ``look_in`` keeps the native path, while ``update_package_cache``
+            # normalises through ``as_posix``. Measured on the current bundle,
+            # the path Kinema takes produces the first -- but both are real, and
+            # the branch has to survive a change of registration mechanism.
+            #
+            # Reading ``path`` alone handled neither: it gave "" for the first
+            # and silently dropped the drive from the second. Every mesh then
+            # resolved to the URDF's own directory, which exists, so the robot
+            # imported in silence with no geometry at all.
+            authority = unquote(parsed.netloc)
             path = unquote(parsed.path)
-            # urlparse leaves a leading slash on Windows drive paths.
+            if _WINDOWS_DRIVE.match(authority):
+                path = authority + path
+            elif authority and authority.lower() != "localhost":
+                path = f"//{authority}{path}"
             if os.name == "nt" and path.startswith("/") and len(path) > 2 and path[2] == ":":
                 path = path[1:]
             result = Path(path)
