@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "kinema"
-version = "0.3.1"
+version = "0.3.2"
 name = "Kinema"
 tagline = "Animation-ready robot rigs with correct IK, from URDF or MJCF"
 maintainer = "Eugenio Bernardi"

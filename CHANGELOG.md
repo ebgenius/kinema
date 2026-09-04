@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-04
+
+Real robot descriptions, from the repositories they actually ship in.
+
+Two of the most widely used ROS description repositories would not import: a KUKA LBR iiwa
+because its xacro reaches into a sibling package for its materials, and a Universal Robots
+arm because its xacro requires an argument. Neither is unusual — that is simply how vendor
+descriptions are laid out — and behind each was a small stack of further defects that only
+became visible once the one in front was fixed.
+
+Nothing here changes an existing rig. If your robots already import, this release is about
+the ones that did not.
+
 ### Added
 
 - **Xacro arguments.** A field in the import options — file picker and sidebar both — taking
@@ -84,6 +97,8 @@ using the add-on changes.
 
 - **`jaxls/_py310`** from the vendored payload: 13 files selected by `sys.version_info` for
   Python 3.10 and 3.11, which Blender 5.2's Python 3.13 can never reach.
+
+## [0.3.0] - 2026-09-03
 
 Kinema no longer downloads anything, starts no threads, and writes nothing to your
 environment. The robot catalogue stays, and gets better at the part it was always best at —
@@ -324,9 +339,11 @@ are rejected, the first IK solve compiles for ~14 s, and Windows needs long path
 
 [PyRoki]: https://github.com/chungmin99/pyroki
 
-[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/ebgenius/kinema/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ebgenius/kinema/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ebgenius/kinema/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ebgenius/kinema/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ebgenius/kinema/releases/tag/v0.1.0
+
 
