@@ -146,21 +146,44 @@ def run(args: list[str], *, cwd: Path = REPO_ROOT) -> str:
 
 
 def resolve_refs(args: argparse.Namespace, gh: str) -> tuple[str, str, str]:
-    """Return (base, head, description) for the revision range under review."""
+    """Return (base, head, description) for the revision range under review.
+
+    The base is always the *remote-tracking* branch, never the local one. A local
+    ``main`` that has fallen behind ``origin/main`` would drag every commit
+    someone else landed in the meantime into the diff, and the reviewer would be
+    told they are part of this change.
+    """
     if args.pr is None:
         head = run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).strip()
         if head == args.base:
             die(f"the current branch is {args.base}; check out the branch you want reviewed")
-        return args.base, "HEAD", f"local branch `{head}` against `{args.base}`"
+        base = fetch_base(args.base)
+        return base, "HEAD", f"local branch `{head}` against `{args.base}`"
 
     meta = json.loads(run([gh, "pr", "view", str(args.pr), "--json", "title,body,baseRefName"]))
     # Fetch the PR head so the review works from any checkout, not just the one
-    # that happens to be on the branch.
+    # that happens to be on the branch. Resolve it to a sha immediately: the
+    # base fetch below overwrites FETCH_HEAD.
     run(["git", "fetch", "--quiet", "origin", f"refs/pull/{args.pr}/head"])
-    base = meta.get("baseRefName") or args.base
+    head = run(["git", "rev-parse", "FETCH_HEAD"]).strip()
+    base = fetch_base(meta.get("baseRefName") or args.base)
     body = (meta.get("body") or "").strip()
     description = f"PR #{args.pr}: {meta.get('title', '')}\n\n{body}".strip()
-    return base, "FETCH_HEAD", description
+    return base, head, description
+
+
+def fetch_base(branch: str) -> str:
+    """Update remote-tracking refs and return the tracking ref for ``branch``."""
+    run(["git", "fetch", "--quiet", "origin"])
+    tracking = f"origin/{branch}"
+    check = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{tracking}^{{commit}}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    if check.returncode != 0:
+        die(f"{tracking} does not exist — is {branch} the right base branch?")
+    return tracking
 
 
 def changed_files(base: str, head: str) -> list[str]:
