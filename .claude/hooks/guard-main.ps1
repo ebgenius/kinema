@@ -22,10 +22,38 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Get-Args([string]$Command) {
-    # Non-flag tokens, with a leading '+' (force refspec) stripped.
+    # Non-flag tokens, with a leading '+' (force refspec) and every shell quote
+    # removed.
+    #
+    # Removed throughout the token, not just trimmed from its ends. The shell
+    # concatenates around quotes, so `HEAD:"main"` and even `m"ai"n` reach git
+    # as `main`; a guard that only strips the outside sees neither. Comparing
+    # with quotes still attached is what let plain `origin "main"` through in
+    # the first place.
+    #
+    # Safe to do unconditionally: git refuses a ref name containing a quote, so
+    # removing them cannot merge two distinct refs into one.
     ($Command -split '\s+') |
         Where-Object { $_ -and $_ -notmatch '^-' } |
-        ForEach-Object { $_ -replace '^\+', '' }
+        ForEach-Object { $_ -replace '["'']', '' } |
+        ForEach-Object { $_ -replace '^\+', '' } |
+        Where-Object { $_ }
+}
+
+function Remove-HereStrings([string]$Command) {
+    # Blank out here-string bodies before anything reads the command structure.
+    #
+    # A commit message is data, and in this workflow it arrives as @'...'@ --
+    # paragraphs of prose sitting inside the same shell call as the push that
+    # follows it. Left in, every word of it is a token: a message mentioning
+    # "the main thread" made the push check below see a push to main and refuse
+    # a commit that was going nowhere near it.
+    #
+    # Ordinary quotes are deliberately left in place here. They are short enough
+    # to hold a real ref, and `git push origin "main"` must still be caught --
+    # Get-Args strips them from the token instead, where a ref is compared.
+    $stripped = $Command -replace "(?s)@'.*?'@", ' '
+    return $stripped -replace '(?s)@".*?"@', ' '
 }
 
 #: Global git options that consume the following token as their value, so the
@@ -51,12 +79,39 @@ function Get-GitSubcommand([string]$Segment) {
     return $null
 }
 
+function Join-LineContinuations([string]$Command) {
+    # A newline preceded by a continuation character is not a command boundary.
+    # `git push origin \` then `main` in bash, and the same with a backtick in
+    # PowerShell, both run as one push to main -- and splitting them left the
+    # destination in a segment of its own, where nothing was looking for it.
+    #
+    # Both characters are handled regardless of which shell is in play: reading
+    # one as a continuation when the other shell would not is harmless here,
+    # since it only ever joins a line to the next before deciding what the
+    # command is.
+    return $Command -replace '[\\`][ \t]*\r?\n', ' '
+}
+
+function Get-Segments([string]$Command) {
+    # Each `;`, `&&`, `||`, `|` or *newline* separated part is its own command
+    # line. The newline matters: a single tool call routinely holds several
+    # statements on separate lines, and without it `git add -A` and
+    # `git commit -m x` were one segment whose subcommand read as `add` -- so a
+    # commit on main went unnoticed, which is the whole thing this guards.
+    (Join-LineContinuations $Command) -split '(?:&&|\|\||[;|]|\r?\n)'
+}
+
+function Get-SubcommandSegments([string]$Command, [string]$Name) {
+    # Callers must wrap this in @(). PowerShell unrolls a single-element array
+    # on return, so one matching segment comes back as a bare string -- and
+    # `.Count` on a string is an error under StrictMode, which would take the
+    # whole hook down. A crashed hook fails open, so this is not a cosmetic
+    # detail: it is the difference between guarding and only appearing to.
+    Get-Segments $Command | Where-Object { (Get-GitSubcommand $_) -eq $Name }
+}
+
 function Test-GitSubcommand([string]$Command, [string]$Name) {
-    # Each `;`, `&&`, `||` or `|` separated segment is its own command line.
-    foreach ($segment in ($Command -split '(?:&&|\|\||[;|])')) {
-        if ((Get-GitSubcommand $segment) -eq $Name) { return $true }
-    }
-    return $false
+    return @(Get-SubcommandSegments $Command $Name).Count -gt 0
 }
 
 function Targets-Main([string]$Command) {
@@ -65,6 +120,9 @@ function Targets-Main([string]$Command) {
     #
     # Compared as a whole ref, not a substring, so `fix/domain-main` and
     # `feature/main` are left alone -- only the branch actually called main.
+    #
+    # Give this the push segments alone, never the whole command. Every word of
+    # a commit message is otherwise a candidate ref.
     foreach ($token in Get-Args $Command) {
         $ref = $token
         if ($ref.Contains(':')) { $ref = $ref.Substring($ref.LastIndexOf(':') + 1) }
@@ -113,8 +171,13 @@ try {
     Allow
 }
 
+# Commit messages are prose, not command structure. Everything below reads
+# structure, so the prose goes first.
+$command = Remove-HereStrings $command
+
 $isCommit = Test-GitSubcommand $command 'commit'
-$isPush = Test-GitSubcommand $command 'push'
+$pushSegments = @(Get-SubcommandSegments $command 'push') -join ' '
+$isPush = -not [string]::IsNullOrWhiteSpace($pushSegments)
 if (-not ($isCommit -or $isPush)) { Allow }
 
 # Changes nothing, so there is nothing to guard.
@@ -123,7 +186,7 @@ if ($command -match '--dry-run') { Allow }
 # A push naming main advances main whatever branch it runs from, so the
 # current-branch check below would miss it. Tested before the tag carve-out, so
 # `git push origin v1.0 main` cannot ride in on the tag.
-if ($isPush -and (Targets-Main $command)) {
+if ($isPush -and (Targets-Main $pushSegments)) {
     Deny(@"
 Pushing to 'main' is blocked. main only advances through a reviewed PR.
 
@@ -138,7 +201,7 @@ See CLAUDE.md.
 # confirm the name is a tag the push is simply not exempted, and falls through to
 # the branch check below -- so an unconfirmable tag is refused on main rather
 # than waved past.
-if ($isPush -and -not $isCommit -and (Is-TagPush $command)) { Allow }
+if ($isPush -and -not $isCommit -and (Is-TagPush $pushSegments)) { Allow }
 
 # symbolic-ref, not `rev-parse --abbrev-ref HEAD`: rev-parse cannot name the
 # branch before the first commit exists (it errors and prints "HEAD"), so a
