@@ -90,6 +90,11 @@ PROP_TCP_LINK = "kinema_tcp_link"
 #: reloaded -- see ``solver.manager._load_source_urdf``.
 PROP_SOURCE_KIND = "kinema_source_kind"
 PROP_SOURCE = "kinema_source"
+#: The xacro arguments the description was rendered with, in `name:=value` form.
+#: Stored because reloading needs them too: a rig built from a xacro that
+#: requires an argument fails to reload without it, and the solver answers a
+#: failed reload by dropping to the NumPy backend without saying so.
+PROP_XACRO_ARGS = "kinema_xacro_args"
 #: IK state, all stored on the rig so it survives save/reload.
 PROP_IK_BONE = "kinema_ik_bone"
 PROP_IK_ENABLED = "kinema_ik_enabled"

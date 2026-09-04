@@ -20,6 +20,7 @@ import os
 import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+from xml.etree import ElementTree
 
 #: ``C:`` at the start of what urlparse took for an authority: the signature of
 #: a Windows path in a ``file://`` URI that has no third slash.
@@ -36,6 +37,49 @@ _BOUNDARY_MARKERS = (".git", ".hg", ".svn", ".repo", "COLCON_IGNORE")
 
 def is_package_dir(directory: Path) -> bool:
     return any((directory / marker).exists() for marker in _PACKAGE_MARKERS)
+
+
+def declared_package_name(package_dir: Path) -> str | None:
+    """The ``<name>`` a ``package.xml`` declares, or None.
+
+    Not the same as the directory name, and assuming otherwise is a real bug:
+    Universal_Robots_ROS2_Description declares ``ur_description``, so every
+    ``$(find ur_description)`` in it failed to resolve against an index keyed on
+    the folder.
+
+    Parsed with ``ElementTree``, which reads bytes and honours the XML
+    declaration. Reading the text first and decoding with the system codec is
+    what made this file crash on Windows -- it contains a maintainer name with
+    a Danish ø, and cp1252 cannot decode UTF-8. Forcing UTF-8 instead would only
+    move the failure to a file that declares something else.
+
+    Returns None rather than raising for anything unreadable: an odd package.xml
+    somewhere in a checkout must not stop an unrelated robot from importing.
+    """
+    manifest = package_dir / "package.xml"
+    if not manifest.is_file():
+        # ROS 1 manifest.xml carries no <name>; the directory *is* the package.
+        return None
+    try:
+        node = ElementTree.parse(manifest).getroot().find("name")
+    except (ElementTree.ParseError, OSError, ValueError):
+        return None
+    if node is None or not node.text:
+        return None
+    return node.text.strip() or None
+
+
+def package_names(package_dir: Path) -> list[str]:
+    """Every name a package should answer to, best first.
+
+    Both, when they differ: descriptions in the wild reference each other by
+    either, and indexing the declared name alone would break a repository whose
+    own files say ``$(find Universal_Robots_ROS2_Description)``.
+    """
+    declared = declared_package_name(package_dir)
+    if declared and declared != package_dir.name:
+        return [declared, package_dir.name]
+    return [declared or package_dir.name]
 
 
 def _is_filesystem_root(directory: Path) -> bool:
@@ -98,7 +142,44 @@ def _index_packages(root: Path) -> dict[str, Path]:
     for marker in _PACKAGE_MARKERS:
         for path in root.rglob(marker):
             package_dir = path.parent
-            found.setdefault(package_dir.name, package_dir)
+            for name in package_names(package_dir):
+                found.setdefault(name, package_dir)
+    return found
+
+
+def package_map(
+    path: str | Path,
+    *,
+    extra_search_paths: list[str | Path] | None = None,
+) -> dict[str, Path]:
+    """Every ROS package reachable from ``path``, name -> directory.
+
+    The single source of truth for "what packages exist near this file", shared
+    by the mesh resolver and by the xacro renderer. They used to answer that
+    question separately and could disagree -- one keyed on directory names, the
+    other on what ``package.xml`` declared.
+
+    ``extra_search_paths`` is how a cell spanning repositories works: the
+    robot's own checkout is found automatically, and the shared macro
+    repositories come from the user's preferences.
+
+    A filesystem root among those extras is **skipped**, not scanned. The
+    automatic root is bounded precisely so indexing cannot walk a whole drive,
+    and a preference accepting any directory is a way to hand it one anyway --
+    now on Blender's main thread, since the import blocks. Someone browsing to
+    ``C:\\`` in the path picker would get an add-on that never comes back, so it
+    is refused here as well as flagged in the preferences.
+    """
+    found: dict[str, Path] = {}
+    root = package_search_root(path)
+    if root is not None:
+        found.update(_index_packages(root))
+    for extra in extra_search_paths or []:
+        directory = Path(extra).resolve()
+        if _is_filesystem_root(directory):
+            continue
+        for name, package_dir in _index_packages(directory).items():
+            found.setdefault(name, package_dir)
     return found
 
 
@@ -144,12 +225,7 @@ def make_mesh_resolver(
     def packages() -> dict[str, Path]:
         nonlocal package_index
         if package_index is None:
-            root = package_search_root(urdf_path)
-            package_index = _index_packages(root) if root is not None else {}
-            for extra_root in extra:
-                # Caller-supplied roots are explicit, so scan them too.
-                for name, directory in _index_packages(extra_root).items():
-                    package_index.setdefault(name, directory)
+            package_index = package_map(urdf_path, extra_search_paths=extra)
         return package_index
 
     def find_package(name: str) -> Path | None:

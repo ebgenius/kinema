@@ -294,9 +294,10 @@ def _load_source_urdf(rig):
 
         from ..io.loader import load_xacro_urdf, looks_like_xacro
         from ..io.resolve import make_mesh_resolver
+        from ..prefs import package_search_paths
 
         path = Path(source)
-        resolver = make_mesh_resolver(path)
+        resolver = make_mesh_resolver(path, extra_search_paths=package_search_paths())
 
         if looks_like_xacro(path):
             # A xacro has to be rendered before yourdfpy sees it, and this path
@@ -305,7 +306,18 @@ def _load_source_urdf(rig):
             # convert string to float: '$(arg'". Silently, because falling back
             # is what the manager does with any reload failure, and 38 of the
             # catalogue's robots ship only a xacro.
-            return load_xacro_urdf(path, resolver)
+            #
+            # The arguments matter here for the same reason: a description that
+            # needs `name:=ur5e` needs it now as much as it did at import, and
+            # the same silence would swallow the failure.
+            from ..io.xacro_args import parse_args
+
+            return load_xacro_urdf(
+                path,
+                resolver,
+                xacro_args=parse_args(rig.get(builder.PROP_XACRO_ARGS, "")),
+                extra_search_paths=package_search_paths(),
+            )
 
         return yourdfpy.URDF.load(
             source, build_scene_graph=True, load_meshes=False,

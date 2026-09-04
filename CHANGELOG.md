@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Xacro arguments.** A field in the import options — file picker and sidebar both — taking
+  the syntax the `xacro` command line uses: `name:=ur5e ur_type:=ur5e`. Some descriptions
+  cannot render without one. The Universal Robots `ur.urdf.xacro` opens by using `$(arg name)`
+  on the line *above* the one that declares it, so its default never applies and the file
+  simply will not load unless you supply a name.
+
+  Pick a `.xacro` and the file browser now lists the arguments it declares, with their
+  defaults, so you can see what it wants before importing rather than after failing. Get one
+  wrong and the error names the argument xacro asked for and lists the rest, instead of
+  `Undefined substitution argument name`.
+
+  The arguments are stored on the rig, because the solver reloads the description later to
+  build its model — a rig that imported cleanly and then quietly lost PyRoki would be a poor
+  trade.
+- **Package Search Paths** in the preferences: extra directories to find ROS packages in,
+  searched in addition to the repository holding the file. For a cell whose macros live in a
+  different repository from its robots.
+
 ### Fixed
 
 - **Xacro robots that reach into a sibling package now import.** A ROS description
@@ -26,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a float parser and the rig dropped to the NumPy fallback with
   `could not convert string to float: '$(arg'`. Silently, because falling back is what
   happens whenever the reload fails, and 38 of the catalogue's robots ship only a xacro.
+- **A package is now identified by the name it declares**, not by the name of the folder it
+  sits in. `Universal_Robots_ROS2_Description` declares itself `ur_description`, so every
+  `$(find ur_description)` inside it failed to resolve. Both names work, since descriptions
+  in the wild reference either.
+- **A package whose `package.xml` is not plain ASCII no longer breaks the import.** The file
+  is parsed as XML rather than read with the system codec, so a maintainer's name with an
+  accent in it stops mattering — on Windows this crashed with
+  `'charmap' codec can't decode byte 0x9d`.
 
 ### Changed
 
