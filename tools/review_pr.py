@@ -137,6 +137,11 @@ def find_gh() -> str:
 
 def run(args: list[str], *, cwd: Path = REPO_ROOT) -> str:
     """Run a command and return stdout, failing loudly rather than silently."""
+    if args and args[0] == "git":
+        # Without this, git escapes any non-ASCII byte in a path as octal inside
+        # quotes ("docs/\303\274ber.md"), and the escaped name does not resolve
+        # in a later `git show`, so the file vanishes from the review.
+        args = [args[0], "-c", "core.quotepath=false", *args[1:]]
     result = subprocess.run(
         args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
@@ -191,22 +196,33 @@ def changed_files(base: str, head: str) -> list[str]:
     return [line.strip() for line in listing.splitlines() if line.strip()]
 
 
-def file_body(head: str, path: str) -> str | None:
-    """The file's content after the change, or None if it should not be sent."""
+def file_body(head: str, path: str) -> tuple[str | None, str]:
+    """Return (content, reason) for a file after the change.
+
+    ``reason`` is empty when the content came back. Otherwise it says *which*
+    of these happened, because they are not equivalent: skipping a vendored
+    file is by design, while failing to read one is a defect in this script,
+    and collapsing both into "omitted" is how the second stays invisible.
+    """
     if any(path.startswith(prefix) for prefix in SKIP_PREFIXES):
-        return None
+        return None, "vendored — not under review"
     result = subprocess.run(
-        ["git", "show", f"{head}:{path}"], cwd=REPO_ROOT, capture_output=True
+        ["git", "-c", "core.quotepath=false", "show", f"{head}:{path}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
     )
     if result.returncode != 0:
-        return None
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        return None, f"COULD NOT BE READ — `git show` failed: {detail}"
     raw = result.stdout
-    if len(raw) > MAX_FILE_BYTES or b"\x00" in raw:
-        return None  # too large to be worth the context, or binary
+    if b"\x00" in raw:
+        return None, "binary"
+    if len(raw) > MAX_FILE_BYTES:
+        return None, f"too large ({len(raw):,} bytes)"
     try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+        return raw.decode("utf-8"), ""
+    except UnicodeDecodeError as exc:
+        return None, f"COULD NOT BE READ — not valid UTF-8 ({exc.reason})"
 
 
 def build_user_message(description: str, diff: str, head: str, paths: list[str]) -> str:
@@ -221,9 +237,14 @@ def build_user_message(description: str, diff: str, head: str, paths: list[str])
 
     parts.append("## Full contents of each changed file, after the change\n")
     for path in paths:
-        body = file_body(head, path)
+        body, reason = file_body(head, path)
         if body is None:
-            parts.append(f"### `{path}`\n\n_(omitted: vendored, binary, or too large)_\n")
+            parts.append(f"### `{path}`\n\n_(omitted: {reason})_\n")
+            # An unreadable file is reviewed from its diff hunk alone. Say so on
+            # the terminal as well: buried in the prompt, nobody would ever see
+            # that a file quietly did not make it into the review.
+            if reason.startswith("COULD NOT BE READ"):
+                print(f"warning: {path} — {reason}", file=sys.stderr)
             continue
         fence = "```" + (Path(path).suffix.lstrip(".") or "text")
         parts.append(f"### `{path}`\n\n{fence}\n{body}\n```\n")
@@ -261,9 +282,14 @@ def request_review(message: str, model: str, api_key: str) -> str:
     except urllib.error.URLError as exc:
         die(f"could not reach OpenRouter: {exc.reason}")
 
-    if "choices" not in body:
-        die(f"unexpected response from OpenRouter:\n{json.dumps(body)[:2000]}")
-    return body["choices"][0]["message"]["content"].strip()
+    # A refusal, a filtered response or a provider-side error all come back
+    # shaped like a completion but with a null content, so reach for it
+    # defensively rather than letting it surface as an AttributeError.
+    choices = body.get("choices") or []
+    content = (choices[0].get("message", {}).get("content") if choices else None) or ""
+    if not content.strip():
+        die(f"OpenRouter returned no review text:\n{json.dumps(body)[:2000]}")
+    return content.strip()
 
 
 def post_comment(gh: str, pr: int, review: str, model: str) -> None:

@@ -88,11 +88,16 @@ gh release create vX.Y.Z --title "Kinema vX.Y.Z" --notes-file <notes.md> \
     dist/kinema-X.Y.Z-macos_arm64.zip
 ```
 
-**Create the tag and push it as two separate commands**, as above. The guard hook lets a
-tag push through `main` only after confirming the tag exists, which it does by asking
-`git show-ref refs/tags/vX.Y.Z` — and that check runs *before* the command it is guarding,
-so a single block that creates the tag and then pushes it is refused: at the moment of the
-check, the tag is not there yet.
+**Create the tag and push it in two separate steps**, as above — and if an agent is doing
+it, in two separate tool calls.
+
+This is not a git hook. `.claude/hooks/guard-main.ps1` is a Claude Code **PreToolUse** hook:
+it inspects the command *string* and decides whether to allow it, before any of it runs. It
+permits a push on `main` only when the push names a tag that already exists, which it
+confirms with `git show-ref refs/tags/vX.Y.Z`. So a single call holding both commands is
+refused — at the moment of the check nothing has executed yet, and the tag it is looking for
+will not exist until the call it is deciding on is allowed to proceed. Run by hand in a
+shell, the combined block is fine; it is the agent path that needs the split.
 
 Annotated tags (`-a`), so `git describe` treats them as real release points. On Windows,
 `gh` may not be on `PATH`; it installs to `C:\Program Files\GitHub CLI\gh.exe`.
