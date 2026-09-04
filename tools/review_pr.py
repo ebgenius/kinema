@@ -252,7 +252,7 @@ def build_user_message(description: str, diff: str, head: str, paths: list[str])
     return "\n".join(parts)
 
 
-def request_review(message: str, model: str, api_key: str) -> str:
+def request_review(message: str, model: str, api_key: str, timeout: int) -> str:
     payload = {
         "model": model,
         "temperature": 0.1,
@@ -272,8 +272,8 @@ def request_review(message: str, model: str, api_key: str) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
     except urllib.error.HTTPError as exc:
         # The response body explains the failure; the request headers carry the
         # key and are never touched here.
@@ -281,6 +281,19 @@ def request_review(message: str, model: str, api_key: str) -> str:
         die(f"OpenRouter returned HTTP {exc.code}:\n{detail}")
     except urllib.error.URLError as exc:
         die(f"could not reach OpenRouter: {exc.reason}")
+    except TimeoutError:
+        # A long queue behind a busy model looks exactly like this. It is not a
+        # bug in the request, so say what to do about it rather than unwinding a
+        # socket traceback over the terminal.
+        die(
+            f"OpenRouter did not respond within {timeout}s. The model may be queued;\n"
+            f"  retry, raise --timeout, or try a different --model."
+        )
+
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        die(f"OpenRouter returned a response that is not JSON:\n{raw[:2000]!r}")
 
     # A refusal, a filtered response or a provider-side error all come back
     # shaped like a completion but with a null content, so reach for it
@@ -313,6 +326,9 @@ def main() -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="print the review without posting it"
     )
+    parser.add_argument(
+        "--timeout", type=int, default=900, help="seconds to wait for a reply (default: 900)"
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
@@ -339,7 +355,7 @@ def main() -> int:
         file=sys.stderr,
     )
 
-    review = request_review(message, args.model, api_key)
+    review = request_review(message, args.model, api_key, args.timeout)
     print(review)
 
     if args.dry_run:
