@@ -16,10 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `PackageNotFoundError` even though the package was sitting in the same clone. This
   blocked most vendor description repos, not one robot.
 - **Mesh paths in rendered xacros resolved to the wrong place on Windows.** Rendering a xacro
-  rewrites every `package://` reference into a `file://` URI, which on Windows looks like
-  `file://C:\…` — a shape the URI parser splits differently, leaving Kinema with an empty
-  path. It fell back to the description's own directory, which exists, so the robot imported
-  in silence with no geometry at all.
+  rewrites every `package://` reference into a `file://` URI, and on Windows the drive letter
+  ends up in the URI's authority rather than its path — so Kinema, which read only the path,
+  either got nothing at all or a path with the drive silently removed. It fell back to the
+  description's own directory, which exists, so the robot imported without a single mesh and
+  without an error.
 - **Xacro rigs no longer lose the PyRoki solver.** The solver reloads the description to
   build its model, and handed the xacro to the URDF parser unrendered — so `$(arg …)` reached
   a float parser and the rig dropped to the NumPy fallback with

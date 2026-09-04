@@ -161,14 +161,28 @@ class TestFileUris:
         robot.write_text("<robot name='r'/>", encoding="utf-8")
         return resolve.make_mesh_resolver(robot)(uri)
 
-    def test_a_windows_path_with_no_third_slash(self, tmp_path):
-        """xacrodoc's output. urlparse reads `C:\\...` as the authority and
-        leaves the path empty; taking the path alone resolved every mesh to the
-        URDF's own directory, so robots imported with no geometry."""
+    @pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows shape")
+    @pytest.mark.parametrize("style", ["native", "posix"])
+    def test_a_windows_path_in_the_authority(self, tmp_path, style):
+        """xacrodoc's output, in both spellings it produces.
+
+        The drive letter lands in the authority either way, and the split
+        differs:
+
+            file://C:\\pkg\\mesh.stl   netloc='C:\\pkg\\mesh.stl'  path=''
+            file://C:/pkg/mesh.stl     netloc='C:'  path='/pkg/mesh.stl'
+
+        Which appears depends on how the package was registered -- ``look_in``
+        keeps the native path, ``update_package_cache`` normalises through
+        ``as_posix``. Reading ``path`` alone handled neither: empty for the
+        first, drive silently dropped from the second.
+        """
         mesh = tmp_path / "meshes" / "base.stl"
         mesh.parent.mkdir()
         mesh.write_text("solid", encoding="utf-8")
-        got = self.resolve_one(tmp_path, f"file://{mesh}")
+
+        raw = mesh.as_posix() if style == "posix" else str(mesh)
+        got = self.resolve_one(tmp_path, f"file://{raw}")
         assert Path(got) == mesh
 
     def test_a_well_formed_uri_still_works(self, tmp_path):

@@ -195,12 +195,22 @@ def make_mesh_resolver(
             # ``\\server\share\x``, and dropping the leading slashes would turn
             # it into a relative path.
             #
-            # xacrodoc emits the third. Rendering a xacro with
-            # resolve_packages=True rewrites every ``package://`` into
-            # ``file://<absolute path>`` -- and on Windows that is
-            # ``file://C:\...``, which has no slash after the authority marker,
-            # so urlparse reads the whole path as the authority and leaves
-            # ``path`` empty. Taking ``path`` alone yielded "" and every mesh
+            # xacrodoc emits the third, in two spellings. Rendering a xacro
+            # with resolve_packages=True rewrites every ``package://`` into
+            # ``file://<absolute path>``, and on Windows the drive letter lands
+            # in the authority either way:
+            #
+            #   file://C:\pkg\mesh.stl   netloc='C:\\pkg\\mesh.stl'  path=''
+            #   file://C:/pkg/mesh.stl   netloc='C:'  path='/pkg/mesh.stl'
+            #
+            # Which one appears depends on how the package was registered:
+            # ``look_in`` keeps the native path, while ``update_package_cache``
+            # normalises through ``as_posix``. Measured on the current bundle,
+            # the path Kinema takes produces the first -- but both are real, and
+            # the branch has to survive a change of registration mechanism.
+            #
+            # Reading ``path`` alone handled neither: it gave "" for the first
+            # and silently dropped the drive from the second. Every mesh then
             # resolved to the URDF's own directory, which exists, so the robot
             # imported in silence with no geometry at all.
             authority = unquote(parsed.netloc)
