@@ -21,6 +21,18 @@ This is enforced in two places.
 `main`, and refuses any push naming `main` as its target from any branch. It fails open: if
 it cannot determine the branch, the command proceeds.
 
+Failing open is also how it hides a break — a hook that crashes emits no decision, and no
+decision means allow, so a broken guard and a working one look identical from outside. After
+touching it, run its cases:
+
+```powershell
+pwsh -NoProfile -File .claude/hooks/test-guard-main.ps1
+```
+
+They cover both directions, because both have gone wrong: a commit message mentioning *main*
+was refused as though it were a push, and `git add` on the line above a `git commit` hid the
+commit entirely.
+
 **On GitHub**, the `main_protect` ruleset requires a pull request and blocks force-pushes and
 deletion on the default branch, with **no bypass actors** — direct pushes are refused for
 everyone, including the owner. Merges are limited to rebase and squash. Zero approvals are
