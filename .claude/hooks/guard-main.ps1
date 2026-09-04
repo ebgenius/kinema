@@ -79,13 +79,26 @@ function Get-GitSubcommand([string]$Segment) {
     return $null
 }
 
+function Join-LineContinuations([string]$Command) {
+    # A newline preceded by a continuation character is not a command boundary.
+    # `git push origin \` then `main` in bash, and the same with a backtick in
+    # PowerShell, both run as one push to main -- and splitting them left the
+    # destination in a segment of its own, where nothing was looking for it.
+    #
+    # Both characters are handled regardless of which shell is in play: reading
+    # one as a continuation when the other shell would not is harmless here,
+    # since it only ever joins a line to the next before deciding what the
+    # command is.
+    return $Command -replace '[\\`][ \t]*\r?\n', ' '
+}
+
 function Get-Segments([string]$Command) {
     # Each `;`, `&&`, `||`, `|` or *newline* separated part is its own command
     # line. The newline matters: a single tool call routinely holds several
     # statements on separate lines, and without it `git add -A` and
     # `git commit -m x` were one segment whose subcommand read as `add` -- so a
     # commit on main went unnoticed, which is the whole thing this guards.
-    $Command -split '(?:&&|\|\||[;|]|\r?\n)'
+    (Join-LineContinuations $Command) -split '(?:&&|\|\||[;|]|\r?\n)'
 }
 
 function Get-SubcommandSegments([string]$Command, [string]$Name) {

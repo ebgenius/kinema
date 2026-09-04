@@ -138,6 +138,35 @@ Check 'push origin HEAD:"main"' 'git push origin HEAD:"main"' $true
 Check 'push origin m"ai"n' 'git push origin m"ai"n' $true
 Check "push origin 'main'" "git push origin 'main'" $true
 
+# --- a continued line is one command, not two --------------------------------
+# Splitting on every newline put the destination in a segment of its own, where
+# nothing was looking for it. Both shells' continuation characters, since either
+# may be what reaches the hook.
+$backslash = [char]92
+$backtick = [char]96
+
+Check 'push continued with a backslash (bash)' (@(
+    "git push origin $backslash"
+    'main'
+) -join "`n") $true
+
+Check 'push continued with a backtick (PowerShell)' (@(
+    "git push origin $backtick"
+    'main'
+) -join "`n") $true
+
+Check 'continuation with trailing space before the newline' (@(
+    "git push origin $backslash  "
+    'main'
+) -join "`n") $true
+
+# The join must not swallow a real boundary: a backslash inside a token is not
+# a continuation unless the newline follows it directly.
+Check 'a path containing a backslash is not a continuation' (@(
+    'git commit -m "see C:\ws\notes.md"'
+    'git push -u origin feat/thing'
+) -join "`n") $false
+
 # --- the branch-sensitive half, tested against a repo that is on main --------
 # Run from this checkout these are allowed for the wrong reason: the workflow
 # keeps HEAD on a feature branch, so every case below would pass no matter what
