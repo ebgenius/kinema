@@ -66,12 +66,23 @@ def import_settings() -> dict:
             description="Add a tool-centre-point marker at the end of the chain",
             default=True,
         ),
+        "xacro_args": StringProperty(
+            name="Xacro Arguments",
+            description=(
+                "Substitution arguments for a xacro file, in the syntax the "
+                "xacro command line takes: name:=ur5e ur_type:=ur5e. Ignored "
+                "for a plain URDF or MJCF"
+            ),
+            default="",
+        ),
     }
 
 
-#: The four names in :func:`import_settings`, for copying between an operator,
-#: the scene property group, and a RigBuildOptions.
-SETTING_NAMES = ("bone_length", "enforce_limits", "import_visuals", "create_tcp")
+#: The names in :func:`import_settings`, for copying between an operator, the
+#: scene property group, and a RigBuildOptions.
+SETTING_NAMES = (
+    "bone_length", "enforce_limits", "import_visuals", "create_tcp", "xacro_args",
+)
 
 
 def setting_values(source) -> dict:
@@ -132,7 +143,14 @@ class KINEMA_OT_build_robot(Operator):
             window_manager.progress_end()
 
     def _build(self, context: bpy.types.Context) -> set[str]:
-        result = loader.load_file(self.filepath)
+        from ..io.xacro_args import parse_args
+        from ..prefs import package_search_paths
+
+        result = loader.load_file(
+            self.filepath,
+            xacro_args=parse_args(self.xacro_args),
+            extra_search_paths=package_search_paths(),
+        )
         if result.error:
             self.report({"ERROR"}, result.error)
             return {"CANCELLED"}
@@ -162,6 +180,12 @@ class KINEMA_OT_build_robot(Operator):
             kind, value = result.source
             rig.armature_object[builder.PROP_SOURCE_KIND] = kind
             rig.armature_object[builder.PROP_SOURCE] = value
+            # The arguments travel with the source, because the reload needs
+            # them just as much as the import did. A UR rig reloaded without
+            # `name:=…` fails exactly as the import would have, and the solver
+            # answers a failed reload by falling back to NumPy in silence.
+            if self.xacro_args:
+                rig.armature_object[builder.PROP_XACRO_ARGS] = self.xacro_args
 
         for warning in rig.warnings[:3]:
             self.report({"WARNING"}, warning)
@@ -284,6 +308,39 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper):
         column = layout.column()
         for name in SETTING_NAMES:
             column.prop(self, name)
+        self._draw_declared_args(layout)
+
+    def _draw_declared_args(self, layout) -> None:
+        """List the arguments the selected xacro declares, with their defaults.
+
+        Otherwise the only way to learn what a file wants is to import it and
+        read the error, which is a poor trade when the answer is sitting in the
+        file. Only this file's own declarations: reaching the ones in its
+        includes means rendering it, which is the step that fails.
+        """
+        path = Path(self.filepath or "")
+        if not path.is_file() or not loader.looks_like_xacro(path):
+            return
+
+        declared = _declared_args_cached(path)
+        if not declared:
+            return
+
+        header, body = layout.panel("kinema_declared_args", default_closed=False)
+        header.label(text=f"Declared by {path.name}")
+        if body is None:
+            return
+        body.use_property_split = False
+        for name, default in declared.items():
+            row = body.row()
+            row.label(text=name)
+            shown = row.row()
+            shown.alignment = "RIGHT"
+            shown.label(text=default if default else '""')
+        body.label(
+            text="A default may still be too late to apply; see the docs.",
+            icon="INFO",
+        )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         path = Path(self.filepath)
@@ -296,6 +353,29 @@ class KINEMA_OT_import_urdf(Operator, ImportHelper):
         return bpy.ops.kinema.build_robot(
             filepath=str(path), **setting_values(self)
         )
+
+
+#: One entry, keyed by (path, mtime). ``draw`` runs on every redraw of the file
+#: browser -- including while the mouse moves -- so parsing the file each time
+#: would read from disk continuously. One entry is enough: the browser shows one
+#: selection at a time, and the mtime makes an edited file re-read itself.
+_declared_args_cache: tuple[tuple[str, float], dict[str, str]] | None = None
+
+
+def _declared_args_cached(path: Path) -> dict[str, str]:
+    global _declared_args_cache
+
+    from ..io.xacro_args import declared_args
+
+    try:
+        key = (str(path), path.stat().st_mtime)
+    except OSError:
+        return {}
+    if _declared_args_cache is not None and _declared_args_cache[0] == key:
+        return _declared_args_cache[1]
+    found = declared_args(path)
+    _declared_args_cache = (key, found)
+    return found
 
 
 def menu_draw(self, context: bpy.types.Context) -> None:

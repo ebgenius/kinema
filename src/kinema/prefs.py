@@ -3,10 +3,87 @@
 from __future__ import annotations
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, IntProperty
-from bpy.types import AddonPreferences
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    IntProperty,
+    StringProperty,
+)
+from bpy.types import AddonPreferences, PropertyGroup, UIList
 
 from . import runtime
+
+
+class KinemaSearchPath(PropertyGroup):
+    """One directory to look for ROS packages in."""
+
+    path: StringProperty(
+        name="Path",
+        description="A directory holding ROS packages",
+        subtype="DIR_PATH",
+        default="",
+    )
+
+
+class KINEMA_UL_search_paths(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data,
+                  active_prop, index):
+        layout.prop(item, "path", text="", emboss=False, icon="FILE_FOLDER")
+
+
+class KINEMA_OT_add_search_path(bpy.types.Operator):
+    bl_idname = "kinema.add_search_path"
+    bl_label = "Add Package Search Path"
+    bl_description = "Add a directory to search for ROS packages"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        preferences = get_prefs(context)
+        preferences.search_paths.add()
+        preferences.active_search_path = len(preferences.search_paths) - 1
+        return {"FINISHED"}
+
+
+class KINEMA_OT_remove_search_path(bpy.types.Operator):
+    bl_idname = "kinema.remove_search_path"
+    bl_label = "Remove Package Search Path"
+    bl_description = "Remove the selected search path"
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        preferences = get_prefs(context)
+        return bool(preferences and preferences.search_paths)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        preferences = get_prefs(context)
+        index = preferences.active_search_path
+        if 0 <= index < len(preferences.search_paths):
+            preferences.search_paths.remove(index)
+            preferences.active_search_path = max(0, index - 1)
+        return {"FINISHED"}
+
+
+def package_search_paths() -> list[str]:
+    """Extra directories to find ROS packages in, from the preferences.
+
+    A robot's own checkout is found automatically; this is for the case that
+    checkout cannot cover -- a cell whose macros live in one repository and
+    whose robots live in others, where ``$(find shared_macros)`` has to reach
+    across.
+
+    Returns an empty list rather than raising when preferences are not readable,
+    which happens while the add-on is being registered or unregistered.
+    """
+    preferences = get_prefs()
+    if preferences is None:
+        return []
+    return [
+        bpy.path.abspath(entry.path)
+        for entry in preferences.search_paths
+        if entry.path.strip()
+    ]
 
 
 class KinemaPreferences(AddonPreferences):
@@ -37,6 +114,8 @@ class KinemaPreferences(AddonPreferences):
         description="Print solver diagnostics to the system console",
         default=False,
     )
+    search_paths: CollectionProperty(type=KinemaSearchPath)
+    active_search_path: IntProperty(default=0)
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
@@ -65,6 +144,27 @@ class KinemaPreferences(AddonPreferences):
             warn.label(text="Some dependencies are unavailable.", icon="INFO")
             warn.label(text="Kinema falls back to the NumPy solver; IK quality is reduced.")
 
+        layout.separator()
+        layout.label(text="Package Search Paths", icon="FILE_FOLDER")
+        row = layout.row()
+        row.template_list(
+            "KINEMA_UL_search_paths", "", self, "search_paths",
+            self, "active_search_path", rows=3,
+        )
+        column = row.column(align=True)
+        column.operator("kinema.add_search_path", text="", icon="ADD")
+        column.operator("kinema.remove_search_path", text="", icon="REMOVE")
+
+        note = layout.column(align=True)
+        note.label(
+            text="Searched in addition to the repository holding the file.",
+            icon="INFO",
+        )
+        note.label(
+            text="For a cell whose macros live in a different repository from its robots.",
+            icon="BLANK1",
+        )
+
 
 class KINEMA_OT_check_dependencies(bpy.types.Operator):
     bl_idname = "kinema.check_dependencies"
@@ -89,4 +189,13 @@ def get_prefs(context: bpy.types.Context | None = None) -> KinemaPreferences:
     return addon.preferences if addon else None
 
 
-classes = (KinemaPreferences, KINEMA_OT_check_dependencies)
+# KinemaSearchPath first: KinemaPreferences declares a CollectionProperty of it,
+# and Blender resolves the type at registration.
+classes = (
+    KinemaSearchPath,
+    KINEMA_UL_search_paths,
+    KINEMA_OT_add_search_path,
+    KINEMA_OT_remove_search_path,
+    KinemaPreferences,
+    KINEMA_OT_check_dependencies,
+)

@@ -60,12 +60,19 @@ def load_file(
     filepath: str | Path,
     *,
     should_cancel: Callable[[], bool] | None = None,
+    xacro_args: dict[str, str] | None = None,
+    extra_search_paths: list[str] | None = None,
 ) -> LoadResult:
     """Parse a local URDF, xacro or MJCF file.
 
     No network, but the parse alone is slow enough on a large robot to be worth
     keeping off the main thread -- and it puts both import routes through the
     same operator.
+
+    ``xacro_args`` are substitution arguments, as ``xacro name:=value`` takes
+    them; ignored for a plain URDF. ``extra_search_paths`` are additional
+    directories to find ROS packages in, for a cell whose macros live in a
+    different repository from the robot.
     """
     from ..rig import kinematics
 
@@ -83,10 +90,14 @@ def load_file(
 
     from .resolve import make_mesh_resolver
 
-    resolver = make_mesh_resolver(path)
+    resolver = make_mesh_resolver(path, extra_search_paths=extra_search_paths)
+    is_xacro = looks_like_xacro(path)
     try:
-        if looks_like_xacro(path):
-            urdf = load_xacro_urdf(path, resolver)
+        if is_xacro:
+            urdf = load_xacro_urdf(
+                path, resolver, xacro_args=xacro_args,
+                extra_search_paths=extra_search_paths,
+            )
         else:
             urdf = yourdfpy.URDF.load(
                 str(path),
@@ -95,6 +106,13 @@ def load_file(
                 filename_handler=lambda name: resolver(name),
             )
     except Exception as exc:  # noqa: BLE001
+        if is_xacro:
+            # "Undefined substitution argument name" tells a user nothing --
+            # 'name' even reads as a noun. Name the argument and list what the
+            # file declares.
+            from .xacro_args import describe
+
+            return LoadResult(error=describe(path, str(exc)))
         return LoadResult(error=f"Could not parse {path.name}: {exc}")
 
     try:
@@ -118,17 +136,29 @@ def looks_like_xacro(path: str | Path) -> bool:
     return path.suffix.lower() == ".xacro" or path.name.endswith(".urdf.xacro")
 
 
-def load_xacro_urdf(path: Path, resolver):
+def load_xacro_urdf(
+    path: Path,
+    resolver,
+    xacro_args: dict[str, str] | None = None,
+    extra_search_paths: list[str] | None = None,
+):
     """Render a xacro to URDF first; many ROS descriptions ship only xacro.
 
     xacro reaches other packages by name -- a KUKA arm pulls its materials from
     a sibling ``kuka_resources`` -- and xacrodoc cannot find those on its own.
     It resolves the file's *own* package and nothing beside it, so any
-    cross-package ``$(find …)`` failed with ``PackageNotFoundError``. Pointing
-    it at the same search root the mesh resolver uses fixes that, and bounds the
-    search at the checkout rather than the disk.
+    cross-package ``$(find …)`` failed with ``PackageNotFoundError``.
 
-    ``reset()`` matters as much as ``look_in()``. xacrodoc's package finder is
+    Kinema hands it a finished map rather than a directory to search, which buys
+    two things beyond the lookup. The two resolvers can no longer disagree about
+    what a package is called -- the map is built by the same indexer that
+    resolves meshes, so both know Universal_Robots_ROS2_Description declares
+    itself ``ur_description``. And xacrodoc never opens ``package.xml`` itself,
+    which is what stops it decoding a UTF-8 file with the system codec: that
+    file's maintainer name contains a Danish ø, and on Windows the render died
+    with ``'charmap' codec can't decode byte 0x9d``.
+
+    ``reset()`` matters as much as the map. xacrodoc's package finder is
     module-global, so without it one import's packages stay resolvable in the
     next, and two robots from different repos that both ship a
     ``common_materials.xacro`` would quietly render against whichever was
@@ -146,14 +176,16 @@ def load_xacro_urdf(path: Path, resolver):
     import yourdfpy
     from xacrodoc import XacroDoc, packages
 
-    from .resolve import package_search_root
+    from .resolve import package_map
 
     packages.reset()
-    search_root = package_search_root(path)
-    if search_root is not None:
-        packages.look_in([str(search_root)])
+    known = package_map(path, extra_search_paths=extra_search_paths)
+    if known:
+        packages.update_package_cache({name: str(p) for name, p in known.items()})
 
-    doc = XacroDoc.from_file(str(path), resolve_packages=True)
+    doc = XacroDoc.from_file(
+        str(path), resolve_packages=True, subargs=dict(xacro_args or {})
+    )
 
     handle, rendered = tempfile.mkstemp(suffix=".urdf", prefix=f"kinema-{path.stem}-")
     os.close(handle)

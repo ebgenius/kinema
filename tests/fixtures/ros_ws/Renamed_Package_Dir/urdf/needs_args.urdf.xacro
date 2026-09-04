@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!-- Two shapes at once, both taken from real descriptions.
+
+     The robot's name uses $(arg name) on this line, above the <xacro:arg> that
+     declares it below. xacro evaluates these attributes before reaching the
+     declaration, so the default never applies and the file cannot render
+     without name:=something. This is exactly how ur.urdf.xacro opens, and it is
+     why "required" cannot be inferred from "has no default".
+
+     The include reaches fixture_renamed, which is this package's *declared*
+     name rather than its directory name. Resolving it proves the index reads
+     package.xml rather than assuming the folder. -->
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="$(arg name)">
+
+  <xacro:arg name="name" default="unused_default"/>
+  <xacro:arg name="segment_length" default="0.4"/>
+
+  <xacro:include filename="$(find fixture_renamed)/urdf/shared_macro.xacro"/>
+
+  <link name="base_link"/>
+  <xacro:sized_link name="link_1" length="$(arg segment_length)"/>
+
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="2.0"/>
+  </joint>
+
+</robot>
