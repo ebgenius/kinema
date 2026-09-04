@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>fixture_common</name>
+  <version>0.0.1</version>
+  <description>Shared materials, in a package the robot has to reach across to.</description>
+  <maintainer email="nobody@example.com">nobody</maintainer>
+  <license>MIT</license>
+</package>

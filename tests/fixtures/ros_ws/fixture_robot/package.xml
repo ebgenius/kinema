@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>fixture_robot</name>
+  <version>0.0.1</version>
+  <description>A robot whose xacro reaches into a sibling package.</description>
+  <maintainer email="nobody@example.com">nobody</maintainer>
+  <license>MIT</license>
+  <depend>fixture_common</depend>
+</package>

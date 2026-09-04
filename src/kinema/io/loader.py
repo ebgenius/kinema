@@ -85,8 +85,8 @@ def load_file(
 
     resolver = make_mesh_resolver(path)
     try:
-        if path.suffix.lower() == ".xacro" or path.name.endswith(".urdf.xacro"):
-            urdf = _load_xacro(path, resolver)
+        if looks_like_xacro(path):
+            urdf = load_xacro_urdf(path, resolver)
         else:
             urdf = yourdfpy.URDF.load(
                 str(path),
@@ -107,8 +107,32 @@ def load_file(
     return LoadResult(model=model, source=("file", str(path)), resolver=resolver)
 
 
-def _load_xacro(path: Path, resolver):
+def looks_like_xacro(path: str | Path) -> bool:
+    """Whether this file needs rendering before a URDF parser sees it.
+
+    Shared with the solver, which reloads the description later to build
+    PyRoki's model and must make the same decision. When it did not, a xacro
+    reached yourdfpy raw and the rig silently dropped to the NumPy backend.
+    """
+    path = Path(path)
+    return path.suffix.lower() == ".xacro" or path.name.endswith(".urdf.xacro")
+
+
+def load_xacro_urdf(path: Path, resolver):
     """Render a xacro to URDF first; many ROS descriptions ship only xacro.
+
+    xacro reaches other packages by name -- a KUKA arm pulls its materials from
+    a sibling ``kuka_resources`` -- and xacrodoc cannot find those on its own.
+    It resolves the file's *own* package and nothing beside it, so any
+    cross-package ``$(find …)`` failed with ``PackageNotFoundError``. Pointing
+    it at the same search root the mesh resolver uses fixes that, and bounds the
+    search at the checkout rather than the disk.
+
+    ``reset()`` matters as much as ``look_in()``. xacrodoc's package finder is
+    module-global, so without it one import's packages stay resolvable in the
+    next, and two robots from different repos that both ship a
+    ``common_materials.xacro`` would quietly render against whichever was
+    loaded first.
 
     xacrodoc's own ``temp_urdf_file_path`` cannot be used. It yields the path of
     a NamedTemporaryFile it is still holding open, and Windows refuses to open a
@@ -120,7 +144,12 @@ def _load_xacro(path: Path, resolver):
     import tempfile
 
     import yourdfpy
-    from xacrodoc import XacroDoc
+    from xacrodoc import XacroDoc, packages
+
+    from .resolve import package_search_root
+
+    packages.reset()
+    packages.look_in([str(package_search_root(path))])
 
     doc = XacroDoc.from_file(str(path), resolve_packages=True)
 

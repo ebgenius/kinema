@@ -285,14 +285,28 @@ def _load_source_urdf(rig):
             return urdf_from_model(model_from_mjcf(source))
 
         import os
+        from pathlib import Path
 
         if not os.path.isfile(source):
             raise SolverError(f"the description file is missing: {source}")
+
         import yourdfpy
 
+        from ..io.loader import load_xacro_urdf, looks_like_xacro
         from ..io.resolve import make_mesh_resolver
 
-        resolver = make_mesh_resolver(source)
+        path = Path(source)
+        resolver = make_mesh_resolver(path)
+
+        if looks_like_xacro(path):
+            # A xacro has to be rendered before yourdfpy sees it, and this path
+            # used to hand it over raw -- so `$(arg …)` reached a float parser
+            # and every xacro rig fell back to the NumPy solver with "could not
+            # convert string to float: '$(arg'". Silently, because falling back
+            # is what the manager does with any reload failure, and 38 of the
+            # catalogue's robots ship only a xacro.
+            return load_xacro_urdf(path, resolver)
+
         return yourdfpy.URDF.load(
             source, build_scene_graph=True, load_meshes=False,
             filename_handler=lambda name: resolver(name),
