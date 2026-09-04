@@ -142,12 +142,22 @@ def run(args: list[str], *, cwd: Path = REPO_ROOT) -> str:
         # quotes ("docs/\303\274ber.md"), and the escaped name does not resolve
         # in a later `git show`, so the file vanishes from the review.
         args = [args[0], "-c", "core.quotepath=false", *args[1:]]
-    result = subprocess.run(
-        args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
+    result = subprocess.run(args, cwd=cwd, capture_output=True)
     if result.returncode != 0:
-        die(f"{' '.join(args[:3])}... exited {result.returncode}:\n{result.stderr.strip()}")
-    return result.stdout
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        die(f"{' '.join(args[:3])}... exited {result.returncode}:\n{stderr}")
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        # Same rule as file_body: replacing bytes quietly would hand the model an
+        # altered diff -- mojibake where a cp1252 file's removed lines used to be
+        # -- which it may then report as a finding of its own.
+        print(
+            f"warning: `{' '.join(args[:3])}...` produced output that is not valid UTF-8. "
+            "Undecodable bytes were replaced, so the review sees altered text.",
+            file=sys.stderr,
+        )
+        return result.stdout.decode("utf-8", errors="replace")
 
 
 def resolve_refs(args: argparse.Namespace, gh: str) -> tuple[str, str, str]:
@@ -296,10 +306,17 @@ def request_review(message: str, model: str, api_key: str, timeout: int) -> str:
         die(f"OpenRouter returned a response that is not JSON:\n{raw[:2000]!r}")
 
     # A refusal, a filtered response or a provider-side error all come back
-    # shaped like a completion but with a null content, so reach for it
-    # defensively rather than letting it surface as an AttributeError.
+    # shaped like a completion but without usable text. `content` may be null,
+    # or a list of typed parts rather than a string -- so normalise to str
+    # before touching it, instead of trusting the shape.
     choices = body.get("choices") or []
-    content = (choices[0].get("message", {}).get("content") if choices else None) or ""
+    content = choices[0].get("message", {}).get("content") if choices else None
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+    if not isinstance(content, str):
+        content = ""
     if not content.strip():
         die(f"OpenRouter returned no review text:\n{json.dumps(body)[:2000]}")
     return content.strip()
