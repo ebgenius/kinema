@@ -36,16 +36,24 @@ def _tokenise(text: str) -> list[str]:
     ``str.split`` cannot do the first: ``prefix:="left arm "`` becomes three
     tokens and the value silently truncates to ``"left``.
 
-    ``shlex`` can, but its default escape character is the backslash, which
-    turns ``joint_limit_params:=C:\\ws\\config.yaml`` into
-    ``C:wsconfig.yaml``. That is not hypothetical -- four of the Universal
-    Robots arguments take file paths. Clearing ``escape`` keeps quoting and
-    leaves Windows paths alone, at the cost of no way to escape a quote inside
-    a value, which no xacro argument has ever needed.
+    ``shlex`` can, but two of its defaults are wrong for this. Its escape
+    character is the backslash, which turns
+    ``joint_limit_params:=C:\\ws\\config.yaml`` into ``C:wsconfig.yaml`` -- not
+    hypothetical, since four of the Universal Robots arguments take file paths.
+    And it treats ``#`` as starting a comment, which xacro does not: left on,
+    ``color:=#ff0000`` arrives empty and ``label:=foo#bar`` truncates to
+    ``foo``.
+
+    Both cleared. The cost is no way to escape a quote inside a value, which no
+    xacro argument has ever needed.
     """
     lexer = shlex.shlex(text or "", posix=True)
     lexer.whitespace_split = True
     lexer.escape = ""
+    # `#` starts a comment for shlex, and does not for xacro. Left on,
+    # `color:=#ff0000` arrives as an empty value and `label:=foo#bar` truncates
+    # to `foo` -- both silently, and both valid on the real command line.
+    lexer.commenters = ""
     try:
         return list(lexer)
     except ValueError:

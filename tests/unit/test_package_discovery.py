@@ -234,6 +234,40 @@ class TestMeshResolverStillWorks:
         found = resolver("package://fixture_common/urdf/common_materials.xacro")
         assert Path(found).is_file(), found
 
+    def test_a_filesystem_root_among_the_extras_is_skipped(self, tmp_path,
+                                                           monkeypatch):
+        """The preference accepts any directory, which is a way to hand the
+        indexer a whole drive after all the trouble taken to bound the automatic
+        root -- and now on the main thread, since the import blocks. Browsing to
+        C:\\ in the path picker must not produce an add-on that never returns.
+        """
+        robot = tmp_path / "robot.urdf"
+        robot.write_text("<robot name='r'/>", encoding="utf-8")
+
+        scanned = []
+        real_index = resolve._index_packages
+        monkeypatch.setattr(
+            resolve,
+            "_index_packages",
+            lambda root: (scanned.append(root), real_index(root))[1],
+        )
+
+        root = Path(tmp_path.anchor)
+        resolve.package_map(robot, extra_search_paths=[root])
+        assert root not in scanned, f"indexed the filesystem root {root}"
+
+    def test_a_normal_extra_path_is_still_scanned(self, tmp_path):
+        extra = tmp_path / "elsewhere" / "extra_pkg"
+        extra.mkdir(parents=True)
+        (extra / "package.xml").write_text("<package/>", encoding="utf-8")
+        robot = tmp_path / "robot.urdf"
+        robot.write_text("<robot name='r'/>", encoding="utf-8")
+
+        found = resolve.package_map(
+            robot, extra_search_paths=[tmp_path / "elsewhere"]
+        )
+        assert found.get("extra_pkg") == extra
+
     def test_extra_search_paths_are_still_honoured(self, tmp_path):
         """Explicit caller-supplied roots are scanned even though the automatic
         one is now a single directory."""

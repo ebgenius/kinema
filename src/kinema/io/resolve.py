@@ -162,14 +162,24 @@ def package_map(
     ``extra_search_paths`` is how a cell spanning repositories works: the
     robot's own checkout is found automatically, and the shared macro
     repositories come from the user's preferences.
+
+    A filesystem root among those extras is **skipped**, not scanned. The
+    automatic root is bounded precisely so indexing cannot walk a whole drive,
+    and a preference accepting any directory is a way to hand it one anyway --
+    now on Blender's main thread, since the import blocks. Someone browsing to
+    ``C:\\`` in the path picker would get an add-on that never comes back, so it
+    is refused here as well as flagged in the preferences.
     """
     found: dict[str, Path] = {}
     root = package_search_root(path)
     if root is not None:
         found.update(_index_packages(root))
     for extra in extra_search_paths or []:
-        for name, directory in _index_packages(Path(extra).resolve()).items():
-            found.setdefault(name, directory)
+        directory = Path(extra).resolve()
+        if _is_filesystem_root(directory):
+            continue
+        for name, package_dir in _index_packages(directory).items():
+            found.setdefault(name, package_dir)
     return found
 
 

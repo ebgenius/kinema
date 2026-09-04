@@ -29,7 +29,31 @@ class KinemaSearchPath(PropertyGroup):
 class KINEMA_UL_search_paths(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data,
                   active_prop, index):
-        layout.prop(item, "path", text="", emboss=False, icon="FILE_FOLDER")
+        row = layout.row(align=True)
+        if _is_unusable(item.path):
+            # Skipped at import time rather than scanned. Saying so here is the
+            # difference between "Kinema ignores this" and "Kinema is broken":
+            # a whole drive cannot be indexed, and silently doing nothing would
+            # look like the setting had no effect.
+            row.label(text="", icon="ERROR")
+            row.prop(item, "path", text="")
+            row.label(text="a whole drive cannot be searched")
+        else:
+            row.prop(item, "path", text="", emboss=False, icon="FILE_FOLDER")
+
+
+def _is_unusable(raw: str) -> bool:
+    """True for a path that would be skipped: a filesystem root."""
+    from pathlib import Path
+
+    text = (raw or "").strip()
+    if not text:
+        return False
+    try:
+        resolved = Path(bpy.path.abspath(text)).resolve()
+    except (OSError, ValueError):
+        return False
+    return bool(resolved.anchor) and resolved == Path(resolved.anchor)
 
 
 class KINEMA_OT_add_search_path(bpy.types.Operator):

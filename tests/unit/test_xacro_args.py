@@ -63,6 +63,14 @@ class TestParsing:
             r'kinematics_params:="C:\Program Files\ur\kin.yaml"'
         ) == {"kinematics_params": r"C:\Program Files\ur\kin.yaml"}
 
+    def test_a_hash_is_not_a_comment(self):
+        """shlex treats `#` as starting a comment; xacro does not. Left on,
+        this arrived as an empty value -- silently, and the CLI accepts it."""
+        assert xacro_args.parse_args("color:=#ff0000") == {"color": "#ff0000"}
+
+    def test_a_hash_inside_a_value_does_not_truncate_it(self):
+        assert xacro_args.parse_args("label:=foo#bar") == {"label": "foo#bar"}
+
     def test_an_unbalanced_quote_does_not_raise(self):
         """The import's own error about the missing argument is more useful
         than a complaint about the field's syntax."""
