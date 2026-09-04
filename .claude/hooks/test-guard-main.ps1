@@ -27,26 +27,65 @@ Set-StrictMode -Version Latest
 
 $script:failures = 0
 
-function Check([string]$Name, [string]$Command, [bool]$ShouldDeny) {
+function Invoke-Hook([string]$Command) {
+    <#
+        Returns 'allow', 'deny', or a description of why neither.
+
+        The hook exits 0 whatever it decides, and says "deny" by printing JSON.
+        So the two failure shapes are a nonzero exit, and output that is neither
+        empty nor a decision -- both of which otherwise read as "allow", which
+        is the direction that hides a broken guard.
+
+        Checked structurally rather than by matching error wording: a guess at
+        the wording misses whatever phrasing was not anticipated, and
+        `Cannot find path ...` is one that would have slipped through.
+    #>
     $payload = @{ tool_input = @{ command = $Command } } | ConvertTo-Json -Compress
     $out = $payload | & pwsh -NoProfile -File $Hook 2>&1 | Out-String
+    $code = $LASTEXITCODE
 
-    # A crashed hook emits no decision, which reads as "allow" -- the dangerous
-    # direction, and how a broken guard passes for a working one. Caught here
-    # rather than counted as a pass.
-    if ($out -match 'Exception|ParserError|is not recognized|cannot be found') {
-        $script:failures++
-        $first = ($out -split "`n" | Select-Object -First 1).Trim()
-        return "{0} {1,-52} HOOK ERRORED: {2}" -f ' FAIL ', $Name, $first
+    if ($code -ne 0) { return "hook exited $code : $(($out -split "`n")[0].Trim())" }
+    if ([string]::IsNullOrWhiteSpace($out)) { return 'allow' }
+    try {
+        $decision = ($out | ConvertFrom-Json).hookSpecificOutput.permissionDecision
+    } catch {
+        return "unparseable output: $(($out -split "`n")[0].Trim())"
     }
+    if ($decision -eq 'deny') { return 'deny' }
+    if ($decision -eq 'allow') { return 'allow' }
+    return "unexpected decision '$decision'"
+}
 
-    $denied = $out -match '"permissionDecision"\s*:\s*"deny"'
-    $ok = ($denied -eq $ShouldDeny)
+function Check([string]$Name, [string]$Command, [bool]$ShouldDeny, [string]$In) {
+    $expected = if ($ShouldDeny) { 'deny' } else { 'allow' }
+    if ($In) { Push-Location $In }
+    try {
+        $actual = Invoke-Hook $Command
+    } finally {
+        if ($In) { Pop-Location }
+    }
+    $ok = ($actual -eq $expected)
     if (-not $ok) { $script:failures++ }
     "{0} {1,-52} expected={2,-5} got={3}" -f `
-        $(if ($ok) { '  ok  ' } else { ' FAIL ' }), $Name,
-        $(if ($ShouldDeny) { 'deny' } else { 'allow' }),
-        $(if ($denied) { 'deny' } else { 'allow' })
+        $(if ($ok) { '  ok  ' } else { ' FAIL ' }), $Name, $expected, $actual
+}
+
+function New-RepoOnBranch([string]$Branch) {
+    <#
+        A throwaway repository sitting on a given branch.
+
+        The interesting half of this guard only acts when HEAD is the default
+        branch, and the workflow it enforces means the suite is always run from
+        a feature branch -- where every such case is allowed for the wrong
+        reason and proves nothing. `git init -b` gives a real one to test
+        against without touching the checkout.
+
+        No commit is needed: symbolic-ref reports the branch of an empty repo,
+        which is the case the hook was written to handle.
+    #>
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ("guardtest-" + [guid]::NewGuid().ToString('N'))
+    & git init --quiet -b $Branch $dir 2>&1 | Out-Null
+    return $dir
 }
 
 $branch = (& git symbolic-ref --short --quiet HEAD 2>$null)
@@ -94,13 +133,40 @@ Check 'message quoting a push-to-main instruction' (@(
     $endMarker
 ) -join "`n") $false
 
-# --- statements on separate lines are separate commands ----------------------
-# `git add` first used to hide the `git commit` behind it. Only blocked on main,
-# so the expectation follows the branch rather than being quietly vacuous.
-Check 'add then commit, on separate lines' (@(
-    'git add -A'
-    'git commit -m "wip"'
-) -join "`n") ($branch -eq 'main')
+# --- quote concatenation, which the shell resolves before git sees it --------
+Check 'push origin HEAD:"main"' 'git push origin HEAD:"main"' $true
+Check 'push origin m"ai"n' 'git push origin m"ai"n' $true
+Check "push origin 'main'" "git push origin 'main'" $true
+
+# --- the branch-sensitive half, tested against a repo that is on main --------
+# Run from this checkout these are allowed for the wrong reason: the workflow
+# keeps HEAD on a feature branch, so every case below would pass no matter what
+# the hook did. Throwaway repositories give both branches.
+$mainRepo = New-RepoOnBranch 'main'
+$featureRepo = New-RepoOnBranch 'feat/thing'
+try {
+    $addThenCommit = @('git add -A', 'git commit -m "wip"') -join "`n"
+
+    # The headline regression: `git add` on the line above used to hide the
+    # commit entirely, because segments did not split on newlines.
+    Check 'add then commit, on main' $addThenCommit $true -In $mainRepo
+    Check 'add then commit, on a feature branch' $addThenCommit $false -In $featureRepo
+
+    Check 'plain commit on main' 'git commit -m "wip"' $true -In $mainRepo
+    Check 'plain commit on a feature branch' 'git commit -m "wip"' $false -In $featureRepo
+
+    # A commit message mentioning the branch is still just prose, on main too.
+    Check 'message mentioning main, committing on a feature branch' (@(
+        "git commit -m $marker"
+        'Now on the main thread, since the import blocks.'
+        $endMarker
+    ) -join "`n") $false -In $featureRepo
+
+    Check 'push on main with no refspec' 'git push' $true -In $mainRepo
+    Check 'dry run on main' 'git push --dry-run' $false -In $mainRepo
+} finally {
+    Remove-Item -Recurse -Force $mainRepo, $featureRepo -ErrorAction SilentlyContinue
+}
 
 ""
 if ($script:failures -eq 0) {

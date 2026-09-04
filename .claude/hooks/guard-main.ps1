@@ -22,17 +22,21 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Get-Args([string]$Command) {
-    # Non-flag tokens, with a leading '+' (force refspec) and any surrounding
-    # shell quotes stripped.
+    # Non-flag tokens, with a leading '+' (force refspec) and every shell quote
+    # removed.
     #
-    # The quotes matter: `git push origin "main"` is an ordinary thing to type,
-    # and comparing the token with them still attached made it read as a ref
-    # called `"main"` -- so the guard waved it through. Quoting is shell syntax
-    # and never part of a ref name.
+    # Removed throughout the token, not just trimmed from its ends. The shell
+    # concatenates around quotes, so `HEAD:"main"` and even `m"ai"n` reach git
+    # as `main`; a guard that only strips the outside sees neither. Comparing
+    # with quotes still attached is what let plain `origin "main"` through in
+    # the first place.
+    #
+    # Safe to do unconditionally: git refuses a ref name containing a quote, so
+    # removing them cannot merge two distinct refs into one.
     ($Command -split '\s+') |
         Where-Object { $_ -and $_ -notmatch '^-' } |
+        ForEach-Object { $_ -replace '["'']', '' } |
         ForEach-Object { $_ -replace '^\+', '' } |
-        ForEach-Object { $_.Trim('"', "'") } |
         Where-Object { $_ }
 }
 
@@ -45,8 +49,9 @@ function Remove-HereStrings([string]$Command) {
     # "the main thread" made the push check below see a push to main and refuse
     # a commit that was going nowhere near it.
     #
-    # Ordinary quotes are deliberately left alone. They are short enough to hold
-    # a real ref, and `git push origin "main"` must still be caught.
+    # Ordinary quotes are deliberately left in place here. They are short enough
+    # to hold a real ref, and `git push origin "main"` must still be caught --
+    # Get-Args strips them from the token instead, where a ref is compared.
     $stripped = $Command -replace "(?s)@'.*?'@", ' '
     return $stripped -replace '(?s)@".*?"@', ' '
 }
