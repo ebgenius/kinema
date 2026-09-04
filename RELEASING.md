@@ -77,6 +77,9 @@ perfectly and only fails at the first `import jax`, in front of a user.
 
 ```bash
 git tag -a vX.Y.Z -m "Kinema vX.Y.Z"
+```
+
+```bash
 git push origin vX.Y.Z
 
 gh release create vX.Y.Z --title "Kinema vX.Y.Z" --notes-file <notes.md> \
@@ -84,6 +87,12 @@ gh release create vX.Y.Z --title "Kinema vX.Y.Z" --notes-file <notes.md> \
     dist/kinema-X.Y.Z-linux_x64.zip \
     dist/kinema-X.Y.Z-macos_arm64.zip
 ```
+
+**Create the tag and push it as two separate commands**, as above. The guard hook lets a
+tag push through `main` only after confirming the tag exists, which it does by asking
+`git show-ref refs/tags/vX.Y.Z` — and that check runs *before* the command it is guarding,
+so a single block that creates the tag and then pushes it is refused: at the moment of the
+check, the tag is not there yet.
 
 Annotated tags (`-a`), so `git describe` treats them as real release points. On Windows,
 `gh` may not be on `PATH`; it installs to `C:\Program Files\GitHub CLI\gh.exe`.
