@@ -17,8 +17,13 @@ Handled forms:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+#: ``C:`` at the start of what urlparse took for an authority: the signature of
+#: a Windows path in a ``file://`` URI that has no third slash.
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
 #: A directory containing one of these is a ROS package root.
 _PACKAGE_MARKERS = ("package.xml", "manifest.xml", "CATKIN_IGNORE")
@@ -33,7 +38,12 @@ def is_package_dir(directory: Path) -> bool:
     return any((directory / marker).exists() for marker in _PACKAGE_MARKERS)
 
 
-def package_search_root(path: str | Path) -> Path:
+def _is_filesystem_root(directory: Path) -> bool:
+    """``C:\\``, ``/``, or a UNC share root -- never safe to scan."""
+    return bool(directory.anchor) and directory == Path(directory.anchor)
+
+
+def package_search_root(path: str | Path) -> Path | None:
     """The one directory worth scanning for ROS packages near ``path``.
 
     A ROS description repository puts sibling packages side by side, so the
@@ -46,29 +56,31 @@ def package_search_root(path: str | Path) -> Path:
     filesystem root for a description saved anywhere shallow, and scanning a
     whole drive for ``package.xml`` does not fail, it just never finishes.
 
-    So: stop at the checkout boundary, never return a filesystem root, and fall
-    back to the file's own directory when there is no containing package at all
-    -- a lone URDF beside a ``meshes/`` folder has no packages to find, and its
-    references resolve relatively.
+    Returns **None** when no directory qualifies, rather than falling back to
+    something plausible. A package unpacked directly at ``C:\\`` has siblings,
+    but they are every top-level folder on the drive; there is no honest answer
+    there, and returning the root would hand callers precisely the scan this
+    exists to prevent. Callers skip indexing instead, which costs cross-package
+    resolution for that one layout and keeps the import responsive.
     """
-    path = Path(path)
+    path = Path(path).resolve()
     start = path.parent if path.is_file() else path
 
     current = start
     for _ in range(_MAX_SEARCH_DEPTH):
+        if _is_filesystem_root(current):
+            return None
         if any((current / marker).exists() for marker in _BOUNDARY_MARKERS):
             # The checkout root. Its children are the packages.
             return current
         if is_package_dir(current):
             parent = current.parent
-            # A package directly at the filesystem root has no siblings worth
-            # scanning, and its parent is the root itself.
-            return current if parent == current else parent
+            return None if _is_filesystem_root(parent) else parent
         if current.parent == current:
             break
         current = current.parent
 
-    return start
+    return None if _is_filesystem_root(start) else start
 
 
 def _index_packages(root: Path) -> dict[str, Path]:
@@ -129,10 +141,11 @@ def make_mesh_resolver(
     def packages() -> dict[str, Path]:
         nonlocal package_index
         if package_index is None:
-            package_index = _index_packages(package_search_root(urdf_path))
-            for root in extra:
+            root = package_search_root(urdf_path)
+            package_index = _index_packages(root) if root is not None else {}
+            for extra_root in extra:
                 # Caller-supplied roots are explicit, so scan them too.
-                for name, directory in _index_packages(root).items():
+                for name, directory in _index_packages(extra_root).items():
                     package_index.setdefault(name, directory)
         return package_index
 
@@ -167,19 +180,32 @@ def make_mesh_resolver(
                 # directory is then the package root.
                 result = base_dir / relative
         elif parsed.scheme == "file":
-            # Two shapes arrive here. A well-formed URI carries everything in
-            # ``path``: ``file:///home/u/x`` and ``file:///C:/x``, the latter
-            # keeping a leading slash urlparse does not strip.
+            # Three shapes arrive here, and the authority is what separates
+            # them.
             #
-            # xacrodoc emits the other shape. Rendering a xacro with
+            # A well-formed URI has no authority and carries everything in
+            # ``path``: ``file:///home/u/x``, or ``file:///C:/x`` keeping a
+            # leading slash urlparse does not strip. ``localhost`` is defined as
+            # equivalent to empty.
+            #
+            # A real authority means UNC: ``file://server/share/x`` is
+            # ``\\server\share\x``, and dropping the leading slashes would turn
+            # it into a relative path.
+            #
+            # xacrodoc emits the third. Rendering a xacro with
             # resolve_packages=True rewrites every ``package://`` into
             # ``file://<absolute path>`` -- and on Windows that is
             # ``file://C:\...``, which has no slash after the authority marker,
-            # so urlparse puts the entire path in ``netloc`` and leaves ``path``
-            # empty. Reading ``path`` alone yielded "" and every mesh resolved
-            # to the URDF's own directory, which exists, so the robot imported
-            # in silence with no geometry at all.
-            path = unquote(parsed.netloc + parsed.path)
+            # so urlparse reads the whole path as the authority and leaves
+            # ``path`` empty. Taking ``path`` alone yielded "" and every mesh
+            # resolved to the URDF's own directory, which exists, so the robot
+            # imported in silence with no geometry at all.
+            authority = unquote(parsed.netloc)
+            path = unquote(parsed.path)
+            if _WINDOWS_DRIVE.match(authority):
+                path = authority + path
+            elif authority and authority.lower() != "localhost":
+                path = f"//{authority}{path}"
             if os.name == "nt" and path.startswith("/") and len(path) > 2 and path[2] == ":":
                 path = path[1:]
             result = Path(path)

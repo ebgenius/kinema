@@ -88,10 +88,41 @@ class TestCrossPackageIncludes:
         model = loader.load_file(ws_robot).model
         assert [j.name for j in model.actuated_joints] == ["joint_1", "joint_2"]
 
+    def test_packages_do_not_leak_between_imports(self, ws_robot, fixture_dir):
+        """xacrodoc's package finder is module-global, so one import's packages
+        stay resolvable in the next unless it is reset.
+
+        `orphan_ws` exists to make that visible. Its robot needs
+        `fixture_common`, which lives only in `ros_ws` -- so importing ros_ws
+        first and orphan_ws second must still fail. Without the reset it would
+        succeed, silently rendering one workspace's robot against another's
+        materials.
+
+        Asserting the failure is the only way to catch this: two workspaces with
+        different package names both resolve either way, which is why the first
+        version of this test passed with the reset removed.
+        """
+        assert loader.load_file(ws_robot).error is None, "ros_ws should import"
+
+        orphan = fixture_dir / "orphan_ws" / "orphan_robot" / "urdf" / "arm.urdf.xacro"
+        result = loader.load_file(orphan)
+
+        assert result.error is not None, (
+            "orphan_ws resolved fixture_common, which it does not contain -- "
+            "packages leaked from the previous import"
+        )
+        assert "fixture_common" in result.error
+
+    def test_the_orphan_fails_for_the_right_reason(self, fixture_dir):
+        """The other half. `orphan_ws` must fail *because its package is
+        missing*, not because the file is malformed -- otherwise the leak test
+        above passes on a broken fixture and detects nothing."""
+        orphan = fixture_dir / "orphan_ws" / "orphan_robot" / "urdf" / "arm.urdf.xacro"
+        error = loader.load_file(orphan).error
+        assert error is not None
+        assert "fixture_common" in error, error
+
     def test_importing_twice_gives_the_same_answer(self, ws_robot, fixture_dir):
-        """xacrodoc's package finder is module-global. Without a reset between
-        imports, one robot's packages stay resolvable for the next -- so a
-        second, unrelated xacro could render against the first one's files."""
         first = loader.load_file(ws_robot)
         loader.load_file(fixture_dir / "kinema_fixture" / "urdf" / "arm.urdf.xacro")
         again = loader.load_file(ws_robot)

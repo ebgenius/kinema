@@ -14,6 +14,7 @@ just never returns. So the root has to be bounded, and these are the bounds.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,31 @@ class TestPackageSearchRoot:
         robot.write_text("<robot name='r'/>", encoding="utf-8")
         assert resolve.package_search_root(robot) == tmp_path
 
+    def test_a_package_at_a_drive_root_yields_no_root_at_all(self, monkeypatch,
+                                                             tmp_path):
+        """A package unpacked at ``C:\\`` does have siblings -- every top-level
+        folder on the drive. There is no honest answer, and returning the root
+        would hand the caller exactly the full-drive scan this exists to
+        prevent, so it returns None instead.
+
+        Faked rather than acted out: creating a package at a real drive root to
+        prove this would be a rude test.
+        """
+        root = Path(tmp_path.anchor)
+        monkeypatch.setattr(
+            resolve, "is_package_dir", lambda d: d == root / "robot_pkg"
+        )
+        monkeypatch.setattr(resolve, "_BOUNDARY_MARKERS", ())
+
+        result = resolve.package_search_root(root / "robot_pkg" / "urdf")
+        assert result is None
+
+    def test_a_file_sitting_at_a_drive_root_yields_none(self, monkeypatch, tmp_path):
+        root = Path(tmp_path.anchor)
+        monkeypatch.setattr(resolve, "is_package_dir", lambda d: False)
+        monkeypatch.setattr(resolve, "_BOUNDARY_MARKERS", ())
+        assert resolve.package_search_root(root / "robot.urdf") is None
+
     def test_it_never_returns_a_filesystem_root(self, tmp_path):
         """The bug that made this bounded. A root here means rglob over an
         entire drive: no error, no result, just a hang."""
@@ -71,14 +97,60 @@ class TestPackageSearchRoot:
             FIXTURE_WS / "fixture_robot" / "urdf" / "arm.urdf.xacro",
             tmp_path / "robot.urdf",
             Path(tmp_path.anchor) / "robot.urdf",
+            Path(tmp_path.anchor),
         ]
         for candidate in candidates:
             root = resolve.package_search_root(candidate)
-            assert root != Path(root.anchor), f"{candidate} -> filesystem root"
+            assert root is None or root != Path(root.anchor), (
+                f"{candidate} -> filesystem root"
+            )
 
     def test_a_directory_is_accepted_as_well_as_a_file(self):
         package = FIXTURE_WS / "fixture_robot"
         assert resolve.package_search_root(package) == FIXTURE_WS
+
+
+class TestFileUris:
+    """`file://` shapes, which differ by what sits in the authority.
+
+    xacrodoc turns every `package://` into `file://<abs>` when it renders, so on
+    Windows this is the path every mesh in every xacro robot takes.
+    """
+
+    def resolve_one(self, tmp_path, uri):
+        robot = tmp_path / "robot.urdf"
+        robot.write_text("<robot name='r'/>", encoding="utf-8")
+        return resolve.make_mesh_resolver(robot)(uri)
+
+    def test_a_windows_path_with_no_third_slash(self, tmp_path):
+        """xacrodoc's output. urlparse reads `C:\\...` as the authority and
+        leaves the path empty; taking the path alone resolved every mesh to the
+        URDF's own directory, so robots imported with no geometry."""
+        mesh = tmp_path / "meshes" / "base.stl"
+        mesh.parent.mkdir()
+        mesh.write_text("solid", encoding="utf-8")
+        got = self.resolve_one(tmp_path, f"file://{mesh}")
+        assert Path(got) == mesh
+
+    def test_a_well_formed_uri_still_works(self, tmp_path):
+        mesh = tmp_path / "meshes" / "base.stl"
+        mesh.parent.mkdir()
+        mesh.write_text("solid", encoding="utf-8")
+        got = self.resolve_one(tmp_path, mesh.as_uri())
+        assert Path(got) == mesh
+
+    def test_localhost_is_equivalent_to_no_authority(self, tmp_path):
+        got = self.resolve_one(tmp_path, "file://localhost/tmp/mesh.stl")
+        assert not str(got).lower().startswith("//localhost")
+        assert "localhost" not in str(got)
+
+    @pytest.mark.skipif(os.name != "nt", reason="UNC paths are a Windows shape")
+    def test_a_real_authority_stays_a_unc_path(self, tmp_path):
+        """`file://server/share/x` is `\\\\server\\share\\x`. Folding the
+        authority into the path without the leading slashes would silently make
+        it relative."""
+        got = self.resolve_one(tmp_path, "file://server/share/mesh.stl")
+        assert Path(got).as_posix().startswith("//server/share"), got
 
 
 class TestIndexing:
@@ -142,3 +214,4 @@ def test_search_root_is_cheap_at_any_depth(tmp_path, depth):
     root = resolve.package_search_root(robot)
     assert root != Path(root.anchor)
     assert tmp_path in root.parents or root == tmp_path or root == directory
+

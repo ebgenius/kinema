@@ -149,7 +149,9 @@ def load_xacro_urdf(path: Path, resolver):
     from .resolve import package_search_root
 
     packages.reset()
-    packages.look_in([str(package_search_root(path))])
+    search_root = package_search_root(path)
+    if search_root is not None:
+        packages.look_in([str(search_root)])
 
     doc = XacroDoc.from_file(str(path), resolve_packages=True)
 
