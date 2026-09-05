@@ -112,6 +112,124 @@ class KINEMA_OT_reset_link_meshes(KinemaRigOperator):
         return {"FINISHED"}
 
 
+def set_meshes_at_file_origin(rig, enabled: bool) -> tuple[int, int]:
+    """Send this rig's link meshes to their file's coordinates, or back.
+
+    A robot description points at mesh files, and improving one means editing
+    the geometry and writing it back in the coordinates that file uses --
+    exporters write world space, so the mesh has to actually *be* there. On the
+    rig it never is: the link frame, the visual origin, the mesh scale and the
+    file's own unit and up-axis all stand between the two. Their product is
+    recorded on each object at import, so its inverse is the whole journey
+    back, and the rest basis is the way home.
+
+    The meshes stay parented, so posing the rig while this is on drags them --
+    which is why it is a mode to export from and then leave, not one to
+    animate in. Returns ``(moved, skipped)``; skipped counts rigs imported
+    before the bake was recorded, for which the file's coordinates are gone.
+    """
+    moved = skipped = 0
+    for obj in builder.link_meshes(rig):
+        target = (
+            builder.mesh_bake_matrix(obj) if enabled else builder.link_rest_matrix(obj)
+        )
+        if target is None:
+            skipped += 1
+            continue
+        _clear_deltas(obj)
+        if enabled:
+            # World, not a basis: the point is where the vertices land in the
+            # scene, because that is what an exporter writes.
+            obj.matrix_world = target.inverted_safe()
+        else:
+            obj.matrix_basis = target
+        moved += 1
+    return moved, skipped
+
+
+class KINEMA_OT_meshes_to_file_origin(Operator):
+    """Backs the "Meshes at File Origin" checkbox, so the move is undoable.
+
+    A property update callback is not an operator and does not push an undo
+    step, which for something that moves every mesh in the scene is not a
+    state to be stuck in.
+
+    Not a :class:`KinemaRigOperator`: its poll would require a rig in the
+    context, and the checkbox this runs from belongs to an armature that need
+    be neither active nor selected. The rig is named in the call instead.
+    """
+
+    bl_options = {"REGISTER", "UNDO"}
+    bl_idname = "kinema.meshes_to_file_origin"
+    bl_label = "Meshes at File Origin"
+    bl_description = (
+        "Move every link mesh to the coordinates its file was authored in, for "
+        "editing and re-export. Turn off to put them back on the rig"
+    )
+
+    enabled: BoolProperty(
+        name="At File Origin",
+        description="On sends the meshes to file coordinates; off returns them",
+        default=True,
+        options={"SKIP_SAVE"},
+    )
+    rig: StringProperty(
+        name="Rig",
+        description="Rig to move. Empty uses the active one",
+        default="",
+        options={"SKIP_SAVE"},
+    )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        # Named rather than assumed: the checkbox belongs to a particular
+        # armature, and a scene with two robots in it would otherwise move
+        # whichever happened to be active. A name that does not resolve is
+        # refused rather than fallen back on -- falling back is how a stale
+        # name reaches a real robot, which is the failure the name exists to
+        # prevent.
+        if self.rig:
+            rig = bpy.data.objects.get(self.rig)
+            if not builder.is_kinema_rig(rig):
+                self.report({"WARNING"}, f"'{self.rig}' is not a Kinema rig")
+                return {"CANCELLED"}
+        else:
+            rig = active_rig(context)
+            if rig is None:
+                self.report({"WARNING"}, "No Kinema rig to move")
+                return {"CANCELLED"}
+        moved, skipped = set_meshes_at_file_origin(rig, self.enabled)
+        context.view_layer.update()
+
+        if skipped and not moved:
+            self.report(
+                {"WARNING"},
+                "This rig was imported before Kinema recorded what it baked "
+                "into each mesh; re-import it to be able to export its meshes",
+            )
+            return {"CANCELLED"}
+        if self.enabled:
+            self.report(
+                {"INFO"},
+                f"{moved} mesh{'es' if moved != 1 else ''} at file coordinates; "
+                f"do not pose the rig until you turn this off",
+            )
+        else:
+            self.report({"INFO"}, f"{moved} mesh{'es' if moved != 1 else ''} back on the rig")
+        return {"FINISHED"}
+
+
+def _clear_deltas(obj) -> None:
+    """Zero every delta channel.
+
+    ``matrix_basis`` reads deltas but writing it only touches the ordinary
+    channels, so a delta left behind reappears immediately.
+    """
+    obj.delta_location = (0.0, 0.0, 0.0)
+    obj.delta_rotation_euler = (0.0, 0.0, 0.0)
+    obj.delta_rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    obj.delta_scale = (1.0, 1.0, 1.0)
+
+
 def _restore_basis(obj, rest) -> bool:
     """Put ``obj`` back on ``rest``. Returns True if it actually moved.
 
@@ -121,10 +239,7 @@ def _restore_basis(obj, rest) -> bool:
     """
     if _matrices_match(obj.matrix_basis, rest) and _deltas_are_clear(obj):
         return False
-    obj.delta_location = (0.0, 0.0, 0.0)
-    obj.delta_rotation_euler = (0.0, 0.0, 0.0)
-    obj.delta_rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
-    obj.delta_scale = (1.0, 1.0, 1.0)
+    _clear_deltas(obj)
     obj.matrix_basis = rest
     return True
 
@@ -363,6 +478,7 @@ classes = (
     KINEMA_OT_reset_pose,
     KINEMA_OT_key_joints,
     KINEMA_OT_reset_link_meshes,
+    KINEMA_OT_meshes_to_file_origin,
     KINEMA_OT_set_tcp,
     KINEMA_OT_reset_tcp_offset,
 )

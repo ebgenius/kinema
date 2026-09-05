@@ -202,11 +202,34 @@ class TestVisuals:
             assert not obj.vertex_groups
 
     def test_visual_origin_is_respected(self, arm3_rig):
-        """l2's cylinder is offset 0.05 along x from its link frame."""
+        """l2's cylinder is offset 0.05 along x from its link frame.
+
+        Asserted on the geometry rather than on ``matrix_world.translation``,
+        because the origin is baked into the vertices: the object's own
+        transform is the link frame, and the offset lives in the mesh.
+        """
         model, result = arm3_rig
         obj = next(o for o in result.mesh_objects if o.name.startswith("l2"))
         expected = model.link_frames()["l2"][:3, 3] + np.array([0.05, 0, 0])
-        assert np.allclose(np.array(obj.matrix_world.translation), expected, atol=1e-6)
+        assert np.allclose(_world_centre(obj), expected, atol=1e-6)
+
+    def test_a_mesh_origin_sits_on_its_link_frame(self, arm3_rig, builder):
+        """Where the origin goes decides how far a relationship line reaches.
+
+        Blender draws one from a child object's origin to its parent bone. A
+        URDF that authors every mesh in a shared frame and corrects with a big
+        <visual><origin> -- the KUKA quantecs do -- used to put these origins
+        metres from the geometry and fill the viewport with dashed lines.
+        """
+        model, result = arm3_rig
+        frames = model.link_frames()
+        for obj in result.mesh_objects:
+            link_name = obj[builder.PROP_LINK_NAME]
+            assert np.allclose(
+                np.array(obj.matrix_world.translation),
+                frames[link_name][:3, 3],
+                atol=1e-6,
+            ), link_name
 
     def test_can_skip_visuals(self, kin, builder, arm3_urdf, clean_scene):
         model = kin.model_from_urdf(arm3_urdf)
@@ -222,10 +245,12 @@ def clamped_urdf(fixture_dir):
 
 
 def _rest_placement(model, obj, builder) -> np.ndarray:
-    """Where the URDF puts this mesh at q = 0: link frame times visual origin."""
-    link_name = obj[builder.PROP_LINK_NAME]
-    visual = model.links[link_name].visuals[0]
-    return model.link_frames()[link_name] @ visual.origin
+    """Where the URDF puts this mesh's object at q = 0: its link frame.
+
+    Only the link frame, because the visual origin is baked into the vertices
+    rather than carried in the object's transform.
+    """
+    return model.link_frames()[obj[builder.PROP_LINK_NAME]]
 
 
 def _carried_placement(model, rig, obj, builder) -> np.ndarray:
@@ -340,15 +365,52 @@ class TestZeroPoseOutsideLimits:
         assert not any("joint_b" in warning for warning in result.warnings)
 
 
-def _world_extent(obj):
-    """The object's bounding-box size in world space, as (x, y, z)."""
+def _world_points(obj):
+    """Every vertex of ``obj`` in world space."""
     import bpy
     from mathutils import Vector
 
     bpy.context.view_layer.update()
-    points = [obj.matrix_world @ Vector(v.co) for v in obj.data.vertices]
+    return [obj.matrix_world @ Vector(v.co) for v in obj.data.vertices]
+
+
+def _world_extent(obj):
+    """The object's bounding-box size in world space, as (x, y, z)."""
+    points = _world_points(obj)
     return tuple(
         max(p[axis] for p in points) - min(p[axis] for p in points) for axis in range(3)
+    )
+
+
+def _sorted_world_points(obj) -> np.ndarray:
+    """World-space vertices in a stable order, for comparing two meshes.
+
+    Sorted on a rounded key: float32 vertices carry enough noise through a
+    90-degree rotation that a raw lexicographic sort puts (0, -2e-4, 3000)
+    before (0, 0, 0) in one mesh and after it in another, and the comparison
+    then fails on row order rather than on geometry.
+    """
+    return np.array(
+        sorted(
+            (tuple(p) for p in _world_points(obj)),
+            key=lambda p: tuple(round(v, 3) for v in p),
+        )
+    )
+
+
+def _world_centre(obj) -> np.ndarray:
+    """The centre of the object's world-space bounding box.
+
+    Where the geometry actually is, which is the question a visual origin
+    answers -- and no longer the same as the object's origin, now that the
+    origin is baked into the vertices.
+    """
+    points = _world_points(obj)
+    return np.array(
+        [
+            (max(p[axis] for p in points) + min(p[axis] for p in points)) / 2.0
+            for axis in range(3)
+        ]
     )
 
 
@@ -438,6 +500,204 @@ class TestMeshScale:
         assert mirrored_z * reference_z > 0.0, "normals were left inside out"
 
 
+class TestMeshesAtFileOrigin:
+    """Sending link meshes back to the coordinates their file was authored in.
+
+    Improving a robot's geometry means editing the mesh and writing it back as
+    a drop-in replacement for the file the URDF points at. Exporters write
+    world space, so the mesh has to actually *be* at the file's coordinates --
+    and on the rig it never is: the link frame, the visual origin, the mesh
+    scale and the file's own unit and up-axis all stand between the two.
+
+    ``triangle_yup_mm.dae`` holds exactly three vertices, (0, 0, 0),
+    (2000, 0, 0) and (0, 0, 3000), in millimetres and Y-up. Every assertion
+    here is against those numbers.
+    """
+
+    FILE_POINTS = np.array([[0.0, 0.0, 0.0], [2000.0, 0.0, 0.0], [0.0, 0.0, 3000.0]])
+
+    @staticmethod
+    def _pose_module(addon):
+        return importlib.import_module(f"{addon.__name__}.ops.pose")
+
+    def test_the_bake_is_recorded(self, scale_rig, builder):
+        """Without it the file's own coordinates are gone for good."""
+        meshes, _ = scale_rig
+        for obj in meshes.values():
+            assert builder.mesh_bake_matrix(obj) is not None, obj.name
+
+    def test_the_mesh_lands_on_the_files_own_coordinates(
+        self, scale_rig, builder, addon
+    ):
+        """Millimetres and Y-up both undone: this is the file, not the rig."""
+        meshes, result = scale_rig
+        pose = self._pose_module(addon)
+
+        moved, skipped = pose.set_meshes_at_file_origin(result.armature_object, True)
+        assert (moved, skipped) == (4, 0)
+
+        got = _sorted_world_points(meshes["base"])
+        want = np.array(sorted(map(tuple, self.FILE_POINTS)))
+        # 0.01 of a millimetre on a 2000 mm triangle. float32 vertices cannot
+        # carry more than about 1e-4 relative at that magnitude.
+        assert np.allclose(got, want, atol=0.01), got
+
+    def test_every_link_sharing_a_file_coincides(self, scale_rig, addon):
+        """The strongest statement that these are the *file's* coordinates.
+
+        All four links draw the same .dae through different <mesh scale>
+        values. Those belong to the URDF, not the file, so undoing the bake has
+        to collapse all four onto one another -- and onto the file.
+        """
+        meshes, result = scale_rig
+        pose = self._pose_module(addon)
+        pose.set_meshes_at_file_origin(result.armature_object, True)
+
+        reference = _sorted_world_points(meshes["base"])
+        for name, obj in meshes.items():
+            assert np.allclose(_sorted_world_points(obj), reference, atol=0.01), name
+
+    def test_unticking_puts_every_mesh_back(self, scale_rig, addon):
+        import bpy
+
+        meshes, result = scale_rig
+        pose = self._pose_module(addon)
+        rig = result.armature_object
+        bpy.context.view_layer.update()
+        before = {name: _np4(obj.matrix_world) for name, obj in meshes.items()}
+
+        pose.set_meshes_at_file_origin(rig, True)
+        bpy.context.view_layer.update()
+        pose.set_meshes_at_file_origin(rig, False)
+        bpy.context.view_layer.update()
+
+        for name, obj in meshes.items():
+            assert np.allclose(_np4(obj.matrix_world), before[name], atol=1e-6), name
+
+    def test_the_checkbox_drives_it(self, scale_rig, addon):
+        """The operator path, which is what a user actually clicks."""
+        import bpy
+
+        meshes, result = scale_rig
+        rig = result.armature_object
+        bpy.context.view_layer.update()
+        before = _np4(meshes["base"].matrix_world)
+
+        rig.kinema_meshes_at_file_origin = True
+        bpy.context.view_layer.update()
+        assert not np.allclose(_np4(meshes["base"].matrix_world), before, atol=1e-6)
+
+        rig.kinema_meshes_at_file_origin = False
+        bpy.context.view_layer.update()
+        assert np.allclose(_np4(meshes["base"].matrix_world), before, atol=1e-6)
+
+    def test_it_moves_the_rig_whose_box_was_ticked(
+        self, kin, builder, arm3_urdf, clean_scene
+    ):
+        """Two robots in a scene, and only one of them should move.
+
+        The checkbox belongs to an armature, but the operator behind it reads
+        the context -- so without being told which rig it is for, ticking the
+        box on the robot you are looking at moved whichever was active.
+        """
+        import bpy
+
+        model = kin.model_from_urdf(arm3_urdf)
+        first = builder.build_rig(model, builder.RigBuildOptions()).armature_object
+        second = builder.build_rig(model, builder.RigBuildOptions()).armature_object
+        # build_rig leaves its own rig active, so `second` is the context's.
+        bpy.context.view_layer.update()
+        before = {
+            obj.name: _np4(obj.matrix_world)
+            for rig in (first, second)
+            for obj in builder.link_meshes(rig)
+        }
+
+        first.kinema_meshes_at_file_origin = True
+        bpy.context.view_layer.update()
+
+        for obj in builder.link_meshes(first):
+            assert not np.allclose(
+                _np4(obj.matrix_world), before[obj.name], atol=1e-6
+            ), f"{obj.name} did not move"
+        for obj in builder.link_meshes(second):
+            assert np.allclose(
+                _np4(obj.matrix_world), before[obj.name], atol=1e-6
+            ), f"{obj.name} moved with the wrong rig"
+
+    def test_a_rig_built_before_the_bake_was_recorded_says_so(
+        self, scale_rig, builder, addon
+    ):
+        """0.3.2 and earlier multiplied the bake into the vertices and forgot it."""
+        import bpy
+
+        meshes, result = scale_rig
+        for obj in meshes.values():
+            del obj[builder.PROP_MESH_BAKE]
+
+        assert bpy.ops.kinema.meshes_to_file_origin(enabled=True) == {"CANCELLED"}
+
+    def test_the_box_unticks_itself_when_nothing_can_move(self, scale_rig, builder):
+        """A tick that cannot do what it says must not go on claiming it did.
+
+        On a rig imported before the bake was recorded there is nowhere to send
+        the meshes, so the operator cancels -- and the checkbox has to come
+        back with it, or the panel reports "Meshes are off the rig" over a rig
+        whose meshes never moved.
+        """
+        import bpy
+
+        meshes, result = scale_rig
+        rig = result.armature_object
+        for obj in meshes.values():
+            del obj[builder.PROP_MESH_BAKE]
+        bpy.context.view_layer.update()
+        before = {name: _np4(obj.matrix_world) for name, obj in meshes.items()}
+
+        rig.kinema_meshes_at_file_origin = True
+        bpy.context.view_layer.update()
+
+        assert rig.kinema_meshes_at_file_origin is False
+        for name, obj in meshes.items():
+            assert np.allclose(_np4(obj.matrix_world), before[name], atol=1e-6), name
+
+    def test_the_property_on_a_plain_object_moves_nothing(self, scale_rig):
+        """It is registered on every Object, not only on rigs.
+
+        So a cube in the same file carries the checkbox too, and setting it
+        there used to reach the operator with a name that is not a rig, fall
+        back to whatever was active, and move a real robot.
+        """
+        import bpy
+
+        meshes, result = scale_rig
+        bpy.context.view_layer.update()
+        before = {name: _np4(obj.matrix_world) for name, obj in meshes.items()}
+
+        cube = bpy.data.objects.new("NotARobot", bpy.data.meshes.new("NotARobot"))
+        bpy.context.scene.collection.objects.link(cube)
+        cube.kinema_meshes_at_file_origin = True
+        bpy.context.view_layer.update()
+
+        for name, obj in meshes.items():
+            assert np.allclose(_np4(obj.matrix_world), before[name], atol=1e-6), name
+
+    def test_a_stale_rig_name_is_refused(self, scale_rig):
+        """Named means named. Falling back would move the wrong robot."""
+        import bpy
+
+        meshes, result = scale_rig
+        bpy.context.view_layer.update()
+        before = {name: _np4(obj.matrix_world) for name, obj in meshes.items()}
+
+        assert bpy.ops.kinema.meshes_to_file_origin(
+            rig="a rig that was deleted", enabled=True
+        ) == {"CANCELLED"}
+        bpy.context.view_layer.update()
+        for name, obj in meshes.items():
+            assert np.allclose(_np4(obj.matrix_world), before[name], atol=1e-6), name
+
+
 class TestLinkMeshRestore:
     def test_the_rest_transform_is_recorded(self, arm3_rig, builder):
         meshes = builder.link_meshes(arm3_rig[1].armature_object)
@@ -481,7 +741,7 @@ class TestLinkMeshRestore:
         # And it is still where the URDF says, which is the invariant that
         # matters rather than merely "back where it was".
         expected = model.link_frames()["l2"][:3, 3] + np.array([0.05, 0, 0])
-        assert np.allclose(np.array(obj.matrix_world.translation), expected, atol=1e-6)
+        assert np.allclose(_world_centre(obj), expected, atol=1e-6)
 
     def test_it_restores_from_a_posed_rig(self, arm3_rig, builder):
         """Why the *basis* is stored and not the world matrix: the rig need not

@@ -24,8 +24,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bone's rest matrix, so where a mesh sits relative to its bone no longer depends on whether
   a constraint happened to be evaluated first.
 
+### Changed
+
+- **Link mesh origins now sit on their link frames.** A URDF is free to author every mesh in
+  one shared frame and correct with a large `<visual><origin>`, and the KUKA quantec
+  descriptions do exactly that — which put `link_3` through `link_6` at object origins of
+  (1.15, 0, −1.15), metres underground and nowhere near their geometry. Blender draws a
+  parent relationship line from an object's origin, so the viewport filled with dashed lines
+  converging on a point under the floor, and selecting a link put its origin gizmo somewhere
+  unrelated to the part.
+
+  The visual origin now goes into the vertices along with the mesh scale and the file's own
+  unit and up-axis correction, leaving the link frame alone as the object's transform. For an
+  actuated link that is the bone's own head, so a relationship line is one bone long. Nothing
+  renders differently: it is the same product, split between the geometry and the transform
+  in a different place.
+
 ### Added
 
+- **Meshes at File Origin**, a checkbox beside Reset Meshes. Improving a robot's geometry
+  means editing a mesh and writing it back as a drop-in replacement for the file the URDF
+  points at — and exporters write world space, so the mesh has to actually *be* at that
+  file's coordinates. On the rig it never is: the link frame, the visual origin, the mesh
+  scale and the file's own units and up-axis all stand between the two.
+
+  Ticking the box sends every link mesh to the coordinates its own file uses; unticking puts
+  them back exactly. On a KR120 that means `link_4` lands at its `.dae`'s own bounds, in the
+  frame that file was authored in, ready to edit and export. The meshes stay parented, so
+  posing the rig while it is on drags them — the panel says so, and unticking is the way
+  back.
+
+  Rigs imported before this release recorded nothing about what was baked into their
+  vertices, so the file's coordinates are genuinely unrecoverable for them; the operator says
+  so rather than moving them somewhere wrong.
 - **A warning when a URDF's zero pose is outside a joint's limits.** The rig still rests at
   the nearest allowed value, which is the honest answer — the robot genuinely cannot stand
   where the description says — but arriving there silently is confusing, and Rest Pose
