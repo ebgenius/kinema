@@ -214,6 +214,132 @@ class TestVisuals:
         assert result.mesh_objects == []
 
 
+@pytest.fixture
+def clamped_urdf(fixture_dir):
+    """A robot whose q = 0 is outside joint_b's limits, as KUKA quantecs are."""
+    yourdfpy = pytest.importorskip("yourdfpy")
+    return yourdfpy.URDF.load(str(fixture_dir / "offset_zero_limits.urdf"))
+
+
+def _rest_placement(model, obj, builder) -> np.ndarray:
+    """Where the URDF puts this mesh at q = 0: link frame times visual origin."""
+    link_name = obj[builder.PROP_LINK_NAME]
+    visual = model.links[link_name].visuals[0]
+    return model.link_frames()[link_name] @ visual.origin
+
+
+def _carried_placement(model, rig, obj, builder) -> np.ndarray:
+    """Where the mesh must be, derived only from the bone it rides.
+
+    A link mesh is a rigid body bolted to its bone at the URDF's rest
+    placement, so its world matrix is that placement carried from the bone's
+    rest frame to wherever the bone currently is. Deliberately written without
+    ``matrix_parent_inverse`` or the bone-tail offset: this is the invariant,
+    not the mechanism the builder uses to achieve it.
+    """
+    bone = rig.data.bones[obj.parent_bone]
+    pose_bone = rig.pose.bones[obj.parent_bone]
+    carry = _np4(pose_bone.matrix) @ np.linalg.inv(_np4(bone.matrix_local))
+    return _np4(rig.matrix_world) @ carry @ _rest_placement(model, obj, builder)
+
+
+class TestZeroPoseOutsideLimits:
+    """A URDF whose zero configuration its own limits forbid.
+
+    Every KUKA quantec is one: joint_2's range is [-140 deg, -5 deg], so the
+    limit constraint moves the bones off the rest pose the instant the
+    depsgraph runs. Placing the meshes after that let Blender solve their
+    transforms against the *posed* bone, which cancelled the clamp -- the
+    meshes stayed at q = 0 while the bones sat 5 deg up-chain, and the offset
+    was baked in permanently.
+    """
+
+    def test_meshes_ride_their_bones(self, kin, builder, clamped_urdf, clean_scene):
+        """The headline: geometry stays bolted to the bone the clamp moved.
+
+        Every mesh past joint_b has to travel with the constraint, not stay
+        behind at the pose the URDF nominally describes.
+        """
+        import bpy
+
+        model = kin.model_from_urdf(clamped_urdf)
+        result = builder.build_rig(model, builder.RigBuildOptions(enforce_limits=True))
+        rig = result.armature_object
+        bpy.context.view_layer.update()
+
+        meshes = builder.link_meshes(rig)
+        assert meshes, "no link meshes to check"
+        for obj in meshes:
+            want = _carried_placement(model, rig, obj, builder)
+            assert np.allclose(_np4(obj.matrix_world), want, atol=1e-6), (
+                obj[builder.PROP_LINK_NAME]
+            )
+
+    def test_meshes_still_ride_their_bones_when_posed(
+        self, kin, builder, clamped_urdf, clean_scene
+    ):
+        """Not accidentally right: drive the joints and check again."""
+        import bpy
+
+        model = kin.model_from_urdf(clamped_urdf)
+        result = builder.build_rig(model, builder.RigBuildOptions(enforce_limits=True))
+        rig = result.armature_object
+        for name, value in (("joint_a", 0.7), ("joint_b", -1.1), ("joint_c", 0.4)):
+            rig.pose.bones[result.joint_bones[name]].rotation_euler[1] = value
+        bpy.context.view_layer.update()
+
+        for obj in builder.link_meshes(rig):
+            want = _carried_placement(model, rig, obj, builder)
+            assert np.allclose(_np4(obj.matrix_world), want, atol=1e-6), (
+                obj[builder.PROP_LINK_NAME]
+            )
+
+    def test_placement_does_not_depend_on_enforce_limits(
+        self, kin, builder, clamped_urdf, clean_scene
+    ):
+        """The direct statement of the bug.
+
+        Where a mesh sits *relative to its bone* is a fact about the URDF. It
+        must not change because a constraint happened to be evaluated between
+        the bone being built and the mesh being placed.
+        """
+        model = kin.model_from_urdf(clamped_urdf)
+
+        limited = builder.build_rig(model, builder.RigBuildOptions(enforce_limits=True))
+        with_limits = {
+            obj[builder.PROP_LINK_NAME]: _np4(obj.matrix_basis)
+            for obj in builder.link_meshes(limited.armature_object)
+        }
+        free = builder.build_rig(model, builder.RigBuildOptions(enforce_limits=False))
+        without_limits = {
+            obj[builder.PROP_LINK_NAME]: _np4(obj.matrix_basis)
+            for obj in builder.link_meshes(free.armature_object)
+        }
+
+        assert with_limits and set(with_limits) == set(without_limits)
+        for link_name, basis in with_limits.items():
+            assert np.allclose(basis, without_limits[link_name], atol=1e-6), link_name
+
+    def test_the_clamp_is_reported(self, kin, builder, clamped_urdf, clean_scene):
+        """Silent is the wrong answer: the robot will not rest where the URDF says."""
+        model = kin.model_from_urdf(clamped_urdf)
+        result = builder.build_rig(model, builder.RigBuildOptions(enforce_limits=True))
+        assert any("joint_b" in warning for warning in result.warnings), result.warnings
+
+    def test_no_warning_when_zero_is_legal(self, arm3_rig):
+        """Most robots can stand at q = 0, and must import without a lecture."""
+        _, result = arm3_rig
+        assert not any("zero" in warning.lower() for warning in result.warnings)
+
+    def test_no_warning_when_limits_are_off(
+        self, kin, builder, clamped_urdf, clean_scene
+    ):
+        """Nothing clamps the rig, so there is nothing to explain."""
+        model = kin.model_from_urdf(clamped_urdf)
+        result = builder.build_rig(model, builder.RigBuildOptions(enforce_limits=False))
+        assert not any("joint_b" in warning for warning in result.warnings)
+
+
 def _world_extent(obj):
     """The object's bounding-box size in world space, as (x, y, z)."""
     import bpy

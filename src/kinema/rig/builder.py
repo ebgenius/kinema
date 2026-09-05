@@ -326,6 +326,7 @@ def _setup_pose_bones(
         bone[PROP_LINK_CORRECTION] = [float(v) for v in correction.flatten()]
 
         if options.enforce_limits and joint.has_limits:
+            _warn_if_zero_is_forbidden(joint, result)
             if joint.is_revolute:
                 constraint = pose_bone.constraints.new("LIMIT_ROTATION")
                 constraint.use_limit_y = True
@@ -357,6 +358,29 @@ def _setup_pose_bones(
         tcp.lock_rotation = (True, True, True)
         tcp.lock_rotation_w = True
         tcp.lock_scale = (True, True, True)
+
+
+def _warn_if_zero_is_forbidden(joint: JointSpec, result: RigBuildResult) -> None:
+    """Say so when the URDF's own zero configuration breaks a joint's limits.
+
+    Real robots have axes that cannot reach zero -- a KUKA quantec's A2 is
+    limited to [-140 deg, -5 deg] -- and a URDF records that faithfully. Kinema
+    keeps the rest pose at URDF FK for q = 0 regardless, because the whole rig
+    and the solver bridge are built on that identity, so the limit constraint
+    moves the robot off its rest pose the moment the depsgraph runs. That is
+    the honest result, but it is confusing to arrive at silently: the robot
+    does not stand where the description says it does, and Rest Pose cannot
+    make it.
+    """
+    if joint.lower <= 0.0 <= joint.upper:
+        return
+    nearest = joint.lower if joint.lower > 0.0 else joint.upper
+    result.warnings.append(
+        f"{joint.name}: the URDF's zero pose is outside its limits "
+        f"[{joint.lower:.4g}, {joint.upper:.4g}], so the rig rests at "
+        f"{nearest:.4g} instead. Import with \"Enforce Joint Limits\" off to "
+        f"see the URDF's own zero pose."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -429,23 +453,50 @@ def _attach_visuals_iter(
                 result.mesh_objects.append(obj)
             yield done, total
 
-    # Two passes: assign every parent, refresh once, then place. Setting
-    # matrix_world solves for the local transform using the parent's current
-    # matrix, so the depsgraph has to be up to date -- but only once, not per
-    # object, which matters on a 200-mesh humanoid.
+    # Placed against each bone's *rest* matrix, not by assigning matrix_world.
     #
-    # Deliberately not yielded: splitting this would mean one depsgraph
-    # evaluation per chunk instead of one for the whole rig, which is the cost
-    # the two-pass structure exists to avoid. It may overrun a caller's tick
-    # budget, and that is the right trade.
+    # That setter solves the local transform against the parent bone's
+    # evaluated pose -- constraints included -- and the limit constraints are
+    # already on by this point. For a URDF whose zero configuration its own
+    # limits forbid, which every KUKA quantec is (joint_2 is limited to
+    # [-140 deg, -5 deg]), the depsgraph has already moved the bones off the
+    # rest pose, and matrix_world would derive a basis that cancels exactly
+    # that: meshes left at q = 0 while their bones sat 5 deg up-chain, baked in
+    # permanently and recorded as the rest placement.
+    #
+    # Blender parents to the bone's TAIL, which is the translation undone here
+    # -- the same offset ops/attach.py cancels with matrix_parent_inverse.
+    # Reading the rest length is safe because joint bones are scale-locked, so
+    # the posed tail sits exactly bone.length from the head.
+    #
+    # Deliberately not yielded: it is arithmetic, and splitting a loop this
+    # short across ticks costs more than it saves.
     for obj, _, bone_name, _ in pending:
         obj.parent = armature_object
         obj.parent_type = "BONE"
         obj.parent_bone = bone_name
-    bpy.context.view_layer.update()
-    for obj, world, _, link_name in pending:
-        obj.matrix_world = world
+    # Cached per bone, not per object: one .dae routinely yields a mesh per
+    # material, so a KR120's seven links arrive as forty-two objects sharing
+    # seven frames.
+    into_rest_frame: dict[str, Matrix] = {}
+    for obj, world, bone_name, link_name in pending:
+        rest_frame = into_rest_frame.get(bone_name)
+        if rest_frame is None:
+            bone = armature_object.data.bones[bone_name]
+            rest_frame = (
+                armature_object.matrix_world
+                @ bone.matrix_local
+                @ Matrix.Translation((0.0, bone.length, 0.0))
+            ).inverted_safe()
+            into_rest_frame[bone_name] = rest_frame
+        obj.matrix_parent_inverse = Matrix.Identity(4)
+        obj.matrix_basis = rest_frame @ world
         _record_link_rest(obj, link_name)
+    # Writing a basis leaves matrix_world stale until something evaluates the
+    # depsgraph, and a caller reading it straight after a build would get the
+    # identity. One update for the whole rig, which is what the old
+    # assign-matrix_world path was already paying for.
+    bpy.context.view_layer.update()
 
 
 def _bake_local_transform(obj: bpy.types.Object, scale, correction: Matrix) -> None:

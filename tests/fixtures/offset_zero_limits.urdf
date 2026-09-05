@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<!-- A robot whose zero configuration is outside its own joint limits.
+
+     joint_b's range is [-2.0, -0.1]: q = 0 is not reachable, exactly as on a
+     KUKA quantec, whose A2 axis is limited to [-140 deg, -5 deg]. The rig's
+     rest pose is still URDF FK at q = 0, so a limit constraint moves the bones
+     off it the moment the depsgraph runs, and every link past joint_b has to
+     travel with them.
+
+     The visuals carry non-zero origins so a placement that quietly resolved
+     against the posed bone instead of the rest one lands somewhere provable.
+
+     base -(rev Z, +0.5z)- link_a -(rev Y, +0.4x)- link_b -(rev Y, +0.6x)- link_c -->
+<robot name="offset_zero_limits">
+  <link name="base"/>
+
+  <link name="link_a">
+    <visual>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <geometry><box size="0.1 0.1 0.2"/></geometry>
+    </visual>
+  </link>
+
+  <link name="link_b">
+    <visual>
+      <origin xyz="0.3 0 0" rpy="0 0.5 0"/>
+      <geometry><box size="0.6 0.08 0.08"/></geometry>
+    </visual>
+  </link>
+
+  <link name="link_c">
+    <visual>
+      <origin xyz="0.2 0.1 0" rpy="0 0 0.3"/>
+      <geometry><cylinder radius="0.04" length="0.4"/></geometry>
+    </visual>
+  </link>
+
+  <joint name="joint_a" type="revolute">
+    <parent link="base"/><child link="link_a"/>
+    <origin xyz="0 0 0.5" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5" upper="1.5" effort="10" velocity="1"/>
+  </joint>
+
+  <!-- The whole point of this fixture: zero is not in [lower, upper]. -->
+  <joint name="joint_b" type="revolute">
+    <parent link="link_a"/><child link="link_b"/>
+    <origin xyz="0.4 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="-0.1" effort="10" velocity="1"/>
+  </joint>
+
+  <joint name="joint_c" type="revolute">
+    <parent link="link_b"/><child link="link_c"/>
+    <origin xyz="0.6 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.0" upper="1.0" effort="10" velocity="1"/>
+  </joint>
+</robot>
