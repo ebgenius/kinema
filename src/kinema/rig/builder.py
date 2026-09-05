@@ -113,6 +113,12 @@ PROP_ATTACH_SOURCE = "kinema_attach_source"
 #: which the reset operator needs so it never touches a user's own object.
 PROP_LINK_NAME = "kinema_link"
 PROP_LINK_REST = "kinema_link_rest"
+#: The transform baked into this mesh's *data* at import -- the visual origin,
+#: the mesh scale and the file's own unit/up-axis correction, multiplied. Its
+#: inverse is the only route back to the coordinates the .dae or .stl was
+#: authored in, which is what makes a link mesh editable and re-exportable as a
+#: drop-in replacement for the file the URDF points at.
+PROP_MESH_BAKE = "kinema_mesh_bake"
 
 
 @dataclass
@@ -437,9 +443,12 @@ def _attach_visuals_iter(
                 yield done, total
                 continue
 
-            # world = link frame * <visual origin>. The <mesh scale> is *not*
-            # a factor here: it is applied to the geometry instead, just below.
-            world = _to_matrix(link_frames[link_name]) @ _to_matrix(visual.origin)
+            # The object transform is the *link frame alone*. Everything else --
+            # the <visual origin>, the <mesh scale>, the file's own correction --
+            # goes into the geometry just below, which is what puts the object's
+            # origin on the link frame instead of somewhere out in space.
+            world = _to_matrix(link_frames[link_name])
+            origin = _to_matrix(visual.origin)
             for obj in objects:
                 if visual.material_color and not obj.data.materials:
                     obj.data.materials.append(
@@ -448,7 +457,10 @@ def _attach_visuals_iter(
                 # Read now, while the object is still unparented: after
                 # parenting, matrix_world is the bone frame and the file's own
                 # correction is no longer recoverable from it.
-                _bake_local_transform(obj, visual.scale, obj.matrix_world.copy())
+                baked = _bake_local_transform(
+                    obj, origin, visual.scale, obj.matrix_world.copy()
+                )
+                obj[PROP_MESH_BAKE] = [float(v) for v in _np4(baked).flatten()]
                 pending.append((obj, world, bone_name, link_name))
                 result.mesh_objects.append(obj)
             yield done, total
@@ -499,37 +511,54 @@ def _attach_visuals_iter(
     bpy.context.view_layer.update()
 
 
-def _bake_local_transform(obj: bpy.types.Object, scale, correction: Matrix) -> None:
-    """Move everything mesh-local into the geometry, leaving the object clean.
+def _bake_local_transform(
+    obj: bpy.types.Object, origin: Matrix, scale, correction: Matrix
+) -> Matrix:
+    """Move everything below the link frame into the geometry. Returns it.
 
-    Two things describe the mesh in its own space rather than where the link
-    goes: the URDF's ``<mesh scale>``, and whatever correction the file itself
-    called for -- a COLLADA's unit scale and up-axis, which io/dae.py leaves in
-    ``matrix_world`` because that is the only place it can. Both act before the
-    visual origin and the link frame, so baking them into the vertices is
-    exactly equivalent to multiplying them into the placement.
+    Three things describe the mesh relative to its link rather than where the
+    link goes: the URDF's ``<visual><origin>`` and ``<mesh scale>``, and
+    whatever correction the file itself called for -- a COLLADA's unit scale
+    and up-axis, which io/dae.py leaves in ``matrix_world`` because that is the
+    only place it can. All three act before the link frame, so baking them into
+    the vertices is exactly equivalent to multiplying them into the placement,
+    and leaves the link frame alone as the object's transform.
 
-    Doing it here rather than there buys two things. The object comes out at a
-    scale of 1 -- scale parked in a transform channel is invisible until
-    something works in object space, and then modifiers, physics and exporters
-    that do not bake transforms all quietly use the unscaled mesh. And the
-    file's correction stops being something the placement can overwrite, which
-    is exactly how millimetre COLLADA meshes were arriving a thousand times too
-    large.
+    That last part is the point of including the origin. A URDF is free to
+    author every mesh in one shared frame and correct with a large origin --
+    the KUKA quantec descriptions do, and their link_3 through link_6 landed
+    with object origins at (1.15, 0, -1.15), metres underground and nowhere
+    near their geometry. Blender draws a parent relationship line from an
+    object's origin, so the viewport filled with dashed lines converging on a
+    point under the floor, and selecting a link put its origin gizmo somewhere
+    unrelated to the part. With the origin baked in, the object sits on the
+    link frame, which for an actuated link is the bone's own head.
+
+    Baking also buys what it always did. The object comes out at a scale of
+    1 -- scale parked in a transform channel is invisible until something works
+    in object space, and then modifiers, physics and exporters that do not bake
+    transforms all quietly use the unscaled mesh. And the file's correction
+    stops being something the placement can overwrite, which is exactly how
+    millimetre COLLADA meshes were arriving a thousand times too large.
+
+    The returned matrix is recorded on the object: it is the only surviving
+    record of the file's own coordinates, which is what "Meshes at File Origin"
+    puts the geometry back into for editing and re-export.
 
     Safe against shared geometry: load_mesh runs once per <visual> and every
     importer path creates its own datablock.
     """
     factors = Vector(tuple(float(v) for v in scale))
-    local = Matrix.Diagonal(factors).to_4x4() @ correction
+    local = origin @ Matrix.Diagonal(factors).to_4x4() @ correction
     if local == Matrix.Identity(4):
-        return
+        return local
     obj.data.transform(local)
     # A negative determinant mirrors the mesh -- a negative <mesh scale>, which
     # symmetric robots use to reuse one file for a left and a right part.
     # Mirroring reverses winding, so the normals have to come back with it.
     if local.to_3x3().determinant() < 0.0:
         obj.data.flip_normals()
+    return local
 
 
 def _record_link_rest(obj: bpy.types.Object, link_name: str) -> None:
@@ -769,7 +798,23 @@ def link_rest_matrix(obj: bpy.types.Object) -> Matrix | None:
     genuinely unrecoverable from what is on the rig -- the visual origin and
     the mesh scale that produced it are not kept anywhere.
     """
-    stored = obj.get(PROP_LINK_REST) if obj is not None else None
+    return _stored_matrix(obj, PROP_LINK_REST)
+
+
+def mesh_bake_matrix(obj: bpy.types.Object) -> Matrix | None:
+    """What was baked into this mesh's data, or None if not recorded.
+
+    Its inverse takes the geometry back to the coordinates the file on disk was
+    authored in. Rigs imported before 0.3.3 carry nothing -- the visual origin,
+    the mesh scale and the file correction were multiplied into the vertices
+    and then forgotten -- so there is no way to recover it for those.
+    """
+    return _stored_matrix(obj, PROP_MESH_BAKE)
+
+
+def _stored_matrix(obj: bpy.types.Object, key: str) -> Matrix | None:
+    """Read a 4x4 back off a custom property, or None if it is absent or short."""
+    stored = obj.get(key) if obj is not None else None
     if stored is None or len(stored) != 16:
         return None
     return Matrix([[float(stored[row * 4 + col]) for col in range(4)] for row in range(4)])

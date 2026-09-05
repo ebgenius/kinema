@@ -210,6 +210,12 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
             layout.operator(
                 "kinema.reset_link_meshes", text="Reset Meshes", icon="LOOP_BACK"
             )
+            # Not a pose control, but it lives with the other "where is the
+            # geometry" answers, and it warns loudly rather than sitting quiet
+            # in a panel the user has scrolled past.
+            layout.prop(rig, "kinema_meshes_at_file_origin", icon="EXPORT")
+            if rig.kinema_meshes_at_file_origin:
+                layout.label(text="Meshes are off the rig", icon="ERROR")
 
         column = layout.column(align=True)
         for pose_bone in joints:
@@ -618,6 +624,19 @@ def _on_ik_tip_changed(rig, context) -> None:
     handlers.reset(rig.name)
 
 
+def _on_meshes_at_file_origin(rig, context) -> None:
+    """Run the move through the operator, so ticking the box is undoable.
+
+    A property callback pushes no undo step of its own, and this one moves
+    every link mesh in the rig. The rig is named rather than left to the
+    context: the box belongs to one armature, and a scene with two robots in
+    it would otherwise move whichever happened to be active.
+    """
+    bpy.ops.kinema.meshes_to_file_origin(
+        rig=rig.name, enabled=rig.kinema_meshes_at_file_origin
+    )
+
+
 def register_props() -> None:
     bpy.types.Scene.kinema = PointerProperty(type=KinemaSceneProps)
     # Registered on Object rather than kept as raw custom properties so the
@@ -661,6 +680,20 @@ def register_props() -> None:
         default=0,
         min=0,
     )
+    # Saved with the .blend on purpose: a file closed in this state opens in it,
+    # and a tick that silently lied about where the meshes are would be worse
+    # than one that persists.
+    bpy.types.Object.kinema_meshes_at_file_origin = BoolProperty(
+        name="Meshes at File Origin",
+        description=(
+            "Move every link mesh to the coordinates its own file uses, so it "
+            "can be edited and exported as a drop-in replacement. The rig's "
+            "kinematics still work, but the meshes no longer follow the bones "
+            "correctly -- turn this off before posing"
+        ),
+        default=False,
+        update=_on_meshes_at_file_origin,
+    )
     bpy.types.Object.kinema_tcp_parent = StringProperty(
         name="Parent Bone",
         description="Joint bone the tool centre point rides",
@@ -697,6 +730,7 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_solver_mode
     del bpy.types.Object.kinema_ik_tip
     del bpy.types.Object.kinema_active_bone_index
+    del bpy.types.Object.kinema_meshes_at_file_origin
     del bpy.types.Object.kinema_tcp_parent
     del bpy.types.Object.kinema_tcp_offset
     del bpy.types.Object.kinema_tcp_rpy
