@@ -475,15 +475,22 @@ def _attach_visuals_iter(
         obj.parent = armature_object
         obj.parent_type = "BONE"
         obj.parent_bone = bone_name
+    # Cached per bone, not per object: one .dae routinely yields a mesh per
+    # material, so a KR120's seven links arrive as forty-two objects sharing
+    # seven frames.
+    into_rest_frame: dict[str, Matrix] = {}
     for obj, world, bone_name, link_name in pending:
-        bone = armature_object.data.bones[bone_name]
-        rest_parent = (
-            armature_object.matrix_world
-            @ bone.matrix_local
-            @ Matrix.Translation((0.0, bone.length, 0.0))
-        )
+        rest_frame = into_rest_frame.get(bone_name)
+        if rest_frame is None:
+            bone = armature_object.data.bones[bone_name]
+            rest_frame = (
+                armature_object.matrix_world
+                @ bone.matrix_local
+                @ Matrix.Translation((0.0, bone.length, 0.0))
+            ).inverted_safe()
+            into_rest_frame[bone_name] = rest_frame
         obj.matrix_parent_inverse = Matrix.Identity(4)
-        obj.matrix_basis = rest_parent.inverted_safe() @ world
+        obj.matrix_basis = rest_frame @ world
         _record_link_rest(obj, link_name)
     # Writing a basis leaves matrix_world stale until something evaluates the
     # depsgraph, and a caller reading it straight after a build would get the

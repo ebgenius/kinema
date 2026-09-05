@@ -255,6 +255,11 @@ class TestZeroPoseOutsideLimits:
     """
 
     def test_meshes_ride_their_bones(self, kin, builder, clamped_urdf, clean_scene):
+        """The headline: geometry stays bolted to the bone the clamp moved.
+
+        Every mesh past joint_b has to travel with the constraint, not stay
+        behind at the pose the URDF nominally describes.
+        """
         import bpy
 
         model = kin.model_from_urdf(clamped_urdf)
@@ -322,12 +327,14 @@ class TestZeroPoseOutsideLimits:
         assert any("joint_b" in warning for warning in result.warnings), result.warnings
 
     def test_no_warning_when_zero_is_legal(self, arm3_rig):
+        """Most robots can stand at q = 0, and must import without a lecture."""
         _, result = arm3_rig
         assert not any("zero" in warning.lower() for warning in result.warnings)
 
     def test_no_warning_when_limits_are_off(
         self, kin, builder, clamped_urdf, clean_scene
     ):
+        """Nothing clamps the rig, so there is nothing to explain."""
         model = kin.model_from_urdf(clamped_urdf)
         result = builder.build_rig(model, builder.RigBuildOptions(enforce_limits=False))
         assert not any("joint_b" in warning for warning in result.warnings)
