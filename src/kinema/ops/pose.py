@@ -183,12 +183,20 @@ class KINEMA_OT_meshes_to_file_origin(Operator):
     def execute(self, context: bpy.types.Context) -> set[str]:
         # Named rather than assumed: the checkbox belongs to a particular
         # armature, and a scene with two robots in it would otherwise move
-        # whichever happened to be active.
-        named = bpy.data.objects.get(self.rig) if self.rig else None
-        rig = named if builder.is_kinema_rig(named) else active_rig(context)
-        if rig is None:
-            self.report({"WARNING"}, "No Kinema rig to move")
-            return {"CANCELLED"}
+        # whichever happened to be active. A name that does not resolve is
+        # refused rather than fallen back on -- falling back is how a stale
+        # name reaches a real robot, which is the failure the name exists to
+        # prevent.
+        if self.rig:
+            rig = bpy.data.objects.get(self.rig)
+            if not builder.is_kinema_rig(rig):
+                self.report({"WARNING"}, f"'{self.rig}' is not a Kinema rig")
+                return {"CANCELLED"}
+        else:
+            rig = active_rig(context)
+            if rig is None:
+                self.report({"WARNING"}, "No Kinema rig to move")
+                return {"CANCELLED"}
         moved, skipped = set_meshes_at_file_origin(rig, self.enabled)
         context.view_layer.update()
 

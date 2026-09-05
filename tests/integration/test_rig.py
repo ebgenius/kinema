@@ -637,6 +637,66 @@ class TestMeshesAtFileOrigin:
 
         assert bpy.ops.kinema.meshes_to_file_origin(enabled=True) == {"CANCELLED"}
 
+    def test_the_box_unticks_itself_when_nothing_can_move(self, scale_rig, builder):
+        """A tick that cannot do what it says must not go on claiming it did.
+
+        On a rig imported before the bake was recorded there is nowhere to send
+        the meshes, so the operator cancels -- and the checkbox has to come
+        back with it, or the panel reports "Meshes are off the rig" over a rig
+        whose meshes never moved.
+        """
+        import bpy
+
+        meshes, result = scale_rig
+        rig = result.armature_object
+        for obj in meshes.values():
+            del obj[builder.PROP_MESH_BAKE]
+        bpy.context.view_layer.update()
+        before = {name: _np4(obj.matrix_world) for name, obj in meshes.items()}
+
+        rig.kinema_meshes_at_file_origin = True
+        bpy.context.view_layer.update()
+
+        assert rig.kinema_meshes_at_file_origin is False
+        for name, obj in meshes.items():
+            assert np.allclose(_np4(obj.matrix_world), before[name], atol=1e-6), name
+
+    def test_the_property_on_a_plain_object_moves_nothing(self, scale_rig):
+        """It is registered on every Object, not only on rigs.
+
+        So a cube in the same file carries the checkbox too, and setting it
+        there used to reach the operator with a name that is not a rig, fall
+        back to whatever was active, and move a real robot.
+        """
+        import bpy
+
+        meshes, result = scale_rig
+        bpy.context.view_layer.update()
+        before = {name: _np4(obj.matrix_world) for name, obj in meshes.items()}
+
+        cube = bpy.data.objects.new("NotARobot", bpy.data.meshes.new("NotARobot"))
+        bpy.context.scene.collection.objects.link(cube)
+        cube.kinema_meshes_at_file_origin = True
+        bpy.context.view_layer.update()
+
+        for name, obj in meshes.items():
+            assert np.allclose(_np4(obj.matrix_world), before[name], atol=1e-6), name
+
+    def test_a_stale_rig_name_is_refused(self, scale_rig):
+        """Named means named. Falling back would move the wrong robot."""
+        import bpy
+
+        meshes, result = scale_rig
+        bpy.context.view_layer.update()
+        before = {name: _np4(obj.matrix_world) for name, obj in meshes.items()}
+
+        assert bpy.ops.kinema.meshes_to_file_origin(
+            rig="a rig that was deleted", enabled=True
+        ) == {"CANCELLED"}
+        bpy.context.view_layer.update()
+        for name, obj in meshes.items():
+            assert np.allclose(_np4(obj.matrix_world), before[name], atol=1e-6), name
+
 
 class TestLinkMeshRestore:
     def test_the_rest_transform_is_recorded(self, arm3_rig, builder):

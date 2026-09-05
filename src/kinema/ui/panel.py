@@ -624,6 +624,11 @@ def _on_ik_tip_changed(rig, context) -> None:
     handlers.reset(rig.name)
 
 
+#: Guards the revert below against the callback it would otherwise re-enter,
+#: the same shape as attach._attaching and handlers._solving.
+_reverting_file_origin = False
+
+
 def _on_meshes_at_file_origin(rig, context) -> None:
     """Run the move through the operator, so ticking the box is undoable.
 
@@ -631,10 +636,36 @@ def _on_meshes_at_file_origin(rig, context) -> None:
     every link mesh in the rig. The rig is named rather than left to the
     context: the box belongs to one armature, and a scene with two robots in
     it would otherwise move whichever happened to be active.
+
+    Two things this has to be careful about, both of them consequences of the
+    property living on ``bpy.types.Object``:
+
+    *Every* object in the file carries it, robot or not. Setting it on a cube
+    has nothing to move, and must not become an instruction to move something
+    else.
+
+    And the property changes before the callback runs, so a move that cannot
+    happen leaves the box ticked over meshes that never went anywhere -- the
+    panel then reports "Meshes are off the rig" about a rig whose meshes are
+    exactly where they were. A rig imported before the bake was recorded is
+    precisely that case, so the tick comes back off with the cancellation.
     """
-    bpy.ops.kinema.meshes_to_file_origin(
-        rig=rig.name, enabled=rig.kinema_meshes_at_file_origin
-    )
+    global _reverting_file_origin
+
+    if _reverting_file_origin or not builder.is_kinema_rig(rig):
+        return
+
+    enabled = rig.kinema_meshes_at_file_origin
+    if "CANCELLED" not in bpy.ops.kinema.meshes_to_file_origin(
+        rig=rig.name, enabled=enabled
+    ):
+        return
+
+    _reverting_file_origin = True
+    try:
+        rig.kinema_meshes_at_file_origin = not enabled
+    finally:
+        _reverting_file_origin = False
 
 
 def register_props() -> None:
