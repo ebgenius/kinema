@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Link meshes drifting away from their bones**, on any robot whose URDF zero pose its own
+  joint limits forbid. Every KUKA quantec is one — `kr120_r2700_2`, `kr150_r3100_2`, the
+  `kr210` family, `kr240`, `kr300`, `kr340`, `kr500` all limit `joint_2` to a range ending
+  below zero, because the real A2 axis cannot reach 0°. The rig imported with its bones
+  rotated up to 5° away from the geometry they were supposed to carry: 0.22 m of error at
+  a KR120's flange, growing along the arm, with the solver targeting one pose and the
+  screen showing another.
+
+  Meshes were placed by assigning `matrix_world`, which Blender resolves against the parent
+  bone's *evaluated* pose — and the limit constraints, added a step earlier, had already
+  pulled the bones off the rest pose. The placement cancelled the clamp instead of following
+  it, and the cancellation was baked in permanently. Placement is now computed from each
+  bone's rest matrix, so where a mesh sits relative to its bone no longer depends on whether
+  a constraint happened to be evaluated first.
+
+### Added
+
+- **A warning when a URDF's zero pose is outside a joint's limits.** The rig still rests at
+  the nearest allowed value, which is the honest answer — the robot genuinely cannot stand
+  where the description says — but arriving there silently is confusing, and Rest Pose
+  cannot undo it. The message names the joint, its range, and where the rig will rest, and
+  points at the "Enforce Joint Limits" option for seeing the URDF's own zero pose.
+
 ## [0.3.2] - 2026-09-04
 
 Real robot descriptions, from the repositories they actually ship in.
