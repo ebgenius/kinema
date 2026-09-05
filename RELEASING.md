@@ -77,6 +77,9 @@ perfectly and only fails at the first `import jax`, in front of a user.
 
 ```bash
 git tag -a vX.Y.Z -m "Kinema vX.Y.Z"
+```
+
+```bash
 git push origin vX.Y.Z
 
 gh release create vX.Y.Z --title "Kinema vX.Y.Z" --notes-file <notes.md> \
@@ -84,6 +87,28 @@ gh release create vX.Y.Z --title "Kinema vX.Y.Z" --notes-file <notes.md> \
     dist/kinema-X.Y.Z-linux_x64.zip \
     dist/kinema-X.Y.Z-macos_arm64.zip
 ```
+
+**Create the tag and push it in two separate steps**, as above — and if an agent is doing
+it, in two separate tool calls.
+
+This is not a git hook. `.claude/hooks/guard-main.ps1` is a Claude Code **PreToolUse** hook:
+it inspects the command *string* and decides before any of it runs. Pushing a **named** tag
+on `main` is exempt only once `git show-ref --verify refs/tags/vX.Y.Z` succeeds, so a single
+call holding both commands is refused — at check time nothing has executed and the tag does
+not exist yet.
+
+Two things that claim narrows to, both easy to misread:
+
+- **`git push origin --tags` is exempt without that check** (`Is-TagPush`, line 139), so the
+  combined block *would* be allowed in that spelling. Do not reach for it to dodge the
+  split: it pushes every local tag, including anything left over from an abandoned attempt.
+- **The hook does not care whether the tag is annotated.** `show-ref` succeeds either way.
+  `-a` is recommended above for `git describe`, not to satisfy the guard.
+
+And it **fails open** by design — an unparseable payload, an empty command, or a branch it
+cannot determine all yield no decision, which reads as allow. So this is the rule in the
+ordinary case, not a guarantee. Run by hand in a shell, the combined block is fine; it is
+the agent path that needs the split.
 
 Annotated tags (`-a`), so `git describe` treats them as real release points. On Windows,
 `gh` may not be on `PATH`; it installs to `C:\Program Files\GitHub CLI\gh.exe`.
