@@ -508,6 +508,7 @@ def both_urdf(fixture_dir):
 
 
 def _by_kind(builder, result) -> dict[str, list]:
+    """A build's mesh objects grouped by the geometry kind they draw."""
     kinds: dict[str, list] = {}
     for obj in result.mesh_objects:
         kinds.setdefault(obj[builder.PROP_GEOMETRY_KIND], []).append(obj)
@@ -543,6 +544,7 @@ class TestCollisionGeometry:
     def test_each_kind_goes_in_its_own_collection(
         self, kin, builder, both_urdf, clean_scene
     ):
+        """Both nested under the robot's, so hiding the robot still hides both."""
         model = kin.model_from_urdf(both_urdf)
         result = builder.build_rig(
             model, builder.RigBuildOptions(import_collisions=True)
@@ -597,11 +599,18 @@ class TestCollisionGeometry:
     def test_hidden_does_not_mean_unevaluated(
         self, kin, builder, both_urdf, clean_scene
     ):
-        """Hidden with the eye, not the monitor.
+        """Hidden with the eye, not the monitor and not the exclude checkbox.
 
-        The monitor toggle drops a collection's objects from the depsgraph, so
-        their world matrices would never be computed and the hulls would be
-        wrong the moment they were switched on.
+        Of Blender's three ways to hide a collection, only
+        ``LayerCollection.hide_viewport`` keeps the objects in the depsgraph.
+        ``Collection.hide_viewport`` and ``LayerCollection.exclude`` both drop
+        them, so the hulls would stop tracking their bones and be wrong the
+        moment a user switched them on.
+
+        Posed rather than merely measured at rest: an unevaluated object keeps
+        the last matrix that was flushed to it, which at rest is the correct
+        one -- so a version of this test that only read the matrix after the
+        build passed against both of the wrong toggles.
         """
         import bpy
 
@@ -609,14 +618,32 @@ class TestCollisionGeometry:
         result = builder.build_rig(
             model, builder.RigBuildOptions(import_collisions=True)
         )
+        rig = result.armature_object
         bpy.context.view_layer.update()
 
+        hulls = _by_kind(builder, result)[builder.KIND_COLLISION]
         frames = model.link_frames()
-        for obj in _by_kind(builder, result)[builder.KIND_COLLISION]:
+        for obj in hulls:
             want = frames[obj[builder.PROP_LINK_NAME]][:3, 3]
             assert np.allclose(
                 np.array(obj.matrix_world.translation), want, atol=1e-6
             ), obj.name
+
+        by_link = {o[builder.PROP_LINK_NAME]: o for o in hulls}
+        before = {name: _np4(o.matrix_world) for name, o in by_link.items()}
+        rig.pose.bones[result.joint_bones["joint_a"]].rotation_euler[1] = 1.0
+        bpy.context.view_layer.update()
+
+        # link_a's origin sits on joint_a's own axis, so the rotation leaves
+        # its translation alone -- compare the whole matrix, not the position.
+        assert not np.allclose(
+            _np4(by_link["link_a"].matrix_world), before["link_a"], atol=1e-6
+        ), "link_a's hull stopped following its bone while hidden"
+        # And base is upstream of the joint, so it must not have moved. Without
+        # this the test passes on a rig where nothing is evaluated at all.
+        assert np.allclose(
+            _np4(by_link["base"].matrix_world), before["base"], atol=1e-6
+        )
 
     def test_both_kinds_ride_the_same_bone(self, kin, builder, both_urdf, clean_scene):
         """A hull and the casing around it move together or not at all."""

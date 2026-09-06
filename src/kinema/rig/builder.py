@@ -639,11 +639,25 @@ def _geometry_collection(kind: str, result: RigBuildResult) -> bpy.types.Collect
 def _hide_collision_collection(result: RigBuildResult) -> None:
     """Close the eye on the collision collection, if there is one.
 
-    The eye lives on the *LayerCollection*, not the Collection: it is per view
-    layer, and it hides without excluding from evaluation. The monitor toggle
-    next to it (``Collection.hide_viewport``) would drop the objects from the
-    depsgraph entirely, leaving their world matrices stale -- which for
-    geometry Kinema has just placed is a poor way to start.
+    Blender offers three ways to hide a collection, and only one of them is
+    the right one here. Measured on 5.2 by hiding a collection each way, then
+    posing the rig and asking whether the hidden mesh followed its bone:
+
+    ===================================  =========  ==============
+    toggle                               follows?   in depsgraph?
+    ===================================  =========  ==============
+    ``LayerCollection.hide_viewport``    yes        yes
+    ``Collection.hide_viewport``         no         no
+    ``LayerCollection.exclude``          no         no
+    ===================================  =========  ==============
+
+    So the eye -- ``LayerCollection.hide_viewport`` -- is the one to use: it
+    hides without dropping the objects from evaluation. The monitor icon
+    beside it in the outliner is ``Collection.hide_viewport``, which lives on
+    the datablock and disables the collection for every view layer at once,
+    and the checkbox is ``LayerCollection.exclude``. Either of those would
+    leave the hulls' world matrices stale and wrong the moment a user switched
+    them on, which for geometry Kinema has just placed is a poor way to start.
 
     Called after the build's own ``view_layer.update()``, so the layer tree is
     in sync and this is a lookup rather than a race. Missing it costs the user
