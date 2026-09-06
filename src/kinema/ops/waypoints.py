@@ -9,12 +9,17 @@ This is the workflow every robot person already knows. Teach a pose, name it,
 give it a time, and say how to arrive: joint-space for a fast reposition,
 linear for a move whose tool path matters.
 
-**The timeline stays in charge.** A waypoint carries a frame, not a list
-index, so dragging its keys in the dope sheet reorders the job. Generation
-writes ordinary keyframes on ordinary channels, which means Blender's own
-graph editor shapes the result afterwards -- and ``kinema.bake_ik`` still
-turns the whole thing into plain joint curves that render with the add-on
-gone.
+**Time is the ordering.** A waypoint carries a frame, not a list index, so
+there is no second order to keep in sync and the list is only ever a view onto
+the job in time order. Generation writes ordinary keyframes on ordinary
+channels, which means Blender's own graph editor shapes the result afterwards
+-- and ``kinema.bake_ik`` still turns the whole thing into plain joint curves
+that render with the add-on gone.
+
+Those generated keys are output, though, not the waypoints themselves: dragging
+them retimes the animation until the next regeneration writes the stored frames
+again. Making a waypoint draggable on the timeline -- a real marker, synced both
+ways -- is a separate piece of work and is not here yet.
 
 What each move type keys, and why:
 
@@ -41,6 +46,7 @@ from bpy.props import (
     EnumProperty,
     FloatVectorProperty,
     IntProperty,
+    IntVectorProperty,
     PointerProperty,
     StringProperty,
 )
@@ -93,6 +99,18 @@ def _apply_joint_values(rig, values) -> None:
 
 def _tool_bone(rig) -> str:
     return rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+
+
+def ik_bone_name(rig) -> str | None:
+    """This rig's usable IK goal, or None.
+
+    Both the property *and* the bone: deleting the IK bone by hand leaves the
+    property behind, and a truthy check on it alone would have the panel offer
+    a linear move that the operator then refuses. Shared so the two cannot
+    drift apart again.
+    """
+    name = rig.get(builder.PROP_IK_BONE) if rig is not None else None
+    return name if name and name in rig.pose.bones else None
 
 
 def _tool_matrix(rig) -> Matrix | None:
@@ -199,6 +217,44 @@ def _make_marker(rig, waypoint, matrix: Matrix):
     empty.matrix_parent_inverse = Matrix.Identity(4)
     empty.matrix_basis = matrix
     return empty
+
+
+def pose_of(waypoint) -> Matrix:
+    """Where this waypoint *is*, which is its marker if it still has one.
+
+    The marker is not a read-out. Recording one is what makes "snap it to a
+    feature on the part" possible at all -- issue #3's actual request -- and
+    that is only true if moving it moves the waypoint. So the Empty's own
+    transform wins over the pose stored at teaching time, and dragging it in
+    the viewport re-aims the move.
+
+    Its ``matrix_basis`` *is* the pose in rig space: the marker is parented to
+    the rig with an identity parent inverse, exactly so these two are the same
+    number and no conversion can drift between them.
+    """
+    marker = waypoint.marker
+    if marker is not None and marker.parent is not None:
+        return marker.matrix_basis.copy()
+    return _unflatten(waypoint.pose)
+
+
+def marker_has_moved(waypoint, tolerance: float = 1e-6) -> bool:
+    """True if the marker no longer agrees with the configuration taught for it.
+
+    Matters only for a joint move, which replays the stored joint vector and so
+    cannot follow a marker anywhere. A linear move solves for the pose and
+    follows it without needing to be told.
+    """
+    marker = waypoint.marker
+    if marker is None or marker.parent is None:
+        return False
+    stored = _unflatten(waypoint.pose)
+    current = marker.matrix_basis
+    return any(
+        abs(current[row][col] - stored[row][col]) > tolerance
+        for row in range(4)
+        for col in range(4)
+    )
 
 
 def _record(rig, waypoint) -> str | None:
@@ -311,7 +367,7 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
         ik_name = rig.get(builder.PROP_IK_BONE)
         context.view_layer.update()
         if ik_name and ik_name in rig.pose.bones:
-            rig.pose.bones[ik_name].matrix = _unflatten(waypoint.pose)
+            rig.pose.bones[ik_name].matrix = pose_of(waypoint)
         context.view_layer.update()
         self.report({"INFO"}, f"At '{waypoint.name}', frame {waypoint.frame}")
         return {"FINISHED"}
@@ -338,7 +394,10 @@ class KINEMA_OT_remove_waypoint(KinemaWaypointOperator):
         if marker is not None and PROP_WAYPOINT in marker:
             bpy.data.objects.remove(marker, do_unlink=True)
         rig.kinema_waypoints.remove(index)
-        rig.kinema_active_waypoint = min(index, len(rig.kinema_waypoints) - 1)
+        # max(0, ...): removing the last row leaves an empty list, and the
+        # index would otherwise go to -1 and rely on the property's own min to
+        # catch it.
+        rig.kinema_active_waypoint = max(0, min(index, len(rig.kinema_waypoints) - 1))
         self.report({"INFO"}, f"Removed '{name}'")
         return {"FINISHED"}
 
@@ -371,8 +430,8 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             return {"CANCELLED"}
 
         needs_ik = any(span.move == MOVE_LINEAR for span in plan)
-        ik_name = rig.get(builder.PROP_IK_BONE)
-        if needs_ik and (not ik_name or ik_name not in rig.pose.bones):
+        ik_name = ik_bone_name(rig)
+        if needs_ik and ik_name is None:
             self.report(
                 {"ERROR"},
                 "Linear moves need an IK target; add one, or set those "
@@ -380,26 +439,60 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             )
             return {"CANCELLED"}
 
+        first, last = plan[0].start_frame, plan[-1].end_frame
+        # One past the end covers the switch-off key a linear finish leaves.
+        owned = (first, last + 1)
+        # Union with what the last generation covered, which the new plan need
+        # not still reach: shortening a job by moving its final waypoint
+        # earlier has to take the old keys with it, or the robot goes on
+        # visiting a frame no waypoint claims any more.
+        clear_from, clear_to = _union(_generated_range(rig), owned)
+
         original = context.scene.frame_current
         # Suspended for the same reason baking suspends: writing keys walks the
         # frame, and the live handler would solve each one on the way past and
         # fight the values being written.
         with _handlers_suspended():
-            _clear_generated(rig, ik_name)
+            _clear_generated(rig, ik_name, clear_from, clear_to)
             for span in plan:
                 if span.move == MOVE_JOINT:
                     self._key_joint_span(rig, span)
                 else:
                     self._key_linear_span(rig, span, ik_name)
+            if plan[-1].move == MOVE_LINEAR:
+                # Leave the switch off past the end. Without this the last
+                # linear span's "on" key is the final one on the channel, so
+                # the solver goes on running for every frame after the job --
+                # overwriting any joint animation out there, and doing the work
+                # to no purpose while the user scrubs.
+                rig.kinema_ik_enabled = False
+                rig.keyframe_insert(data_path="kinema_ik_enabled", frame=last + 1)
             _set_linear_interpolation(rig, ik_name)
+        rig.kinema_generated_range = owned
         context.scene.frame_set(original)
 
-        first, last = plan[0].start_frame, plan[-1].end_frame
-        self.report(
-            {"INFO"},
+        # A joint move replays the joint vector it was taught with, so it
+        # cannot follow a marker that has since been dragged somewhere else.
+        # Silently ignoring the marker would be the worst of both: it moved on
+        # screen and changed nothing.
+        stranded = [
+            span.end.name
+            for span in plan
+            if span.move == MOVE_JOINT and marker_has_moved(span.end)
+        ]
+        message = (
             f"Generated {len(plan)} move{'s' if len(plan) != 1 else ''} "
-            f"over frames {first}-{last}",
+            f"over frames {first}-{last}"
         )
+        if stranded:
+            self.report(
+                {"WARNING"},
+                f"{message}. {', '.join(stranded)}: the marker has moved but a "
+                f"joint move replays its taught configuration -- press Update, "
+                f"or set it to Linear to follow the marker",
+            )
+            return {"FINISHED"}
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
     @staticmethod
@@ -435,7 +528,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             (span.start, span.start_frame),
             (span.end, span.end_frame),
         ):
-            goal.matrix = _unflatten(waypoint.pose)
+            goal.matrix = pose_of(waypoint)
             goal.keyframe_insert(data_path="location", frame=frame)
             goal.keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
@@ -452,18 +545,50 @@ def _generated_paths(rig, ik_name: str | None) -> set[str]:
     return paths
 
 
-def _clear_generated(rig, ik_name: str | None) -> None:
-    """Remove the curves a previous generation wrote, and only those.
+def _generated_range(rig) -> tuple[int, int] | None:
+    """The frames the last generation covered, or None if it never ran."""
+    stored = getattr(rig, "kinema_generated_range", None)
+    if stored is None:
+        return None
+    first, last = int(stored[0]), int(stored[1])
+    return (first, last) if last >= first else None
 
-    Regenerating has to start from nothing or old keys survive between the new
-    ones -- a waypoint moved from frame 40 to frame 30 would otherwise leave
-    the robot visiting frame 40 as well.
+
+def _union(a: tuple[int, int] | None, b: tuple[int, int]) -> tuple[int, int]:
+    if a is None:
+        return b
+    return (min(a[0], b[0]), max(a[1], b[1]))
+
+
+def _clear_generated(rig, ik_name: str | None, first: int, last: int) -> None:
+    """Clear the keys a previous generation wrote, and only those.
+
+    Regenerating has to start from an empty range or old keys survive between
+    the new ones -- a waypoint moved from frame 40 to frame 30 would otherwise
+    leave the robot visiting frame 40 as well.
+
+    Bounded to frames rather than dropping whole curves, and that boundary is
+    the point. The channels the generator writes are ordinary ones an animator
+    may also be using: a hand-keyed pose before the job, or a tool held after
+    it, lives on exactly these data paths, and removing the curve would take
+    that with it. Only the span the generator claims is its to clear -- which
+    is why the caller unions the new range with the previous one rather than
+    passing the new one alone.
     """
     wanted = _generated_paths(rig, ik_name)
     for container in own_fcurve_containers(rig):
         for curve in list(container):
-            if curve.data_path in wanted:
+            if curve.data_path not in wanted:
+                continue
+            for point in reversed(list(curve.keyframe_points)):
+                if first <= point.co[0] <= last + 1:
+                    curve.keyframe_points.remove(point)
+            # A curve emptied of every key animates nothing but still counts as
+            # animation, which leaves the channel looking driven in the UI.
+            if not len(curve.keyframe_points):
                 container.remove(curve)
+            else:
+                curve.update()
 
 
 def _set_linear_interpolation(rig, ik_name: str | None) -> None:
@@ -506,6 +631,14 @@ classes = (
 
 def register_props() -> None:
     bpy.types.Object.kinema_waypoints = CollectionProperty(type=KinemaWaypoint)
+    # What the last generation covered, so the next one can clear its own
+    # leavings even where the new job no longer reaches. Empty when last < first.
+    bpy.types.Object.kinema_generated_range = IntVectorProperty(
+        name="Generated Range",
+        description="First and last frame the last Generate Motion wrote",
+        size=2,
+        default=(0, -1),
+    )
     bpy.types.Object.kinema_active_waypoint = IntProperty(
         name="Active Waypoint",
         description="Row highlighted in the Waypoints list",
@@ -516,4 +649,5 @@ def register_props() -> None:
 
 def unregister_props() -> None:
     del bpy.types.Object.kinema_waypoints
+    del bpy.types.Object.kinema_generated_range
     del bpy.types.Object.kinema_active_waypoint

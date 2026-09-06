@@ -478,8 +478,13 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
         column.scale_y = 1.2
         column.operator("kinema.generate_motion", text="Generate Motion", icon="TRACKING")
 
+        # The same test the operator makes, not a truthier one: a rig whose IK
+        # bone was deleted keeps the property, and checking only that would
+        # leave Generate Motion looking available until it was pressed.
+        from ..ops.waypoints import ik_bone_name
+
         wants_ik = any(w.move == MOVE_LINEAR for w in rig.kinema_waypoints)
-        if wants_ik and not rig.get(builder.PROP_IK_BONE):
+        if wants_ik and ik_bone_name(rig) is None:
             layout.label(text="Linear moves need an IK target", icon="ERROR")
 
 

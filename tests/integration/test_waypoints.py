@@ -303,6 +303,101 @@ class TestGeneration:
         assert 40.0 not in frames, "a key from the first generation survived"
         assert {1.0, 20.0} <= frames
 
+    def test_a_moved_marker_re_aims_a_linear_move(self, arm6, builder):
+        """The marker is a control, not a read-out.
+
+        Recording an Empty is only worth doing if dragging it moves the
+        waypoint -- snapping one to a feature on the part is the whole reason
+        issue #3 asked for it. A marker that changed nothing would be
+        decoration.
+        """
+        import bpy
+        from mathutils import Vector
+
+        _teach(builder, arm6, 1, Q1, "JOINT", "start")
+        cut = _teach(builder, arm6, 21, Q1, "LINEAR", "cut")
+
+        moved = cut.marker.matrix_basis.copy()
+        moved.translation = moved.translation + Vector((0.0, 0.22, -0.05))
+        cut.marker.matrix_basis = moved
+        bpy.context.view_layer.update()
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        bpy.context.scene.frame_set(21)
+        assert np.allclose(
+            _tool(builder, arm6), np.array(moved.translation), atol=1e-4
+        ), "the linear move ignored the marker"
+
+    def test_a_moved_marker_on_a_joint_move_is_reported(self, arm6, builder):
+        """It cannot follow one, so saying nothing would be the worst answer."""
+        import bpy
+        from mathutils import Vector
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        pick = _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+
+        moved = pick.marker.matrix_basis.copy()
+        moved.translation = moved.translation + Vector((0.0, 0.2, 0.0))
+        pick.marker.matrix_basis = moved
+        bpy.context.view_layer.update()
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        # The joint move still replays what it was taught.
+        bpy.context.scene.frame_set(21)
+        assert np.allclose(_q(builder, arm6), Q1, atol=1e-6)
+
+    def test_a_linear_finish_switches_ik_off_afterwards(self, arm6, builder):
+        """Otherwise the solver runs for every frame after the job forever."""
+        import bpy
+        from mathutils import Vector
+
+        _teach(builder, arm6, 1, Q1, "JOINT", "start")
+        goal = arm6.pose.bones[arm6.get(builder.PROP_IK_BONE)]
+        tcp_name = arm6.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+        bpy.context.scene.frame_set(21)
+        goal.matrix = arm6.pose.bones[tcp_name].matrix.copy()
+        goal.matrix.translation = goal.matrix.translation + Vector((0.0, 0.15, 0.0))
+        arm6.kinema_ik_enabled = True
+        bpy.context.view_layer.update()
+        bpy.ops.kinema.add_waypoint(name="cut")
+        arm6.kinema_waypoints[-1].move = "LINEAR"
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        bpy.context.scene.frame_set(21)
+        assert arm6.kinema_ik_enabled
+        bpy.context.scene.frame_set(40)
+        assert not arm6.kinema_ik_enabled, "IK is still live past the end of the job"
+
+    def test_regenerating_keeps_animation_outside_the_job(self, arm6, builder):
+        """These are ordinary channels; an animator may be using them too."""
+        import bpy
+
+        _teach(builder, arm6, 20, Q0, "JOINT", "home")
+        _teach(builder, arm6, 40, Q1, "JOINT", "pick")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        # A hand-keyed pose well after the job.
+        bpy.context.scene.frame_set(90)
+        _set_q(builder, arm6, [0.3] * 6)
+        for pose_bone in builder.joint_bones(arm6):
+            pose_bone.keyframe_insert(data_path="rotation_euler", index=1, frame=90)
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        bpy.context.scene.frame_set(90)
+        assert np.allclose(_q(builder, arm6), [0.3] * 6, atol=1e-6), (
+            "regeneration ate a key outside its own range"
+        )
+
+    def test_removing_the_last_row_leaves_a_valid_index(self, arm6, builder):
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        assert "FINISHED" in bpy.ops.kinema.remove_waypoint(index=0)
+        assert arm6.kinema_active_waypoint == 0
+
     def test_a_linear_span_without_an_ik_target_is_refused(
         self, addon, builder, fixture_dir, clean_scene
     ):

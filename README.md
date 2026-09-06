@@ -96,8 +96,15 @@ a pose alone does not say which of a robot's up-to-eight solutions you meant. **
 restores that exact configuration rather than re-solving and landing somewhere else.
 
 A waypoint also carries a **frame**, and that is the only ordering there is — there is no
-separate list order to keep in sync. Drag its keys in the dope sheet and the job reorders
-itself. Each row says how the robot *arrives* there, which is how robot programs read
+separate list order to keep in sync. Retime a move by editing the frame in its row and
+regenerating; the list redraws in time order.
+
+(The keys **Generate Motion** writes are the *output*. Dragging those in the dope sheet
+retimes the animation, as it would for anything else, but the next regeneration writes the
+waypoint's own frame again — so the row is where a retime belongs if you want it to stick.
+Waypoint frames are not yet draggable on the timeline itself.)
+
+Each row says how the robot *arrives* there, which is how robot programs read
 (`MoveL(pick)` describes getting *to* `pick`), and is why the first waypoint needs no move
 type:
 

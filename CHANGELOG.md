@@ -18,11 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   meant; Go To restores that exact configuration instead of re-solving. Every waypoint also
   gets an Empty in the viewport, so one can be snapped to a feature on the part being worked.
 
-  **The timeline is the ordering.** A waypoint carries a frame, not a list position, so
-  dragging its keys in the dope sheet reorders the job. Each row says how the robot arrives
-  there — **Joint** to interpolate the joints, **Linear** to drive the tool along the
-  straight line between two poses. On a KR120 a linear move holds that line to 0.002 mm over
-  a 300 mm plunge.
+  **Time is the ordering.** A waypoint carries a frame, not a list position, so there is no
+  second order to keep in sync — retime a move in its row and regenerate. Each row says how
+  the robot arrives there — **Joint** to interpolate the joints, **Linear** to drive the
+  tool along the straight line between two poses. On a KR120 a linear move holds that line
+  to 0.002 mm over a 300 mm plunge, and a marker dragged in the viewport re-aims it.
 
   Generate Motion writes ordinary keyframes: joint channels for joint moves, the IK goal for
   linear ones, and the live-IK switch keyed so each span is solved the way it should be.
