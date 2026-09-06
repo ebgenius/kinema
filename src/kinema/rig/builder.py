@@ -45,6 +45,13 @@ COLLECTION_IK = "IK"
 COLLECTION_TCP = "TCP"
 COLLECTION_MECHANISM = "Mechanism"
 
+#: Scene collections the link meshes go into, one per geometry kind, so either
+#: can be hidden as a group. Prefixed with the robot's name when created:
+#: Blender uniquifies collection names globally, so a bare "Visual" becomes
+#: "Visual.001" the moment a second robot arrives.
+COLLECTION_VISUAL = "Visual"
+COLLECTION_COLLISION = "Collision"
+
 ROOT_BONE = "Root"
 TCP_BONE = "TCP"
 
@@ -119,6 +126,13 @@ PROP_LINK_REST = "kinema_link_rest"
 #: authored in, which is what makes a link mesh editable and re-exportable as a
 #: drop-in replacement for the file the URDF points at.
 PROP_MESH_BAKE = "kinema_mesh_bake"
+#: Which of a link's two geometries this object draws: "visual" or "collision".
+#: They are built the same way and ride the same bones, so nothing else tells
+#: them apart once they are in the scene.
+PROP_GEOMETRY_KIND = "kinema_geometry"
+
+KIND_VISUAL = "visual"
+KIND_COLLISION = "collision"
 
 
 @dataclass
@@ -127,6 +141,10 @@ class RigBuildOptions:
     bone_length: float | None = None
     enforce_limits: bool = True
     import_visuals: bool = True
+    #: Load <collision> geometry too, into its own hidden collection. Off by
+    #: default: it is a planner's view of the robot, not an animator's, and on
+    #: a big cell it doubles the object count for something usually invisible.
+    import_collisions: bool = False
     create_tcp: bool = True
     #: Link whose frame becomes the TCP. None picks the deepest link.
     tcp_link: str | None = None
@@ -139,7 +157,10 @@ class RigBuildResult:
     collection: bpy.types.Collection | None = None
     #: joint name -> bone name (identical today, but keep the indirection).
     joint_bones: dict[str, str] = field(default_factory=dict)
+    #: Every mesh built, of either kind, so discard_rig can clean all of it up.
     mesh_objects: list[bpy.types.Object] = field(default_factory=list)
+    visual_collection: bpy.types.Collection | None = None
+    collision_collection: bpy.types.Collection | None = None
     tcp_link: str | None = None
     warnings: list[str] = field(default_factory=list)
 
@@ -392,18 +413,28 @@ def _warn_if_zero_is_forbidden(joint: JointSpec, result: RigBuildResult) -> None
 # --------------------------------------------------------------------------
 # visual meshes
 # --------------------------------------------------------------------------
+def _geometry_of(link, kind: str) -> list:
+    """A link's visuals or its collisions, whichever this pass is loading."""
+    return link.visuals if kind == KIND_VISUAL else link.collisions
+
+
 def _attach_visuals_iter(
     armature_object: bpy.types.Object,
     model: RobotModel,
-    collection: bpy.types.Collection,
     result: RigBuildResult,
+    kinds: tuple[str, ...] = (KIND_VISUAL,),
 ):
-    """Load every link's visual geometry, yielding ``(done, total)`` per visual.
+    """Load link geometry, yielding ``(done, total)`` per element loaded.
 
     This is the seam that lets an operator spread mesh loading over several
     modal ticks. Mesh import cannot leave the main thread -- ``bpy`` is not
     thread-safe -- so keeping Blender's event loop alive means returning to it
     periodically, and that means the work has to be resumable.
+
+    ``kinds`` says which of a link's two geometries to load. Each goes into its
+    own collection so an animator can hide the hulls and see the robot, or hide
+    the robot and check the hulls. Both are counted into one ``total``, because
+    a progress bar that restarts half way through is worse than no bar.
     """
     link_frames = model.link_frames()
     owner_of_link = model.nearest_actuated_ancestor()
@@ -412,58 +443,73 @@ def _attach_visuals_iter(
     #: and drained by the two-pass parent-then-place block at the end.
     pending: list[tuple[bpy.types.Object, Matrix, str, str]] = []
     material_cache: dict[tuple, bpy.types.Material] = {}
-    total = sum(len(link.visuals) for link in model.links.values())
+    total = sum(
+        len(_geometry_of(link, kind))
+        for link in model.links.values()
+        for kind in kinds
+    )
     done = 0
 
-    for link_name, link in model.links.items():
-        if not link.visuals:
-            continue
-        owner_joint = owner_of_link.get(link_name)
-        bone_name = result.joint_bones.get(owner_joint) if owner_joint else ROOT_BONE
-
-        for index, visual in enumerate(link.visuals):
-            label = visual.name or (
-                link_name if index == 0 else f"{link_name}.{index:03d}"
-            )
-            done += 1
-            try:
-                if visual.mesh_path:
-                    objects = mesh_io.load_mesh(
-                        visual.mesh_path, collection=collection, name=label
-                    )
-                else:
-                    kind, params = visual.primitive
-                    objects = mesh_io.make_primitive(
-                        kind, params, collection=collection, name=label
-                    )
-            except mesh_io.MeshLoadError as exc:
-                result.warnings.append(str(exc))
-                # Yield before continuing: a robot whose meshes are all missing
-                # would otherwise run the whole loop inside one tick.
-                yield done, total
+    for kind in kinds:
+        collection = _geometry_collection(kind, result)
+        for link_name, link in model.links.items():
+            geometry = _geometry_of(link, kind)
+            if not geometry:
                 continue
+            owner_joint = owner_of_link.get(link_name)
+            bone_name = (
+                result.joint_bones.get(owner_joint) if owner_joint else ROOT_BONE
+            )
 
-            # The object transform is the *link frame alone*. Everything else --
-            # the <visual origin>, the <mesh scale>, the file's own correction --
-            # goes into the geometry just below, which is what puts the object's
-            # origin on the link frame instead of somewhere out in space.
-            world = _to_matrix(link_frames[link_name])
-            origin = _to_matrix(visual.origin)
-            for obj in objects:
-                if visual.material_color and not obj.data.materials:
-                    obj.data.materials.append(
-                        _link_material(visual.material_color, material_cache)
-                    )
-                # Read now, while the object is still unparented: after
-                # parenting, matrix_world is the bone frame and the file's own
-                # correction is no longer recoverable from it.
-                baked = _bake_local_transform(
-                    obj, origin, visual.scale, obj.matrix_world.copy()
+            for index, visual in enumerate(geometry):
+                label = visual.name or (
+                    link_name if index == 0 else f"{link_name}.{index:03d}"
                 )
-                obj[PROP_MESH_BAKE] = [float(v) for v in _np4(baked).flatten()]
-                pending.append((obj, world, bone_name, link_name))
-                result.mesh_objects.append(obj)
-            yield done, total
+                done += 1
+                try:
+                    if visual.mesh_path:
+                        objects = mesh_io.load_mesh(
+                            visual.mesh_path, collection=collection, name=label
+                        )
+                    else:
+                        shape, params = visual.primitive
+                        objects = mesh_io.make_primitive(
+                            shape, params, collection=collection, name=label
+                        )
+                except mesh_io.MeshLoadError as exc:
+                    result.warnings.append(str(exc))
+                    # Yield before continuing: a robot whose meshes are all
+                    # missing would otherwise run the whole loop in one tick.
+                    yield done, total
+                    continue
+
+                # The object transform is the *link frame alone*. Everything
+                # else -- the <visual origin>, the <mesh scale>, the file's own
+                # correction -- goes into the geometry just below, which is what
+                # puts the object's origin on the link frame rather than out in
+                # space.
+                world = _to_matrix(link_frames[link_name])
+                origin = _to_matrix(visual.origin)
+                for obj in objects:
+                    if visual.material_color and not obj.data.materials:
+                        obj.data.materials.append(
+                            _link_material(visual.material_color, material_cache)
+                        )
+                    # Read now, while the object is still unparented: after
+                    # parenting, matrix_world is the bone frame and the file's
+                    # own correction is no longer recoverable from it.
+                    baked = _bake_local_transform(
+                        obj, origin, visual.scale, obj.matrix_world.copy()
+                    )
+                    obj[PROP_MESH_BAKE] = [float(v) for v in _np4(baked).flatten()]
+                    obj[PROP_GEOMETRY_KIND] = kind
+                    if kind == KIND_COLLISION:
+                        # Wire, so a hull switched on over the robot reads as
+                        # the coarse envelope it is rather than as more casing.
+                        obj.display_type = "WIRE"
+                    pending.append((obj, world, bone_name, link_name))
+                    result.mesh_objects.append(obj)
+                yield done, total
 
     # Placed against each bone's *rest* matrix, not by assigning matrix_world.
     #
@@ -559,6 +605,74 @@ def _bake_local_transform(
     if local.to_3x3().determinant() < 0.0:
         obj.data.flip_normals()
     return local
+
+
+def _geometry_collection(kind: str, result: RigBuildResult) -> bpy.types.Collection:
+    """The collection this kind of geometry goes in, made on first use.
+
+    Lazily, so a robot with no ``<collision>`` -- or one imported without
+    them -- does not get an empty Collision collection sitting in its outliner.
+    """
+    made = (
+        result.visual_collection
+        if kind == KIND_VISUAL
+        else result.collision_collection
+    )
+    if made is not None:
+        return made
+
+    parent = result.collection
+    label = COLLECTION_VISUAL if kind == KIND_VISUAL else COLLECTION_COLLISION
+    # Prefixed with the robot's name: Blender uniquifies collection names
+    # globally, so two robots would otherwise give "Visual" and "Visual.001".
+    collection = bpy.data.collections.new(f"{parent.name} {label}")
+    parent.children.link(collection)
+
+    if kind == KIND_VISUAL:
+        result.visual_collection = collection
+    else:
+        result.collision_collection = collection
+        collection.hide_render = True
+    return collection
+
+
+def _hide_collision_collection(result: RigBuildResult) -> None:
+    """Close the eye on the collision collection, if there is one.
+
+    Blender offers three ways to hide a collection, and only one of them is
+    the right one here. Measured on 5.2 by hiding a collection each way, then
+    posing the rig and asking whether the hidden mesh followed its bone:
+
+    ===================================  =========  ==============
+    toggle                               follows?   in depsgraph?
+    ===================================  =========  ==============
+    ``LayerCollection.hide_viewport``    yes        yes
+    ``Collection.hide_viewport``         no         no
+    ``LayerCollection.exclude``          no         no
+    ===================================  =========  ==============
+
+    So the eye -- ``LayerCollection.hide_viewport`` -- is the one to use: it
+    hides without dropping the objects from evaluation. The monitor icon
+    beside it in the outliner is ``Collection.hide_viewport``, which lives on
+    the datablock and disables the collection for every view layer at once,
+    and the checkbox is ``LayerCollection.exclude``. Either of those would
+    leave the hulls' world matrices stale and wrong the moment a user switched
+    them on, which for geometry Kinema has just placed is a poor way to start.
+
+    Called after the build's own ``view_layer.update()``, so the layer tree is
+    in sync and this is a lookup rather than a race. Missing it costs the user
+    one click, so a robot that somehow has no matching layer is left alone.
+    """
+    target = result.collision_collection
+    if target is None:
+        return
+    stack = list(bpy.context.view_layer.layer_collection.children)
+    while stack:
+        layer = stack.pop()
+        if layer.collection == target:
+            layer.hide_viewport = True
+            return
+        stack.extend(layer.children)
 
 
 def _record_link_rest(obj: bpy.types.Object, link_name: str) -> None:
@@ -673,8 +787,17 @@ def build_rig_iter(
                 armature_object.kinema_tcp_offset = offset.translation
                 armature_object.kinema_tcp_rpy = offset.to_euler("XYZ")
 
-    if options.import_visuals:
-        yield from _attach_visuals_iter(armature_object, model, collection, result)
+    kinds = tuple(
+        kind
+        for kind, wanted in (
+            (KIND_VISUAL, options.import_visuals),
+            (KIND_COLLISION, options.import_collisions),
+        )
+        if wanted
+    )
+    if kinds:
+        yield from _attach_visuals_iter(armature_object, model, result, kinds)
+        _hide_collision_collection(result)
 
     # Bones in front of geometry, which is what you want when the controls are
     # small dials buried inside a robot's own casing.
@@ -688,9 +811,9 @@ def build_rig_iter(
 def discard_rig(result: RigBuildResult) -> None:
     """Delete a partially built rig, for a cancelled or failed build.
 
-    Meshes first, then the armature, then the collection: removing a collection
-    that still owns objects orphans them in ``bpy.data`` rather than freeing
-    them.
+    Meshes first, then the armature, then the collections: removing a
+    collection that still owns objects orphans them in ``bpy.data`` rather than
+    freeing them. Same reason the geometry collections go before their parent.
     """
     for obj in list(result.mesh_objects):
         if obj is not None and obj.name in bpy.data.objects:
@@ -701,8 +824,13 @@ def discard_rig(result: RigBuildResult) -> None:
         bpy.data.objects.remove(armature_object, do_unlink=True)
         if armature is not None and armature.users == 0:
             bpy.data.armatures.remove(armature)
-    if result.collection is not None and result.collection.name in bpy.data.collections:
-        bpy.data.collections.remove(result.collection)
+    for collection in (
+        result.visual_collection,
+        result.collision_collection,
+        result.collection,
+    ):
+        if collection is not None and collection.name in bpy.data.collections:
+            bpy.data.collections.remove(collection)
 
 
 def is_kinema_rig(obj: bpy.types.Object | None) -> bool:

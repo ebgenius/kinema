@@ -12,11 +12,19 @@
       <joint range="-45 45"/>
       <geom type="sphere" size="0.03"/>
     </default>
+    <!-- How MuJoCo Menagerie marks collision geometry: group 3, set once on a
+         class rather than on every geom. The format has no visual/collision
+         distinction of its own, so the group is the whole signal. -->
+    <default class="collision">
+      <geom type="box" size="0.06 0.06 0.06" group="3"/>
+    </default>
   </default>
 
   <worldbody>
     <body name="base" pos="0 0 0.1">
       <geom name="base_geom" type="box" size="0.05 0.05 0.05"/>
+      <geom name="base_collision" class="collision"/>
+
 
       <body name="shoulder" pos="0 0 0.1">
         <joint name="j1" axis="0 0 1"/>
@@ -38,6 +46,9 @@
             <body name="tool" pos="0.08 0 0">
               <!-- No joint: welded to the wrist. -->
               <geom name="tool_geom" type="box" size="0.01 0.01 0.02"/>
+              <!-- Group written straight on the geom, the other way it is
+                   done, and a shape the visual does not use. -->
+              <geom name="tool_collision" type="sphere" size="0.04" group="3"/>
             </body>
           </body>
         </body>

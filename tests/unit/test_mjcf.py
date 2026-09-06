@@ -108,6 +108,32 @@ class TestGeometry:
         assert visual.material_color == pytest.approx((0.5, 0.5, 0.9, 1.0))
 
 
+class TestCollisionGroups:
+    """MJCF has no visual/collision distinction; ``group`` is the convention.
+
+    Groups 3 to 5 are what MuJoCo Menagerie and most published models use.
+    These geoms used to be dropped on the floor -- a model's hulls vanished
+    silently. They are kept now, in the list the rig builder hides by default.
+    """
+
+    def test_a_grouped_geom_becomes_a_collision(self, arm):
+        """Written straight on the geom."""
+        collisions = arm.links["tool"].collisions
+        assert [c.primitive[0] for c in collisions] == ["sphere"]
+        assert [v.primitive[0] for v in arm.links["tool"].visuals] == ["box"]
+
+    def test_the_group_can_come_from_a_class_default(self, arm):
+        """How Menagerie writes it: set once on a class, not on every geom."""
+        collisions = arm.links["base"].collisions
+        assert [c.primitive[0] for c in collisions] == ["box"]
+        assert collisions[0].primitive[1]["size"] == pytest.approx([0.12, 0.12, 0.12])
+
+    def test_ungrouped_geometry_stays_visual(self, arm):
+        """The only safe default: a model that groups nothing must still import."""
+        assert [v.primitive[0] for v in arm.links["shoulder"].visuals] == ["cylinder"]
+        assert arm.links["shoulder"].collisions == []
+
+
 class TestErrors:
     def test_non_mjcf_file_is_rejected(self, fixture_dir):
         with pytest.raises(mjcf.MjcfError, match="not an MJCF"):

@@ -42,6 +42,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Collision geometry**, behind a new **Import Collision Meshes** option, off by default.
+  A URDF describes a robot twice — what it looks like, and the coarse hulls a planner
+  sweeps — and Kinema only ever loaded the first. On a KR120 that is seven STL hulls
+  alongside the visual geometry.
+
+  Both kinds now go into their own collection under the robot's, `<robot> Visual` and
+  `<robot> Collision`, so either can be hidden as a group: see the robot without the hulls
+  over it, or hide the robot and check the hulls alone. Collision starts hidden — with the
+  collection's eye rather than its monitor toggle, which would drop the objects from the
+  depsgraph and leave their placement stale — and draws as wire, so a hull switched on over
+  the robot reads as the envelope it is.
+
+  For **MJCF**, geoms in groups 3 to 5 now become collision geometry instead of being
+  dropped. MuJoCo has no visual/collision distinction in the format, so the group is the
+  whole signal; anything else stays visual, which is the only safe default for a model that
+  groups nothing. Silently losing a model's hulls was the worse trade.
 - **Meshes at File Origin**, a checkbox beside Reset Meshes. Improving a robot's geometry
   means editing a mesh and writing it back as a drop-in replacement for the file the URDF
   points at — and exporters write world space, so the mesh has to actually *be* at that

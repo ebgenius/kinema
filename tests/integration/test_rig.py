@@ -500,6 +500,256 @@ class TestMeshScale:
         assert mirrored_z * reference_z > 0.0, "normals were left inside out"
 
 
+@pytest.fixture
+def both_urdf(fixture_dir):
+    """A robot carrying <visual> and <collision> on the same links."""
+    yourdfpy = pytest.importorskip("yourdfpy")
+    return yourdfpy.URDF.load(str(fixture_dir / "visual_and_collision.urdf"))
+
+
+def _by_kind(builder, result) -> dict[str, list]:
+    """A build's mesh objects grouped by the geometry kind they draw."""
+    kinds: dict[str, list] = {}
+    for obj in result.mesh_objects:
+        kinds.setdefault(obj[builder.PROP_GEOMETRY_KIND], []).append(obj)
+    return kinds
+
+
+class TestCollisionGeometry:
+    """Both geometries, each in its own collection.
+
+    A URDF describes a robot twice: what it looks like, and the coarse hulls a
+    planner sweeps. Kinema only ever loaded the first. Loading both is only
+    useful if either can be hidden as a group, which is what the collections
+    are for.
+    """
+
+    def test_collisions_are_not_imported_by_default(
+        self, kin, builder, both_urdf, clean_scene
+    ):
+        """A planner's view of the robot is not what an animator opened Blender for."""
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(model, builder.RigBuildOptions())
+
+        assert result.collision_collection is None
+        assert set(_by_kind(builder, result)) == {builder.KIND_VISUAL}
+
+    def test_the_parser_reads_them_even_so(self, kin, both_urdf):
+        """Off is an import choice, not a parse one."""
+        model = kin.model_from_urdf(both_urdf)
+        assert [v.primitive[0] for v in model.links["base"].visuals] == ["cylinder"]
+        assert [c.primitive[0] for c in model.links["base"].collisions] == ["box"]
+        assert model.links["link_b"].collisions == []
+
+    def test_each_kind_goes_in_its_own_collection(
+        self, kin, builder, both_urdf, clean_scene
+    ):
+        """Both nested under the robot's, so hiding the robot still hides both."""
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(
+            model, builder.RigBuildOptions(import_collisions=True)
+        )
+
+        by_kind = _by_kind(builder, result)
+        assert len(by_kind[builder.KIND_VISUAL]) == 3
+        assert len(by_kind[builder.KIND_COLLISION]) == 2, "link_b has no collision"
+
+        visual, collision = result.visual_collection, result.collision_collection
+        assert {o.name for o in visual.objects} == {
+            o.name for o in by_kind[builder.KIND_VISUAL]
+        }
+        assert {o.name for o in collision.objects} == {
+            o.name for o in by_kind[builder.KIND_COLLISION]
+        }
+        # Nested under the robot, so hiding the robot hides both.
+        assert {c.name for c in result.collection.children} == {
+            visual.name, collision.name
+        }
+
+    def test_the_collision_collection_starts_hidden(
+        self, kin, builder, both_urdf, clean_scene
+    ):
+        """The point of the split: see the robot without the hulls over it."""
+        import bpy
+
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(
+            model, builder.RigBuildOptions(import_collisions=True)
+        )
+
+        assert result.collision_collection.hide_render
+        layer = next(
+            child
+            for child in bpy.context.view_layer.layer_collection.children
+            if child.collection == result.collection
+        )
+        collision = next(
+            child
+            for child in layer.children
+            if child.collection == result.collision_collection
+        )
+        assert collision.hide_viewport, "collision geometry is visible on import"
+        visual = next(
+            child
+            for child in layer.children
+            if child.collection == result.visual_collection
+        )
+        assert not visual.hide_viewport
+
+    def test_hidden_does_not_mean_unevaluated(
+        self, kin, builder, both_urdf, clean_scene
+    ):
+        """Hidden with the eye, not the monitor and not the exclude checkbox.
+
+        Of Blender's three ways to hide a collection, only
+        ``LayerCollection.hide_viewport`` keeps the objects in the depsgraph.
+        ``Collection.hide_viewport`` and ``LayerCollection.exclude`` both drop
+        them, so the hulls would stop tracking their bones and be wrong the
+        moment a user switched them on.
+
+        Posed rather than merely measured at rest: an unevaluated object keeps
+        the last matrix that was flushed to it, which at rest is the correct
+        one -- so a version of this test that only read the matrix after the
+        build passed against both of the wrong toggles.
+        """
+        import bpy
+
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(
+            model, builder.RigBuildOptions(import_collisions=True)
+        )
+        rig = result.armature_object
+        bpy.context.view_layer.update()
+
+        hulls = _by_kind(builder, result)[builder.KIND_COLLISION]
+        frames = model.link_frames()
+        for obj in hulls:
+            want = frames[obj[builder.PROP_LINK_NAME]][:3, 3]
+            assert np.allclose(
+                np.array(obj.matrix_world.translation), want, atol=1e-6
+            ), obj.name
+
+        by_link = {o[builder.PROP_LINK_NAME]: o for o in hulls}
+        before = {name: _np4(o.matrix_world) for name, o in by_link.items()}
+        rig.pose.bones[result.joint_bones["joint_a"]].rotation_euler[1] = 1.0
+        bpy.context.view_layer.update()
+
+        # link_a's origin sits on joint_a's own axis, so the rotation leaves
+        # its translation alone -- compare the whole matrix, not the position.
+        assert not np.allclose(
+            _np4(by_link["link_a"].matrix_world), before["link_a"], atol=1e-6
+        ), "link_a's hull stopped following its bone while hidden"
+        # And base is upstream of the joint, so it must not have moved. Without
+        # this the test passes on a rig where nothing is evaluated at all.
+        assert np.allclose(
+            _np4(by_link["base"].matrix_world), before["base"], atol=1e-6
+        )
+
+    def test_both_kinds_ride_the_same_bone(self, kin, builder, both_urdf, clean_scene):
+        """A hull and the casing around it move together or not at all."""
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(
+            model, builder.RigBuildOptions(import_collisions=True)
+        )
+
+        bones = {}
+        for obj in result.mesh_objects:
+            bones.setdefault(obj[builder.PROP_LINK_NAME], set()).add(obj.parent_bone)
+        for link_name, owning in bones.items():
+            assert len(owning) == 1, f"{link_name} is split across {owning}"
+
+    def test_collision_geometry_draws_as_wire(
+        self, kin, builder, both_urdf, clean_scene
+    ):
+        """Switched on over the robot, a hull should read as an envelope."""
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(
+            model, builder.RigBuildOptions(import_collisions=True)
+        )
+        by_kind = _by_kind(builder, result)
+        assert all(o.display_type == "WIRE" for o in by_kind[builder.KIND_COLLISION])
+        assert all(o.display_type != "WIRE" for o in by_kind[builder.KIND_VISUAL])
+
+    def test_collision_origins_are_their_own(
+        self, kin, builder, both_urdf, clean_scene
+    ):
+        """link_a's hull sits 0.02 above its visual. Mixing the lists would hide that."""
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(
+            model, builder.RigBuildOptions(import_collisions=True)
+        )
+        by_kind = _by_kind(builder, result)
+
+        def centre_for(kind, link_name):
+            obj = next(
+                o for o in by_kind[kind] if o[builder.PROP_LINK_NAME] == link_name
+            )
+            return _world_centre(obj)
+
+        visual = centre_for(builder.KIND_VISUAL, "link_a")
+        collision = centre_for(builder.KIND_COLLISION, "link_a")
+        assert np.allclose(collision - visual, [0.0, 0.0, 0.02], atol=1e-6)
+
+    def test_collision_meshes_are_link_meshes_like_any_other(
+        self, kin, builder, both_urdf, clean_scene
+    ):
+        """Everything that acts on link geometry has to reach both kinds.
+
+        Reset Meshes and Meshes at File Origin both work off link_meshes(),
+        which matches on a marker rather than on the collection an object
+        happens to be in -- so a hull that drifted would be as recoverable as
+        any casing, and a file-origin export covers the hulls too.
+        """
+        import bpy
+
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(
+            model, builder.RigBuildOptions(import_collisions=True)
+        )
+        rig = result.armature_object
+        bpy.context.view_layer.update()
+
+        listed = builder.link_meshes(rig)
+        assert {o.name for o in listed} == {o.name for o in result.mesh_objects}
+        assert all(builder.mesh_bake_matrix(o) is not None for o in listed)
+
+        before = {o.name: _np4(o.matrix_world) for o in listed}
+        rig.kinema_meshes_at_file_origin = True
+        bpy.context.view_layer.update()
+        collisions = _by_kind(builder, result)[builder.KIND_COLLISION]
+        assert all(
+            not np.allclose(_np4(o.matrix_world), before[o.name], atol=1e-6)
+            for o in collisions
+        ), "collision hulls were left behind"
+
+        rig.kinema_meshes_at_file_origin = False
+        bpy.context.view_layer.update()
+        for obj in listed:
+            assert np.allclose(
+                _np4(obj.matrix_world), before[obj.name], atol=1e-6
+            ), obj.name
+
+    def test_discard_removes_both_collections(
+        self, kin, builder, both_urdf, clean_scene
+    ):
+        """A cancelled import must not leave empty collections behind."""
+        import bpy
+
+        model = kin.model_from_urdf(both_urdf)
+        result = builder.build_rig(
+            model, builder.RigBuildOptions(import_collisions=True)
+        )
+        names = [
+            result.collection.name,
+            result.visual_collection.name,
+            result.collision_collection.name,
+        ]
+
+        builder.discard_rig(result)
+        for name in names:
+            assert name not in bpy.data.collections, name
+
+
 class TestMeshesAtFileOrigin:
     """Sending link meshes back to the coordinates their file was authored in.
 

@@ -438,16 +438,28 @@ class _Builder:
         self._recurse(body, body_name)
 
     def _add_geoms(self, body, link_name: str, offset: np.ndarray) -> None:
+        """Sort a body's geoms into visual and collision.
+
+        MJCF has no visual/collision distinction in the format -- ``group`` is
+        a convention, and 3 to 5 is the one MuJoCo Menagerie and most published
+        models follow. Anything else is treated as visual, which is the only
+        safe default: a model that groups nothing would otherwise import as a
+        robot with no geometry at all.
+
+        These used to be dropped. Keeping them costs nothing -- the collision
+        collection starts hidden -- and losing a model's hulls silently was the
+        worse trade.
+        """
         link = self.links[link_name]
         for element in body.findall("geom"):
             attributes = _attributes(element, self.defaults, "geom", self.classes)
-            # group 3+ is MuJoCo's convention for collision-only geometry.
-            group = attributes.get("group")
-            if group is not None and str(group).strip() in ("3", "4", "5"):
+            geometry = _visual_for(attributes, self.compiler, self.meshes, offset)
+            if geometry is None:
                 continue
-            visual = _visual_for(attributes, self.compiler, self.meshes, offset)
-            if visual is not None:
-                link.visuals.append(visual)
+            group = attributes.get("group")
+            is_collision = group is not None and str(group).strip() in ("3", "4", "5")
+            target = link.collisions if is_collision else link.visuals
+            target.append(geometry)
 
     def _recurse(self, body, link_name: str) -> None:
         # The child body's own frame is relative to this body's frame, which

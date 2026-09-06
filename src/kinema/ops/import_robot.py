@@ -61,6 +61,15 @@ def import_settings() -> dict:
             description="Load the robot's visual geometry and parent it to the rig",
             default=True,
         ),
+        "import_collisions": BoolProperty(
+            name="Import Collision Meshes",
+            description=(
+                "Also load the robot's collision geometry, into its own "
+                "collection that starts hidden. These are the coarse hulls a "
+                "planner uses, not what the robot looks like"
+            ),
+            default=False,
+        ),
         "create_tcp": BoolProperty(
             name="Create TCP",
             description="Add a tool-centre-point marker at the end of the chain",
@@ -81,7 +90,8 @@ def import_settings() -> dict:
 #: The names in :func:`import_settings`, for copying between an operator, the
 #: scene property group, and a RigBuildOptions.
 SETTING_NAMES = (
-    "bone_length", "enforce_limits", "import_visuals", "create_tcp", "xacro_args",
+    "bone_length", "enforce_limits", "import_visuals", "import_collisions",
+    "create_tcp", "xacro_args",
 )
 
 
@@ -96,6 +106,7 @@ def _options_from(source) -> builder.RigBuildOptions:
         bone_length=values["bone_length"] or None,
         enforce_limits=values["enforce_limits"],
         import_visuals=values["import_visuals"],
+        import_collisions=values["import_collisions"],
         create_tcp=values["create_tcp"],
     )
 
