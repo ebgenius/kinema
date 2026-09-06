@@ -79,16 +79,30 @@ class JointSpec:
 
 @dataclass
 class LinkSpec:
-    """One URDF link and the visual meshes attached to it."""
+    """One URDF link and the geometry attached to it.
+
+    The two lists are kept apart rather than merged because they answer
+    different questions -- what the robot looks like, and what it sweeps -- and
+    an animator wants to see one without the other. The rig builder puts them
+    in separate collections for exactly that reason.
+    """
 
     name: str
-    #: (mesh_path_or_None, primitive_or_None, transform 4x4, scale 3, material)
+    #: <visual> elements: what the robot looks like.
     visuals: list[VisualSpec] = field(default_factory=list)
+    #: <collision> elements: the hulls a planner uses. Usually far coarser, and
+    #: usually sitting inside the visual geometry rather than beside it.
+    collisions: list[VisualSpec] = field(default_factory=list)
 
 
 @dataclass
 class VisualSpec:
-    """A single <visual> element resolved to absolute paths and matrices."""
+    """One <visual> or <collision> resolved to absolute paths and matrices.
+
+    The two elements have identical content in URDF, so one type serves both.
+    A <collision> carries no <material>, so ``material_color`` is always None
+    for one.
+    """
 
     #: Absolute path to a mesh file, or None for a geometric primitive.
     mesh_path: str | None
@@ -269,9 +283,10 @@ def _scale_vector(scale) -> np.ndarray:
     return values[:3].astype(float)
 
 
-def _visual_specs(link, material_map, mesh_resolver) -> list[VisualSpec]:
+def _geometry_specs(elements, material_map, mesh_resolver) -> list[VisualSpec]:
+    """Resolve a link's <visual> or <collision> elements. Same shape for both."""
     specs: list[VisualSpec] = []
-    for visual in getattr(link, "visuals", ()) or ():
+    for visual in elements or ():
         geometry = getattr(visual, "geometry", None)
         if geometry is None:
             continue
@@ -366,7 +381,13 @@ def model_from_urdf(urdf, mesh_resolver=None) -> RobotModel:
     material_map = _build_material_map(urdf)
     links = {
         link.name: LinkSpec(
-            name=link.name, visuals=_visual_specs(link, material_map, resolver)
+            name=link.name,
+            visuals=_geometry_specs(
+                getattr(link, "visuals", ()), material_map, resolver
+            ),
+            collisions=_geometry_specs(
+                getattr(link, "collisions", ()), material_map, resolver
+            ),
         )
         for link in urdf.robot.links
     }

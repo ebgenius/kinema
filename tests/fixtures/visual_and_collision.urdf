@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<!-- A robot with both geometries on every link, which no other fixture has.
+
+     Collision hulls are deliberately coarser than the visuals and sit inside
+     them, the way a real description's do: a box standing in for a shaped
+     casing. They also carry different origins, so a build that mixed the two
+     lists up would put geometry somewhere provable rather than somewhere that
+     merely looks wrong.
+
+     base -(rev Z, +0.4z)- link_a -(rev Y, +0.5x)- link_b -->
+<robot name="visual_and_collision">
+  <material name="grey"><color rgba="0.5 0.5 0.5 1.0"/></material>
+
+  <link name="base">
+    <visual>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.12" length="0.1"/></geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry><box size="0.24 0.24 0.1"/></geometry>
+    </collision>
+  </link>
+
+  <link name="link_a">
+    <visual>
+      <origin xyz="0.25 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.5 0.06 0.06"/></geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0.25 0 0.02" rpy="0 0 0"/>
+      <geometry><box size="0.5 0.1 0.1"/></geometry>
+    </collision>
+  </link>
+
+  <!-- Visual only: a link with no <collision> must not gain one, and must not
+       stop the pass that loads them. -->
+  <link name="link_b">
+    <visual>
+      <origin xyz="0.1 0 0" rpy="0 0 0"/>
+      <geometry><sphere radius="0.08"/></geometry>
+      <material name="grey"/>
+    </visual>
+  </link>
+
+  <joint name="joint_a" type="revolute">
+    <parent link="base"/><child link="link_a"/>
+    <origin xyz="0 0 0.4" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5" upper="1.5" effort="10" velocity="1"/>
+  </joint>
+
+  <joint name="joint_b" type="revolute">
+    <parent link="link_a"/><child link="link_b"/>
+    <origin xyz="0.5 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.0" upper="1.0" effort="10" velocity="1"/>
+  </joint>
+</robot>
