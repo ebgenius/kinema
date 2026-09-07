@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<!-- A 7-DoF redundant arm, roughly the shape of a Panda or an iiwa.
+
+     Seven revolute joints against a six-DoF tool pose leaves one degree of
+     freedom over, so the same pose is reachable by a continuous family of
+     configurations - the elbow sweeping while the tool stands still. That
+     family is the whole subject of the elbow-target tests, and arm6.urdf
+     deliberately has no such thing.
+
+     The extra joint is joint3, an upper-arm roll between the shoulder and the
+     elbow, which is where a redundant arm usually puts it. -->
+<robot name="arm7">
+  <material name="steel"><color rgba="0.6 0.6 0.65 1.0"/></material>
+
+  <link name="base"/>
+  <link name="shoulder">
+    <visual>
+      <geometry><cylinder radius="0.05" length="0.1"/></geometry>
+      <material name="steel"/>
+    </visual>
+  </link>
+  <link name="upper_arm">
+    <visual>
+      <origin xyz="0.2 0 0"/>
+      <geometry><box size="0.4 0.07 0.07"/></geometry>
+      <material name="steel"/>
+    </visual>
+  </link>
+  <link name="elbow"/>
+  <link name="forearm">
+    <visual>
+      <origin xyz="0.175 0 0"/>
+      <geometry><box size="0.35 0.06 0.06"/></geometry>
+    </visual>
+  </link>
+  <link name="wrist_1"/>
+  <link name="wrist_2"/>
+  <link name="wrist_3"/>
+  <link name="tool"/>
+
+  <joint name="joint1" type="revolute">
+    <parent link="base"/><child link="shoulder"/>
+    <origin xyz="0 0 0.15" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="150" velocity="3.15"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <parent link="shoulder"/><child link="upper_arm"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="2.5" effort="150" velocity="3.15"/>
+  </joint>
+  <!-- The redundant one: a roll along the upper arm. Turning it swings the
+       elbow around the shoulder-to-wrist line without moving either end. -->
+  <joint name="joint3" type="revolute">
+    <parent link="upper_arm"/><child link="elbow"/>
+    <origin xyz="0.4 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-2.9" upper="2.9" effort="150" velocity="3.15"/>
+  </joint>
+  <joint name="joint4" type="revolute">
+    <parent link="elbow"/><child link="forearm"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.8" upper="2.8" effort="150" velocity="3.15"/>
+  </joint>
+  <joint name="joint5" type="revolute">
+    <parent link="forearm"/><child link="wrist_1"/>
+    <origin xyz="0.35 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-3.14" upper="3.14" effort="28" velocity="3.2"/>
+  </joint>
+  <joint name="joint6" type="revolute">
+    <parent link="wrist_1"/><child link="wrist_2"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="2.0" effort="28" velocity="3.2"/>
+  </joint>
+  <joint name="joint7" type="revolute">
+    <parent link="wrist_2"/><child link="wrist_3"/>
+    <origin xyz="0.08 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-3.14" upper="3.14" effort="28" velocity="3.2"/>
+  </joint>
+  <joint name="wrist_to_tool" type="fixed">
+    <parent link="wrist_3"/><child link="tool"/>
+    <origin xyz="0.05 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>

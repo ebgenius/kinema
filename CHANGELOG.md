@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Find Solutions**, in the IK panel: the other arm configurations that reach the same tool
+  pose. A six-axis arm can reach one up to eight different ways — elbow bent one way or the
+  other, wrist flipped, base swung round behind — and until now you got whichever one the
+  solver landed on from wherever the arm happened to be.
+
+  PyRoki is a nonlinear solver rather than an analytic one, so it does not enumerate
+  branches; it converges to whichever is nearest its seed. They are therefore *found* rather
+  than derived: seed from configurations scattered across the joint limits, solve each, keep
+  the ones that reached the goal, fold away the duplicates. That makes the result a lower
+  bound, and the panel says so rather than claiming to have enumerated anything.
+
+  The ◀ ▶ arrows cycle through what turned up, and applying one only writes joint values —
+  so **Key All** keyframes it and it bakes like anything else. Solutions belong to one goal
+  pose; move the target and the panel reports them stale instead of offering configurations
+  for a pose the robot is no longer being asked to reach.
+
+  On a KR120 at a working pose this finds the arm you are in plus the wrist-flipped one,
+  with the tool holding to 0.008 mm across the switch.
+
+- **An elbow target for redundant arms**, the way a pole target steers a character's arm in
+  Blender. Seven axes reach a pose an infinite number of ways, the elbow sweeping through a
+  continuous family while the tool stands still — so **Add Elbow Target** gives you a bone
+  to drag, and the arm reconfigures around a tool that does not move.
+
+  It is a soft position goal on the elbow's link, weighted far below the tool's, so the
+  elbow may only move where the arm has freedom left over. An attractor rather than an
+  angle reference: the elbow is pulled *toward* it rather than aimed *through* it.
+
+  Offered only when the chain has more joints than the task needs — on a six-axis arm there
+  is nothing left to steer, so the control is absent rather than present and inert — and it
+  needs the PyRoki solver, which the panel says rather than ignoring the control quietly.
+
 ## [0.4.0] - 2026-09-07
 
 The KUKA descriptions that would not import correctly, and then the thing that became

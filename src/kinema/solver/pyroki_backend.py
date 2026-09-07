@@ -48,6 +48,12 @@ REST_WEIGHT = 0.001
 #: median), while 1e-4 keeps 20/20 at 0.0001 mm and still steers away from
 #: singular configurations. Costs roughly 2.5x the solve time.
 MANIPULABILITY_WEIGHT = 1e-4
+#: Default pull of the elbow target, against POSITION_WEIGHT's 50 for the tool.
+#: Deliberately far weaker: the elbow goal must never win an argument with the
+#: tool, because a tool that missed to put the elbow somewhere nicer is not a
+#: trade any animator wants. At this ratio the elbow moves only where the arm
+#: has freedom left over -- which on a redundant arm is exactly the null space.
+ELBOW_WEIGHT = 2.0
 
 
 @dataclass
@@ -58,15 +64,17 @@ class PyrokiSolver:
     actuated_names: tuple[str, ...]
     target_link_index: int
     target_link_name: str
-    #: Cached jitted solve, keyed by whether manipulability is enabled.
+    #: Cached jitted solves, keyed by which optional costs are in the problem:
+    #: (manipulability, elbow goal). Each combination is a separate JAX kernel
+    #: and a separate compile, which is why the key is not just a bool any more.
     _compiled: dict = field(default_factory=dict)
 
     @property
     def dof(self) -> int:
         return len(self.actuated_names)
 
-    def _solver(self, avoid_singularities: bool):
-        key = bool(avoid_singularities)
+    def _solver(self, avoid_singularities: bool, with_elbow: bool = False):
+        key = (bool(avoid_singularities), bool(with_elbow))
         if key in self._compiled:
             return self._compiled[key]
 
@@ -81,7 +89,10 @@ class PyrokiSolver:
         )
 
         @jdc.jit
-        def _solve(robot, target_wxyz, target_position, link_index, seed):
+        def _solve(
+            robot, target_wxyz, target_position, link_index, seed,
+            elbow_index, elbow_position, elbow_weight,
+        ):
             joint_var = robot.joint_var_cls(0)
             costs = [
                 pk.costs.pose_cost(
@@ -106,6 +117,22 @@ class PyrokiSolver:
                         robot, joint_var, link_index, MANIPULABILITY_WEIGHT
                     )
                 )
+            if with_elbow:
+                # The same pose cost, with the orientation half switched off:
+                # a position-only goal, which is all an elbow target means.
+                # Its rotation is ignored, so identity is as good as anything.
+                costs.append(
+                    pk.costs.pose_cost(
+                        robot,
+                        joint_var,
+                        jaxlie.SE3.from_rotation_and_translation(
+                            jaxlie.SO3(jnp.array([1.0, 0.0, 0.0, 0.0])), elbow_position
+                        ),
+                        elbow_index,
+                        pos_weight=elbow_weight,
+                        ori_weight=0.0,
+                    )
+                )
 
             problem = jaxls.LeastSquaresProblem(costs=costs, variables=[joint_var])
             solution = problem.analyze().solve(
@@ -125,12 +152,23 @@ class PyrokiSolver:
         target: np.ndarray,
         *,
         avoid_singularities: bool = True,
+        elbow: tuple[int, np.ndarray, float] | None = None,
     ) -> np.ndarray:
-        """Solve for the full actuated vector. ``target`` is a 4x4 in base frame."""
-        solve_fn, jnp = self._solver(avoid_singularities)
+        """Solve for the full actuated vector. ``target`` is a 4x4 in base frame.
+
+        ``elbow`` is an optional ``(link index, position, weight)`` pulling one
+        further link toward a point. It is a *soft* goal weighted far below the
+        tool's, so on a redundant arm it selects among the configurations that
+        already reach the tool, rather than trading the tool away for it.
+        """
+        solve_fn, jnp = self._solver(avoid_singularities, elbow is not None)
 
         rotation = np.asarray(target[:3, :3], dtype=np.float64)
         quaternion = _matrix_to_wxyz(rotation)
+        # Passed even when unused: the traced function takes a fixed signature,
+        # and `with_elbow` -- part of the compile key -- decides whether the
+        # cost that reads them is in the problem at all.
+        index, position, weight = elbow or (0, np.zeros(3), 0.0)
 
         result = solve_fn(
             self.robot,
@@ -138,8 +176,16 @@ class PyrokiSolver:
             jnp.array(target[:3, 3], dtype=jnp.float32),
             jnp.array(self.target_link_index, dtype=jnp.int32),
             jnp.array(q_seed, dtype=jnp.float32),
+            jnp.array(index, dtype=jnp.int32),
+            jnp.array(position, dtype=jnp.float32),
+            jnp.array(weight, dtype=jnp.float32),
         )
         return np.asarray(result, dtype=np.float64)
+
+    def link_index(self, name: str) -> int | None:
+        """Index of a URDF link by name, for an elbow goal. None if absent."""
+        names = tuple(self.robot.links.names)
+        return names.index(name) if name in names else None
 
     def forward_kinematics(self, q: np.ndarray) -> np.ndarray:
         """Target-link pose for ``q``, as a 4x4 -- used to measure residuals."""
