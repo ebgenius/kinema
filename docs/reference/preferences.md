@@ -51,7 +51,7 @@ indexes the repository around the file you picked.
 Add a path here when it does not — typically a workspace laid out as several checkouts side
 by side, where the robot and the cell that uses it are separate clones:
 
-```
+```text
 ~/ros_ws/src/
 ├── my_cell_description/        ← the file you import
 ├── kuka_robot_descriptions/    ← referenced by name

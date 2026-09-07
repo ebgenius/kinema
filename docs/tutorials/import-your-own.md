@@ -104,7 +104,7 @@ Select a `.xacro` in the file browser and Kinema lists the arguments it declares
 defaults, so you can see what it wants *before* importing rather than after failing. Fill in
 the **Xacro Arguments** field using the same syntax the `xacro` command line takes:
 
-```
+```text
 name:=ur5e ur_type:=ur5e
 ```
 
