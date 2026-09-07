@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "kinema"
-version = "0.3.2"
+version = "0.4.0"
 name = "Kinema"
 tagline = "Animation-ready robot rigs with correct IK, from URDF or MJCF"
 maintainer = "Eugenio Bernardi"
@@ -53,7 +53,7 @@ wheels = [
   "./wheels/pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
   "./wheels/pyyaml-6.0.3-cp313-cp313-win_amd64.whl",
   "./wheels/rich-15.0.0-py3-none-any.whl",
-  "./wheels/rospkg-1.6.1-py3-none-any.whl",
+  "./wheels/rospkg-1.6.2-py3-none-any.whl",
   "./wheels/scipy-1.18.1-cp313-cp313-macosx_14_0_arm64.whl",
   "./wheels/scipy-1.18.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
   "./wheels/scipy-1.18.1-cp313-cp313-win_amd64.whl",
