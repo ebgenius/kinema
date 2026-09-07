@@ -174,6 +174,42 @@ mesh back where the importer placed it, and leaves anything you attached yoursel
 From 0.2.0 the meshes are also locked, so this is harder to do by accident. A rig imported
 with 0.1.0 has no record of where its meshes belong and cannot be repaired — re-import it.
 
+## The robot will not go to its rest pose
+
+**Symptom:** on import, a warning naming a joint and its limits — and **Rest Pose** leaves
+the robot slightly off the pose the description seems to describe. On a KUKA quantec the arm
+sits about 5° up from horizontal.
+
+**Cause:** not a fault. The description's zero configuration is outside that joint's own
+limits, because the real axis cannot reach it. Every KUKA quantec is like this — `kr120`,
+`kr150`, the `kr210` family, `kr240`, `kr300`, `kr340`, `kr500` all limit the second axis to
+a range stopping short of zero.
+
+Kinema keeps the rig's *rest* pose at the description's zero, because the whole rig and the
+solver are built on that being true, and then the limit constraint moves the robot to the
+nearest value it is allowed. That is the honest answer: the robot genuinely cannot stand
+where a naive reading of the file says.
+
+**Fix:** nothing to fix, usually. If you want to see the description's own zero pose,
+re-import with **Enforce Joint Limits** off — accepting that you are then free to pose the
+robot where the real machine cannot go.
+
+!!! info "Fixed in 0.4.0"
+    Before 0.4.0 this produced a real fault as well: the bones moved to the allowed value but
+    the meshes stayed behind, so the robot's geometry and its skeleton disagreed by up to
+    0.22 m at the flange. Re-import any rig imported before 0.4.0 from one of these robots.
+
+## A collision mesh is showing over the robot
+
+**Symptom:** coarse boxes and cylinders drawn as wireframe, roughly robot-shaped, sitting
+over or inside the visual geometry.
+
+**Cause:** you imported with **Import Collision Meshes** on, and unhidden the collection.
+These are the hulls a motion planner sweeps, not what the robot looks like.
+
+**Fix:** hide the `⟨robot⟩ Collision` collection in the outliner — click its eye. It starts
+hidden; something un-hid it. To be rid of them entirely, re-import with the option off.
+
 ## Add IK Target is refused
 
 **Symptom:** "This rig has no TCP; create one first".
@@ -215,8 +251,22 @@ missing. Ignore it.
 **Ball joints are rejected.** A 3-DoF spherical joint has no honest single-axis bone
 equivalent. Exactly one catalog robot — **Cassie** — is affected.
 
-For a local file, the other common causes are a xacro missing a required argument (the
-error names it), or a file that is not actually a robot description.
+**A xacro is missing a required argument.** The error names the argument and lists the
+others the file declares. Select the file in the browser first and Kinema shows the same list
+with defaults, before you import. Fill in the **Xacro Arguments** field —
+`name:=ur5e ur_type:=ur5e` — and try again. See
+[xacro arguments](tutorials/import-your-own.md#arguments).
+
+**A package it refers to cannot be found.** A xacro reaches other packages by name, and
+Kinema looks inside the checkout holding the file you picked. If the pieces live in separate
+clones side by side, add the directory above them to
+[Package Search Paths](reference/preferences.md#package-search-paths).
+
+Note that a package is identified by the name it *declares* in its `package.xml`, not by its
+folder name — `Universal_Robots_ROS2_Description` declares itself `ur_description`, and a
+description referring to it that way is correct.
+
+**Or it is not a robot description at all.** Kinema reads URDF, xacro and MJCF.
 
 ## The catalog does not import anything
 

@@ -36,6 +36,42 @@ however long that takes.
 
 See [the solve budget](../concepts/ik.md#the-solve-budget).
 
+## Package Search Paths
+
+*Default: empty.*
+
+Extra directories to look for ROS packages in, searched in addition to the repository
+holding the file you are importing.
+
+A xacro reaches other packages by name. A KUKA arm pulls its materials from a sibling
+`kuka_resources`; a cell description pulls the robot from wherever that vendor's repository
+was cloned. When everything lives in one checkout Kinema finds it without help, because it
+indexes the repository around the file you picked.
+
+Add a path here when it does not — typically a workspace laid out as several checkouts side
+by side, where the robot and the cell that uses it are separate clones:
+
+```text
+~/ros_ws/src/
+├── my_cell_description/        ← the file you import
+├── kuka_robot_descriptions/    ← referenced by name
+└── kuka_resources/             ← referenced by name
+```
+
+Point one entry at `~/ros_ws/src` and all three are found.
+
+Kinema identifies a package by the name it **declares** in its `package.xml`, not by the
+name of the folder it sits in. Those differ more often than you would expect — GitHub's
+`Universal_Robots_ROS2_Description` declares itself `ur_description` — and a description
+referring to it by the declared name is correct.
+
+!!! info "Bounded on purpose"
+    Kinema does not search your whole drive. Without a search path it looks only inside the
+    checkout containing the file you imported, which keeps a mis-typed package name from
+    turning into a filesystem crawl.
+
+See [A robot will not import at all](../troubleshooting.md#a-robot-will-not-import-at-all).
+
 ## Debug Logging
 
 *Default: off.*

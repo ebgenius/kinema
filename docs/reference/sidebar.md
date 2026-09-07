@@ -3,7 +3,7 @@
 Everything Kinema does lives in the 3D viewport sidebar. Press <kbd>N</kbd> and click the
 **Kinema** tab.
 
-There are six panels. The last five only show anything useful when a Kinema rig is
+There are seven panels. The last six only show anything useful when a Kinema rig is
 selected.
 
 ![Screenshot: an IK target being dragged, with the "Last solve" readout visible.](../assets/images/kinema_ik_solve.png){ .screenshot }
@@ -16,7 +16,41 @@ The top-level panel. Always available.
 |---|---|
 | **Import URDF File…** | [Import a local file](../tutorials/import-your-own.md) — URDF, xacro or MJCF |
 | **Find a Robot** | Collapsible. The [186-robot catalog](catalog.md) — see below |
-| **Import Options** | Collapsible. Settings applied to the *next* import |
+| **Import Options** | Collapsible. Settings applied to the *next* import — see below |
+
+### Import Options
+
+Closed by default, and read at the moment you import: changing one does nothing to a robot
+already in the scene. The same settings appear in the file browser's sidebar when you pick
+a file, so you can set them either place.
+
+| Control | What it does |
+|---|---|
+| **Bone Size** | Display size of the joint controls. `0` picks one from the robot's own scale |
+| **Enforce Joint Limits** | Add limit constraints from the description. Turn off to pose past a robot's real limits for a shot |
+| **Import Meshes** | Load the robot's visual geometry. Off gives bones only, which imports in a fraction of the time |
+| **Import Collision Meshes** | Also load the coarse hulls a planner uses, into a separate collection that starts hidden — see [collision geometry](#collision-geometry) |
+| **Create TCP** | Add a [tool centre point](../concepts/tcp.md) marker at the end of the chain |
+| **Xacro Arguments** | Substitution arguments for a `.xacro`, in the syntax the `xacro` command line takes: `name:=ur5e ur_type:=ur5e`. Ignored for a plain URDF or MJCF |
+
+Some descriptions cannot render without an argument, and the file browser lists the ones a
+`.xacro` declares once you select it, with their defaults — so you can see what it wants
+before importing rather than after failing. See [xacro files](../tutorials/import-your-own.md#xacro-files).
+
+### Collision geometry
+
+A robot description usually contains the robot twice: the **visual** geometry, which is what
+it looks like, and the **collision** geometry, which is the coarse hull a motion planner
+sweeps for contact. The hulls are cheap boxes and cylinders where the visual mesh has
+fillets and bolt heads.
+
+With **Import Collision Meshes** on, both arrive in their own collection under the robot's —
+`⟨robot⟩ Visual` and `⟨robot⟩ Collision` — so either can be hidden as a group. Collision
+starts hidden and draws as wire, so switching it on over the robot reads as an envelope
+rather than as more casing.
+
+You will not normally want it. It is useful when checking why a robot fails a reach, or when
+exporting to something that needs the hulls.
 
 ### Find a Robot
 
@@ -48,11 +82,39 @@ description file. Each is clamped to that joint's true range of motion.
 | **Rest Pose** | Return every joint to zero — the robot's documented home configuration |
 | **Key All** | Insert a keyframe on every joint channel at the current frame |
 | **Reset Meshes** | Put every link mesh back where the importer placed it |
+| **Meshes at File Origin** | Send every link mesh to the coordinates its own file uses, for editing and export — see below |
 
-*Reset Meshes* appears only on rigs that have visual meshes. It exists because *Rest Pose*
-returns the **joints**, and a link mesh nudged by accident is not a joint — see
+*Reset Meshes* and *Meshes at File Origin* appear only on rigs that have visual meshes.
+*Reset Meshes* exists because *Rest Pose* returns the **joints**, and a link mesh nudged by
+accident is not a joint — see
 [a mesh ended up in the wrong place](../troubleshooting.md#a-link-mesh-ended-up-in-the-wrong-place).
 Objects you attached yourself are left alone.
+
+!!! warning "Rest Pose cannot always reach zero"
+    Some robots forbid their own zero configuration — every KUKA quantec limits its second
+    axis to a range that stops short of it, because the real axis cannot reach 0°. With
+    limits enforced the rig rests at the nearest allowed value instead, and says so on
+    import. That is the honest answer rather than a fault; see
+    [the robot will not go to its rest pose](../troubleshooting.md#the-robot-will-not-go-to-its-rest-pose).
+
+### Meshes at File Origin
+
+A tick, not a button, because it is a mode you leave again.
+
+Improving a robot's geometry means editing a mesh and writing it back as a drop-in
+replacement for the file the description points at. Exporters write **world** space, so the
+mesh has to actually *be* at that file's coordinates — and on the rig it never is. The link
+frame, the visual origin, the mesh scale and the file's own units and up-axis all sit
+between the two.
+
+Tick the box and every link mesh goes to the coordinates its own file uses. Edit, export,
+untick, and they return exactly. The meshes stay parented to their bones while it is on, so
+posing the rig drags them out of place — the panel says so while the tick is set, and
+unticking is the way back.
+
+Rigs imported before 0.4.0 recorded nothing about what was baked into their vertices, so
+this cannot work on them; the button says so rather than moving them somewhere wrong.
+Re-import to get it.
 
 A rig with no movable joints — a fixed sensor mount, say — says so instead.
 
@@ -85,6 +147,68 @@ An attachment is a **linked copy**: it shares mesh and materials with what you p
 the same harness can dress six links and be edited in one place. Its transform is its offset
 from the bone, which is why scaling the *source* does not change it — scale the attachment
 here instead. See [dressing a rig](../concepts/links-and-joints.md#attaching-things-to-a-link).
+
+## Waypoints
+
+Where you say what the robot should *do*. Teach it a set of poses, put each on the timeline,
+and generate the motion between them.
+
+![Screenshot: the Waypoints panel with four rows taught, and the markers visible in the viewport.](../assets/images/kinema_waypoints.png){ .screenshot }
+
+| Control | What it does |
+|---|---|
+| **Record** | Store the robot's current pose as a waypoint on the current frame |
+| **Update** | Re-record the highlighted waypoint from the robot's current pose |
+| **✕** | Delete the highlighted waypoint and its marker |
+| **Generate Motion** | Key the robot through its waypoints in frame order |
+
+Each row in the list is one waypoint:
+
+| Part of the row | What it does |
+|---|---|
+| **Name** | Yours to set — `home`, `approach`, `pick`, `drop` |
+| **Move** | How the robot *arrives* here: **Joint** or **Linear** |
+| **Frame** | When it should be there. This is the ordering |
+| **▶** | Jump to that frame and restore the exact configuration it was taught in |
+
+A waypoint stores the tool pose **and** the joint values it was taught with. Both, because a
+pose on its own does not say which way the elbow was bent — a six-axis arm can reach the
+same tool pose up to eight different ways. **▶** restores the configuration you taught
+rather than re-solving and picking a different one.
+
+Each waypoint also gets an Empty in the viewport, so you can snap it to a vertex on the part
+being worked. Dragging that Empty re-aims the move.
+
+### Joint or Linear
+
+| Move | What it does | Use it for |
+|---|---|---|
+| **Joint** | Interpolates the joints | Crossing the workspace. Fast, always reachable, and the tool takes whatever path falls out |
+| **Linear** | Drives the tool along the straight line between the two poses | The part of the job that has to be straight — a weld seam, a plunge, a dispensing pass |
+
+Linear needs an IK target on the rig; the panel says so if one is missing.
+
+A joint move replays the joint values it was taught with, so it cannot follow a marker you
+have since dragged somewhere else. Generating tells you which waypoints that applies to, and
+the fix is either **Update** or switching the row to **Linear**.
+
+### What Generate Motion writes
+
+Ordinary keyframes. Joint channels for joint moves, the IK goal for linear ones, and the
+live-IK switch keyed so each span is solved the way it should be.
+
+Nothing about the result is special, which is the point — Blender's own graph editor shapes
+it afterwards, and [Bake to Keyframes](../tutorials/bake.md) still reduces the whole thing to
+plain joint curves that render with Kinema uninstalled.
+
+Regenerating replaces the previous motion rather than layering on it, and only over the
+frames the job actually covers: animation you keyed outside that range survives.
+
+The **frame** field is where a retime sticks. The keys Generate Motion writes are its
+output, so dragging those in the dope sheet retimes the animation until the next
+regeneration writes the stored frames again.
+
+See [Teach a robot a job](../tutorials/teach-a-job.md).
 
 ## Tool Centre Point
 
