@@ -31,6 +31,8 @@ Pose the robot where you want it to start. Either drag the IK target, or use the
 In **Waypoints**, click **Record**. A row appears, and an Empty appears in the viewport at
 the tool.
 
+![Screenshot: the Waypoints panel just after adding a new record.](../assets/images/kinema_waypoints.png){ .screenshot }
+
 Double-click the name and call it `home`.
 
 !!! info "Two things are stored, not one"
@@ -92,6 +94,8 @@ Open the graph editor and ease the linear spans. Between two keys, easing change
 profile **along** the straight line without bending it — x, y and z share the interpolation
 shape, so the tool still travels the line, it just accelerates into it and slows out. That
 is exactly what a real controller's acceleration ramp does.
+
+![Screenshot: the graph editor with easing applied to a linear span.](../assets/images/kinema_generated_motion.png){ .screenshot }
 
 Round a corner by giving the tool three waypoints through it and letting Bezier handles bow
 the path. That is a blend radius, and it is why real robots do not stop dead at every point.

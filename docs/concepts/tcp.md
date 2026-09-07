@@ -19,7 +19,7 @@ representing the working point rather than the last mechanical joint.
 In Kinema it is a bone in the `Kinema/TCP` collection, created automatically on import
 unless you turn **Create TCP** off.
 
-> 📷 *Screenshot: the TCP marker at the end of a robot arm.*
+![Screenshot: the TCP marker at the end of a robot arm.](../assets/images/kinema_tcp.png){ .screenshot }
 
 ## What it is used for
 

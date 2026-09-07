@@ -24,7 +24,7 @@ Three things happen:
     bone pays it again. A handful of recent ones stay compiled, so scrubbing over a hand-off
     is free after the first pass.
 
-> 📷 *Screenshot: the Inverse Kinematics panel just after adding a target.*
+![Screenshot: the Inverse Kinematics panel just after adding a target.](../assets/images/kinema_ik_solve.png){ .screenshot }
 
 ## Move it
 
@@ -52,8 +52,6 @@ Blender rig you already know how to build.
 
 Underneath sits a readout: **Last solve: N ms**, plus a summary of how well the last
 solve converged.
-
-> 📷 *Screenshot: the IK panel with a target active and the "Last solve" readout visible.*
 
 ### When the readout turns red
 

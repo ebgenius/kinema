@@ -11,7 +11,7 @@ colleague, send it to a render farm, or archive it.
 
 With an IK target on the rig, click **Bake to Keyframes** in the Inverse Kinematics panel.
 
-> 📷 *Screenshot: the Bake to Keyframes dialog.*
+![Screenshot:  the Bake to Keyframes dialog.](../assets/images/kinema_bake.png){ .screenshot }
 
 | Option | Default | What it does |
 |---|---|---|
