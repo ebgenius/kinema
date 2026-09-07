@@ -27,6 +27,7 @@ from bpy.types import Panel, PropertyGroup, UIList
 from .. import runtime
 from ..ops.import_robot import SETTING_NAMES, import_settings
 from ..rig import builder
+from ..rig.waypoints import MOVE_LINEAR
 
 CATEGORY = "Kinema"
 
@@ -411,6 +412,82 @@ class KINEMA_PT_bones(KinemaPanelBase, Panel):
             ).bone = pose_bone.name
 
 
+class KINEMA_UL_waypoints(UIList):
+    """One row per taught waypoint: name, how it is arrived at, and when.
+
+    Sorted by frame rather than by list position, because the frame *is* the
+    order -- see rig/waypoints.py. The list's own index is only ever "which row
+    is highlighted".
+    """
+
+    def draw_item(
+        self, context, layout, data, item, icon, active_data, active_propname, index
+    ):
+        row = layout.row(align=True)
+        row.prop(item, "name", text="", emboss=False, icon="EMPTY_ARROWS")
+        sub = row.row(align=True)
+        sub.scale_x = 0.55
+        sub.prop(item, "move", text="")
+        sub.prop(item, "frame", text="")
+        row.operator(
+            "kinema.goto_waypoint", text="", icon="PLAY", emboss=False
+        ).index = index
+
+    def filter_items(self, context, data, propname):
+        items = getattr(data, propname)
+        order = bpy.types.UI_UL_list.sort_items_helper(
+            list(enumerate(items)), lambda pair: pair[1].frame
+        )
+        flags = [self.bitflag_filter_item] * len(items)
+        if self.filter_name:
+            flags = bpy.types.UI_UL_list.filter_items_by_name(
+                self.filter_name, self.bitflag_filter_item, items, "name"
+            )
+        return flags, order
+
+
+class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
+    bl_idname = "KINEMA_PT_waypoints"
+    bl_parent_id = "KINEMA_PT_main"
+    bl_label = "Waypoints"
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        rig = active_rig(context)
+
+        row = layout.row(align=True)
+        row.operator("kinema.add_waypoint", text="Record", icon="KEYFRAME_HLT")
+        row.operator("kinema.update_waypoint", text="Update", icon="FILE_REFRESH")
+        row.operator("kinema.remove_waypoint", text="", icon="X")
+
+        if not rig.kinema_waypoints:
+            layout.label(text="Pose the robot, then Record", icon="INFO")
+            return
+
+        layout.template_list(
+            "KINEMA_UL_waypoints", "", rig, "kinema_waypoints",
+            rig, "kinema_active_waypoint", rows=4,
+        )
+
+        column = layout.column()
+        column.enabled = len(rig.kinema_waypoints) > 1
+        column.scale_y = 1.2
+        column.operator("kinema.generate_motion", text="Generate Motion", icon="TRACKING")
+
+        # The same test the operator makes, not a truthier one: a rig whose IK
+        # bone was deleted keeps the property, and checking only that would
+        # leave Generate Motion looking available until it was pressed.
+        from ..ops.waypoints import ik_bone_name
+
+        wants_ik = any(w.move == MOVE_LINEAR for w in rig.kinema_waypoints)
+        if wants_ik and ik_bone_name(rig) is None:
+            layout.label(text="Linear moves need an IK target", icon="ERROR")
+
+
 class KINEMA_PT_tcp(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_tcp"
     bl_parent_id = "KINEMA_PT_main"
@@ -608,9 +685,11 @@ class KINEMA_PT_status(KinemaPanelBase, Panel):
 classes = (
     KinemaSceneProps,
     KINEMA_UL_bones,
+    KINEMA_UL_waypoints,
     KINEMA_PT_main,
     KINEMA_PT_joints,
     KINEMA_PT_bones,
+    KINEMA_PT_waypoints,
     KINEMA_PT_tcp,
     KINEMA_PT_ik,
     KINEMA_PT_status,

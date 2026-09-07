@@ -354,7 +354,7 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
                     # that stopped being keyed half way through would hold its
                     # last key instead -- a different pose than the one baked.
                     for name in bones:
-                        _key_joint_value(rig.pose.bones[name], frame)
+                        key_joint_value(rig.pose.bones[name], frame)
                     window.progress_update(index)
             finally:
                 window.progress_end()
@@ -412,7 +412,7 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         # Blender 4.4+ stores curves in slotted layers/strips rather than
         # directly on the action, and only this rig's slot is ours to clear --
         # a rig sharing the action almost certainly has bones by the same names.
-        for curves in _own_fcurve_containers(rig):
+        for curves in own_fcurve_containers(rig):
             for curve in list(curves):
                 if any(curve.data_path.startswith(prefix) for prefix in wanted):
                     curves.remove(curve)
@@ -422,12 +422,15 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
 TIP_PATH = "kinema_ik_tip"
 
 
-def _key_joint_value(pose_bone, frame: int) -> None:
+def key_joint_value(pose_bone, frame: int) -> None:
     """Key the one channel this joint actually uses.
 
     Read off the bone rather than a chain's ``is_revolute``, so it works for a
     joint that is not on the chain currently being solved. Keying all nine
     channels would fill the dope sheet with curves that can never move.
+
+    Public because waypoint generation keys the same channels the same way, and
+    reaching into another module's private for it would be worse.
     """
     is_prismatic = (
         pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
@@ -444,13 +447,13 @@ def _tip_curves(rig) -> list:
     """
     return [
         curve
-        for container in _own_fcurve_containers(rig)
+        for container in own_fcurve_containers(rig)
         for curve in container
         if curve.data_path == TIP_PATH
     ]
 
 
-def _own_fcurve_containers(rig):
+def own_fcurve_containers(rig):
     """F-curve collections belonging to ``rig``, and to no other ID.
 
     One Action can hold channelbags for several slots, so two rigs may share

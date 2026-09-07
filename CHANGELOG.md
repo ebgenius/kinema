@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Waypoints**, and motion generated from them — the answer to what a rigged robot should
+  actually *do*. Until now the only motion authoring was keyframing the IK target by hand,
+  which is the same workflow as animating any Empty, so nothing about it was robot-shaped.
+
+  Pose the robot and press Record. Each waypoint stores the tool pose *and* the joint vector
+  it was taught in, because a pose alone does not say which of up to eight solutions you
+  meant; Go To restores that exact configuration instead of re-solving. Every waypoint also
+  gets an Empty in the viewport, so one can be snapped to a feature on the part being worked.
+
+  **Time is the ordering.** A waypoint carries a frame, not a list position, so there is no
+  second order to keep in sync — retime a move in its row and regenerate. Each row says how
+  the robot arrives there — **Joint** to interpolate the joints, **Linear** to drive the
+  tool along the straight line between two poses. On a KR120 a linear move holds that line
+  to 0.002 mm over a 300 mm plunge, and a marker dragged in the viewport re-aims it.
+
+  Generate Motion writes ordinary keyframes: joint channels for joint moves, the IK goal for
+  linear ones, and the live-IK switch keyed so each span is solved the way it should be.
+  Nothing about the result is special, which is the point — Blender's own graph editor
+  shapes it afterwards, and Bake IK to Keyframes still turns it into plain joint curves that
+  render with the add-on gone.
+
 ### Fixed
 
 - **Link meshes drifting away from their bones**, on any robot whose URDF zero pose its own

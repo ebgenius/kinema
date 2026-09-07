@@ -85,6 +85,49 @@ Switching to a bone whose link the solver has not seen before pays a one-off com
 same wait as the first solve after adding an IK target. A handful of recently used ones are
 kept compiled, so scrubbing back and forth over a hand-off is free after the first pass.
 
+## Teaching a job
+
+Rigging a robot answers *how do I get one into Blender*. The **Waypoints** panel answers
+what it should do.
+
+Pose the robot, press **Record**, and give the row a name — `home`, `approach`, `pick`,
+`drop`. Each waypoint stores the tool pose *and* the joint vector it was taught in, because
+a pose alone does not say which of a robot's up-to-eight solutions you meant. **Go To**
+restores that exact configuration rather than re-solving and landing somewhere else.
+
+A waypoint also carries a **frame**, and that is the only ordering there is — there is no
+separate list order to keep in sync. Retime a move by editing the frame in its row and
+regenerating; the list redraws in time order. Two waypoints may not share a frame, since
+that would ask the robot to be in two places at once; generating says which pair collide.
+
+(The keys **Generate Motion** writes are the *output*. Dragging those in the dope sheet
+retimes the animation, as it would for anything else, but the next regeneration writes the
+waypoint's own frame again — so the row is where a retime belongs if you want it to stick.
+Waypoint frames are not yet draggable on the timeline itself.)
+
+Each row says how the robot *arrives* there, which is how robot programs read
+(`MoveL(pick)` describes getting *to* `pick`), and is why the first waypoint needs no move
+type:
+
+- **Joint** interpolates the joints. Fast, always reachable, and the tool takes whatever
+  path falls out. What you want for crossing a workspace.
+- **Linear** drives the tool along the straight line between the two poses. What a process
+  move needs. On a KR120 the tool holds that line to 0.002 mm over a 300 mm plunge.
+
+**Generate Motion** writes it out as ordinary keyframes: joint channels for joint moves, the
+IK goal for linear ones, and the live-IK switch keyed so each span is solved the way it
+should be. Nothing about the result is special — which is the point. Blender's own graph
+editor shapes it afterwards, and easing a two-key linear span changes the *speed profile
+along* the straight line without bending it, because X, Y and Z share the interpolation
+shape and only the parameterisation changes. That is a real robot's acceleration ramp. Give
+a corner three waypoints and Bezier handles bow the path through it, which is the blend
+radius a real controller would apply.
+
+Regenerating replaces the previous motion rather than layering on it, so moving a waypoint
+from frame 40 to frame 30 does not leave the robot visiting frame 40 as well. When the shot
+is right, **Bake IK to Keyframes** turns the whole thing into plain joint curves that render
+with Kinema uninstalled.
+
 ## Where the tool frame sits
 
 The **Tool Centre Point** panel places the TCP on a joint bone and offsets it from there.
