@@ -115,11 +115,27 @@ The panel reports how long each solve took, typically a few milliseconds.
     Creating the IK target compiles the solver for this specific robot, behind a wait
     cursor. It happens once per robot, never again. Later solves are milliseconds.
 
+## 7. Give it a job
+
+Dragging a control is posing. Robots are usually programmed a level up from that: teach a
+few poses, name them, and say how the arm gets from one to the next.
+
+Open the **Waypoints** panel. Pose the robot, press **Record**, and name the row `home`.
+Move the playhead, pose it somewhere else, **Record** again. Set the second row's **Move** to
+**Linear** if the tool has to travel in a straight line to get there, or leave it on
+**Joint** if it just has to arrive.
+
+Press **Generate Motion** and scrub. The robot runs the job, and what it wrote is ordinary
+keyframes you can shape in the graph editor like anything else.
+
+See [Teach a robot a job](../tutorials/teach-a-job.md).
+
 ## Where to go next
 
 - [Pose a robot by hand](../tutorials/pose-fk.md) — FK in depth, and when it is the right
   tool
 - [Animate with an IK target](../tutorials/animate-ik.md) — the real animation workflow
+- [Teach a robot a job](../tutorials/teach-a-job.md) — waypoints, joint and linear moves
 - [Bake and hand off](../tutorials/bake.md) — make the `.blend` work on machines without
   Kinema
 - [Import your own robot](../tutorials/import-your-own.md) — when the robot is not in the

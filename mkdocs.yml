@@ -95,6 +95,7 @@ nav:
   - Tutorials:
       - Pose a robot by hand: tutorials/pose-fk.md
       - Animate with an IK target: tutorials/animate-ik.md
+      - Teach a robot a job: tutorials/teach-a-job.md
       - Bake and hand off: tutorials/bake.md
       - Import your own robot: tutorials/import-your-own.md
   - Concepts:

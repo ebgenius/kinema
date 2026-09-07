@@ -26,16 +26,19 @@ each one is.
 **Kinema panel → Import URDF File…**, then pick your file. The file browser filters to the
 three extensions above.
 
-Four options sit in the sidebar of the file browser:
+The options sit in the sidebar of the file browser, and the same set is in the sidebar's
+**Import Options** panel:
 
 | Option | Default | What it does |
 |---|---|---|
 | **Bone Size** | 0.0 (auto) | Display size of the joint bones. Auto scales to the robot. |
 | **Enforce Joint Limits** | on | Apply the real range-of-motion limits from the file |
 | **Import Meshes** | on | Load the visual geometry and parent it to the rig |
+| **Import Collision Meshes** | off | Also load the planner's coarse hulls, into a hidden collection |
 | **Create TCP** | on | Add a [tool centre point](../concepts/tcp.md) at the end of the chain |
+| **Xacro Arguments** | empty | Substitutions for a `.xacro`, as `name:=value` — see [xacro files](#xacro-files) |
 
-> 📷 *Screenshot: the URDF file browser with the Kinema options sidebar.*
+![Screenshot: the URDF file browser with the Kinema options sidebar, importing a xacro that declares arguments.](../assets/images/kinema_import_options.png){ .screenshot }
 
 ### When to change them
 
@@ -49,6 +52,12 @@ can produce poses the real machine cannot reach.
 
 **Import Meshes** — turn off for a fast look at the kinematic structure alone, or when the
 meshes are enormous and you only need the skeleton. You can always re-import.
+
+**Import Collision Meshes** — leave off unless you need them. These are the coarse hulls a
+motion planner sweeps, not what the robot looks like: boxes and cylinders where the visual
+mesh has fillets and bolt heads. They arrive in a `⟨robot⟩ Collision` collection that starts
+hidden, so they cost you nothing on screen, but on a large cell they double the object count.
+Useful when checking why a robot fails a reach.
 
 **Create TCP** — leave on. Without a TCP there is nothing for an
 [IK target](animate-ik.md) to attach to, and you would have to create one by hand.
@@ -83,8 +92,37 @@ A `.xacro` is a URDF with macros, variables and conditionals in it — the forma
 manufacturers use to describe a family of robots in one file. Kinema expands it on import,
 so you can point straight at the `.xacro` without generating a URDF first.
 
-Expansion sometimes needs arguments the file expects to be given. If a xacro fails to
-import, that is usually why, and the error message names the missing argument.
+### Arguments
+
+One file describing a family of robots has to be told *which* one. Those are xacro
+arguments, and some descriptions will not render without them — Universal Robots'
+`ur.urdf.xacro` is the common example: it uses `$(arg name)` on the line above the one that
+declares it, so the default never applies and the file simply does not load until you supply
+a name.
+
+Select a `.xacro` in the file browser and Kinema lists the arguments it declares, with their
+defaults, so you can see what it wants *before* importing rather than after failing. Fill in
+the **Xacro Arguments** field using the same syntax the `xacro` command line takes:
+
+```
+name:=ur5e ur_type:=ur5e
+```
+
+Get one wrong and the error names the argument xacro asked for and lists the rest, instead
+of the bare `Undefined substitution argument name` the underlying tool produces.
+
+The arguments are stored on the rig, because the solver reloads the description later to
+build its own model — a rig that imported cleanly and then quietly lost the good solver
+would be a poor trade.
+
+### Packages a xacro reaches for
+
+A xacro refers to other packages by name: a KUKA arm pulls its materials from a sibling
+`kuka_resources`. Kinema indexes the repository containing the file you picked, which covers
+the usual case of one checkout holding everything.
+
+When the pieces live in separate clones side by side, add the directory above them to
+[Package Search Paths](../reference/preferences.md#package-search-paths).
 
 ## MJCF files
 
