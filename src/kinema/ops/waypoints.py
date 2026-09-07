@@ -440,8 +440,12 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             return {"CANCELLED"}
 
         first, last = plan[0].start_frame, plan[-1].end_frame
-        # One past the end covers the switch-off key a linear finish leaves.
-        owned = (first, last + 1)
+        # A linear finish leaves a switch-off key one frame past the end, so
+        # the job owns that frame too -- but only then. Claiming it after a
+        # joint finish, where nothing is written there, would have the next
+        # regeneration delete a key the user had put on the first free frame.
+        ends_linear = plan[-1].move == MOVE_LINEAR
+        owned = (first, last + 1 if ends_linear else last)
         # Union with what the last generation covered, which the new plan need
         # not still reach: shortening a job by moving its final waypoint
         # earlier has to take the old keys with it, or the robot goes on
@@ -459,14 +463,15 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                     self._key_joint_span(rig, span)
                 else:
                     self._key_linear_span(rig, span, ik_name)
-            if plan[-1].move == MOVE_LINEAR:
+            if ends_linear:
                 # Leave the switch off past the end. Without this the last
                 # linear span's "on" key is the final one on the channel, so
                 # the solver goes on running for every frame after the job --
                 # overwriting any joint animation out there, and doing the work
-                # to no purpose while the user scrubs.
+                # to no purpose while the user scrubs. Written on the frame
+                # `owned` claims above; the two are one decision.
                 rig.kinema_ik_enabled = False
-                rig.keyframe_insert(data_path="kinema_ik_enabled", frame=last + 1)
+                rig.keyframe_insert(data_path="kinema_ik_enabled", frame=owned[1])
             _set_linear_interpolation(rig, ik_name)
         rig.kinema_generated_range = owned
         context.scene.frame_set(original)
@@ -573,7 +578,10 @@ def _clear_generated(rig, ik_name: str | None, first: int, last: int) -> None:
     it, lives on exactly these data paths, and removing the curve would take
     that with it. Only the span the generator claims is its to clear -- which
     is why the caller unions the new range with the previous one rather than
-    passing the new one alone.
+    passing the new one alone, and why that range stops at the last frame
+    actually written rather than one beyond it.
+
+    ``first`` and ``last`` are both inclusive.
     """
     wanted = _generated_paths(rig, ik_name)
     for container in own_fcurve_containers(rig):
@@ -581,7 +589,7 @@ def _clear_generated(rig, ik_name: str | None, first: int, last: int) -> None:
             if curve.data_path not in wanted:
                 continue
             for point in reversed(list(curve.keyframe_points)):
-                if first <= point.co[0] <= last + 1:
+                if first <= point.co[0] <= last:
                     curve.keyframe_points.remove(point)
             # A curve emptied of every key animates nothing but still counts as
             # animation, which leaves the channel looking driven in the UI.

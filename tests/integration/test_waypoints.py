@@ -391,6 +391,32 @@ class TestGeneration:
             "regeneration ate a key outside its own range"
         )
 
+    def test_a_joint_job_does_not_claim_the_frame_after_it(self, arm6, builder):
+        """The first free frame is the user's, unless the job wrote there.
+
+        A linear finish leaves a switch-off key one past the end and so owns
+        that frame. A joint finish writes nothing there -- and claiming it
+        anyway would have the next regeneration delete a key put on exactly
+        the frame an animator would reach for first.
+        """
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 20, Q1, "JOINT", "pick")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        bpy.context.scene.frame_set(21)
+        _set_q(builder, arm6, [0.25] * 6)
+        for pose_bone in builder.joint_bones(arm6):
+            pose_bone.keyframe_insert(data_path="rotation_euler", index=1, frame=21)
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        bpy.context.scene.frame_set(21)
+        assert np.allclose(_q(builder, arm6), [0.25] * 6, atol=1e-6), (
+            "regeneration claimed the frame after a joint-ending job"
+        )
+
     def test_removing_the_last_row_leaves_a_valid_index(self, arm6, builder):
         import bpy
 

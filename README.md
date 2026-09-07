@@ -97,7 +97,8 @@ restores that exact configuration rather than re-solving and landing somewhere e
 
 A waypoint also carries a **frame**, and that is the only ordering there is — there is no
 separate list order to keep in sync. Retime a move by editing the frame in its row and
-regenerating; the list redraws in time order.
+regenerating; the list redraws in time order. Two waypoints may not share a frame, since
+that would ask the robot to be in two places at once; generating says which pair collide.
 
 (The keys **Generate Motion** writes are the *output*. Dragging those in the dope sheet
 retimes the animation, as it would for anything else, but the next regeneration writes the
