@@ -7,61 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [0.4.0] - 2026-09-07
 
-- **Waypoints**, and motion generated from them — the answer to what a rigged robot should
-  actually *do*. Until now the only motion authoring was keyframing the IK target by hand,
-  which is the same workflow as animating any Empty, so nothing about it was robot-shaped.
+The KUKA descriptions that would not import correctly, and then the thing that became
+worth building once they did.
 
-  Pose the robot and press Record. Each waypoint stores the tool pose *and* the joint vector
-  it was taught in, because a pose alone does not say which of up to eight solutions you
-  meant; Go To restores that exact configuration instead of re-solving. Every waypoint also
-  gets an Empty in the viewport, so one can be snapped to a feature on the part being worked.
+A KR120 imported with its bones up to 5° away from the geometry they were supposed to
+carry — 0.22 m of error at the flange — because its URDF forbids its own zero pose, which
+is true of every KUKA quantec. Chasing that turned up two more: link meshes landing with
+their origins metres underground, and collision geometry that was parsed and then thrown
+away. With those fixed, the robots stood where their descriptions said, and the question
+stopped being *how do I get this robot into Blender* and became *what do I want it to do*.
 
-  **Time is the ordering.** A waypoint carries a frame, not a list position, so there is no
-  second order to keep in sync — retime a move in its row and regenerate. Each row says how
-  the robot arrives there — **Joint** to interpolate the joints, **Linear** to drive the
-  tool along the straight line between two poses. On a KR120 a linear move holds that line
-  to 0.002 mm over a 300 mm plunge, and a marker dragged in the viewport re-aims it.
-
-  Generate Motion writes ordinary keyframes: joint channels for joint moves, the IK goal for
-  linear ones, and the live-IK switch keyed so each span is solved the way it should be.
-  Nothing about the result is special, which is the point — Blender's own graph editor
-  shapes it afterwards, and Bake IK to Keyframes still turns it into plain joint curves that
-  render with the add-on gone.
-
-### Fixed
-
-- **Link meshes drifting away from their bones**, on any robot whose URDF zero pose its own
-  joint limits forbid. Every KUKA quantec is one — `kr120_r2700_2`, `kr150_r3100_2`, the
-  `kr210` family, `kr240`, `kr300`, `kr340`, `kr500` all limit `joint_2` to a range ending
-  below zero, because the real A2 axis cannot reach 0°. The rig imported with its bones
-  rotated up to 5° away from the geometry they were supposed to carry: 0.22 m of error at
-  a KR120's flange, growing along the arm, with the solver targeting one pose and the
-  screen showing another.
-
-  Meshes were placed by assigning `matrix_world`, which Blender resolves against the parent
-  bone's *evaluated* pose — and the limit constraints, added a step earlier, had already
-  pulled the bones off the rest pose. The placement cancelled the clamp instead of following
-  it, and the cancellation was baked in permanently. Placement is now computed from each
-  bone's rest matrix, so where a mesh sits relative to its bone no longer depends on whether
-  a constraint happened to be evaluated first.
-
-### Changed
-
-- **Link mesh origins now sit on their link frames.** A URDF is free to author every mesh in
-  one shared frame and correct with a large `<visual><origin>`, and the KUKA quantec
-  descriptions do exactly that — which put `link_3` through `link_6` at object origins of
-  (1.15, 0, −1.15), metres underground and nowhere near their geometry. Blender draws a
-  parent relationship line from an object's origin, so the viewport filled with dashed lines
-  converging on a point under the floor, and selecting a link put its origin gizmo somewhere
-  unrelated to the part.
-
-  The visual origin now goes into the vertices along with the mesh scale and the file's own
-  unit and up-axis correction, leaving the link frame alone as the object's transform. For an
-  actuated link that is the bone's own head, so a relationship line is one bone long. Nothing
-  renders differently: it is the same product, split between the geometry and the transform
-  in a different place.
+**Waypoints** are the answer to the second question, and the headline here. Everything
+before them in this list is what had to be true first.
 
 ### Added
 
@@ -81,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped. MuJoCo has no visual/collision distinction in the format, so the group is the
   whole signal; anything else stays visual, which is the only safe default for a model that
   groups nothing. Silently losing a model's hulls was the worse trade.
+
 - **Meshes at File Origin**, a checkbox beside Reset Meshes. Improving a robot's geometry
   means editing a mesh and writing it back as a drop-in replacement for the file the URDF
   points at — and exporters write world space, so the mesh has to actually *be* at that
@@ -96,11 +56,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rigs imported before this release recorded nothing about what was baked into their
   vertices, so the file's coordinates are genuinely unrecoverable for them; the operator says
   so rather than moving them somewhere wrong.
+
 - **A warning when a URDF's zero pose is outside a joint's limits.** The rig still rests at
   the nearest allowed value, which is the honest answer — the robot genuinely cannot stand
   where the description says — but arriving there silently is confusing, and Rest Pose
   cannot undo it. The message names the joint, its range, and where the rig will rest, and
   points at the "Enforce Joint Limits" option for seeing the URDF's own zero pose.
+
+- **Waypoints**, and motion generated from them — the answer to what a rigged robot should
+  actually *do*. Until now the only motion authoring was keyframing the IK target by hand,
+  which is the same workflow as animating any Empty, so nothing about it was robot-shaped.
+
+  Pose the robot and press Record. Each waypoint stores the tool pose *and* the joint vector
+  it was taught in, because a pose alone does not say which of up to eight solutions you
+  meant; Go To restores that exact configuration instead of re-solving. Every waypoint also
+  gets an Empty in the viewport, so one can be snapped to a feature on the part being worked,
+  and dragging it re-aims the move.
+
+  **Time is the ordering.** A waypoint carries a frame, not a list position, so there is no
+  second order to keep in sync — retime a move in its row and regenerate, and no two
+  waypoints may share a frame. Each row says how the robot arrives there: **Joint** to
+  interpolate the joints, **Linear** to drive the tool along the straight line between two
+  poses. On a KR120 a linear move holds that line to 0.002 mm over a 300 mm plunge.
+
+  Generate Motion writes ordinary keyframes: joint channels for joint moves, the IK goal for
+  linear ones, and the live-IK switch keyed so each span is solved the way it should be.
+  Nothing about the result is special, which is the point — Blender's own graph editor
+  shapes it afterwards, and Bake IK to Keyframes still turns it into plain joint curves that
+  render with the add-on gone. Regenerating clears only the frames the job owns, so
+  animation outside it survives.
+
+### Changed
+
+- **Link mesh origins now sit on their link frames.** A URDF is free to author every mesh in
+  one shared frame and correct with a large `<visual><origin>`, and the KUKA quantec
+  descriptions do exactly that — which put `link_3` through `link_6` at object origins of
+  (1.15, 0, −1.15), metres underground and nowhere near their geometry. Blender draws a
+  parent relationship line from an object's origin, so the viewport filled with dashed lines
+  converging on a point under the floor, and selecting a link put its origin gizmo somewhere
+  unrelated to the part.
+
+  The visual origin now goes into the vertices along with the mesh scale and the file's own
+  unit and up-axis correction, leaving the link frame alone as the object's transform. For an
+  actuated link that is the bone's own head, so a relationship line is one bone long. Nothing
+  renders differently: it is the same product, split between the geometry and the transform
+  in a different place.
+
+- **`rospkg` moves to 1.6.2** in the bundled wheel payload.
+
+### Fixed
+
+- **Link meshes drifting away from their bones**, on any robot whose URDF zero pose its own
+  joint limits forbid. Every KUKA quantec is one — `kr120_r2700_2`, `kr150_r3100_2`, the
+  `kr210` family, `kr240`, `kr300`, `kr340`, `kr500` all limit `joint_2` to a range ending
+  below zero, because the real A2 axis cannot reach 0°. The rig imported with its bones
+  rotated up to 5° away from the geometry they were supposed to carry: 0.22 m of error at
+  a KR120's flange, growing along the arm, with the solver targeting one pose and the
+  screen showing another.
+
+  Meshes were placed by assigning `matrix_world`, which Blender resolves against the parent
+  bone's *evaluated* pose — and the limit constraints, added a step earlier, had already
+  pulled the bones off the rest pose. The placement cancelled the clamp instead of following
+  it, and the cancellation was baked in permanently. Placement is now computed from each
+  bone's rest matrix, so where a mesh sits relative to its bone no longer depends on whether
+  a constraint happened to be evaluated first.
 
 ## [0.3.2] - 2026-09-04
 
@@ -434,7 +453,8 @@ are rejected, the first IK solve compiles for ~14 s, and Windows needs long path
 
 [PyRoki]: https://github.com/chungmin99/pyroki
 
-[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ebgenius/kinema/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/ebgenius/kinema/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ebgenius/kinema/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ebgenius/kinema/compare/v0.2.0...v0.3.0

@@ -410,7 +410,7 @@ wheels = [
 
 [[package]]
 name = "kinema"
-version = "0.3.2"
+version = "0.4.0"
 source = { virtual = "." }
 dependencies = [
     { name = "jax" },
@@ -774,16 +774,16 @@ wheels = [
 
 [[package]]
 name = "rospkg"
-version = "1.6.1"
+version = "1.6.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "catkin-pkg" },
     { name = "distro" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/c3/29f5da89f346d2fe36fc22af58246f68c705ec363d8cd28be857cff9bb9e/rospkg-1.6.1.tar.gz", hash = "sha256:39aa81fe212c5bd392e20fc9e6000df02e4c8d79765f7a8caf5a9e5e7898d79d", size = 42655, upload-time = "2025-12-19T21:47:05.126Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/47/e7dcdf8541fba15320e64a0517438945624ab92e5e87f3b09fcb143efec1/rospkg-1.6.2.tar.gz", hash = "sha256:49986f89bd3fb0048edbf62bddebaaec56cc3b2be0bbdce37dc0b08b3db6f32a", size = 42751, upload-time = "2026-09-04T23:54:12.142Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/50/19/1ee204b047ef84ce3dc9f77a5f935076211832f50bc7a4c918275193f807/rospkg-1.6.1-py3-none-any.whl", hash = "sha256:3a09b0ab5c1753536e4a171b480889c6afd65a6573a327ead3e2d3bb2c6f3fcd", size = 36018, upload-time = "2025-12-19T21:47:03.879Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/47/6f15783a9a79e197f48417c6e332fc986da6d3b337ee7c7f0e48a4591822/rospkg-1.6.2-py3-none-any.whl", hash = "sha256:d8c32b8560501a9ca6616a1ef5f61ca89da79701f4a66020ada189594fe15f5a", size = 36092, upload-time = "2026-09-04T23:54:11.245Z" },
 ]
 
 [[package]]
