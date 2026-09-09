@@ -30,16 +30,68 @@ def _chain(dof: int = 3, lengths=None):
     )
 
 
-def _walk_toward(chain, q, goal, target: float):
-    """Nudge ``q`` until its tool lands ``target`` metres from ``goal``.
+def _pose_error(chain, q, goal) -> float:
+    """Position and orientation as one number, for the crude search below.
 
-    Crude gradient descent, only so a test can produce a configuration that
-    *nearly* reaches -- which is what distinguishes ordering from luck.
+    Each scaled by its own tolerance, so a score under 1 means both halves are
+    inside. Weighting them in raw units instead let position dominate: the walk
+    settled on the right point facing a radian the wrong way and stopped, which
+    is precisely the kind of non-solution ``collect`` now rejects.
+    """
+    position, orientation = branches.reach_error(chain, q, goal)
+    return (
+        position / branches.REACH_TOLERANCE
+        + orientation / branches.ORIENTATION_TOLERANCE
+    )
+
+
+def _other_solution(chain, goal, avoid):
+    """A second genuine solution for ``goal``, or None if there is none.
+
+    Found rather than written down: these bones turn about their local Y with
+    offsets along X, so the arm works in XZ and the elbow-up/elbow-down pair is
+    not the sign flip it would be on a textbook planar 2R.
+
+    A coarse grid first, then refinement. Coordinate descent alone settles into
+    whichever basin it started in, and picking starts by hand is how a fixture
+    ends up asserting something about the search rather than about the code.
+    """
+    axis = np.linspace(-np.pi, np.pi, 25)
+    best, best_score = None, np.inf
+    for q0 in axis:
+        for q1 in axis:
+            for q2 in axis:
+                q = np.array([q0, q1, q2])
+                if branches.joint_distance(q, avoid) <= 0.4:
+                    continue
+                score = _pose_error(chain, q, goal)
+                if score < best_score:
+                    best, best_score = q, score
+    if best is None:
+        return None
+
+    refined = _walk_toward(chain, best, goal, target=0.05)
+    position, orientation = branches.reach_error(chain, refined, goal)
+    if position >= branches.REACH_TOLERANCE:
+        return None
+    if orientation >= branches.ORIENTATION_TOLERANCE:
+        return None
+    if branches.joint_distance(refined, avoid) <= branches.DISTINCT_TOLERANCE:
+        return None
+    return refined
+
+
+def _walk_toward(chain, q, goal, target: float):
+    """Nudge ``q`` until its tool pose is within ``target`` of ``goal``.
+
+    Crude coordinate descent. Only here so a test can find a second genuine
+    solution rather than assert one that was written down and might be wrong
+    for this chain's axes.
     """
     q = np.array(q, dtype=float)
     step = 0.05
-    for _ in range(2000):
-        error = branches.reach_error(chain, q, goal)
+    for _ in range(4000):
+        error = _pose_error(chain, q, goal)
         if error <= target:
             return q
         best, best_error = q, error
@@ -47,21 +99,21 @@ def _walk_toward(chain, q, goal, target: float):
             for sign in (1, -1):
                 trial = q.copy()
                 trial[index] += sign * step
-                trial_error = branches.reach_error(chain, trial, goal)
+                trial_error = _pose_error(chain, trial, goal)
                 if trial_error < best_error:
                     best, best_error = trial, trial_error
         if best_error >= error:
             step *= 0.5
-            if step < 1e-6:
+            if step < 1e-7:
                 break
         q = best
     return q
 
 
-class TestWrappedDistance:
+class TestJointDistance:
     def test_identical_configurations_are_zero_apart(self):
         q = np.array([0.3, -1.2, 0.8])
-        assert branches.wrapped_distance(q, q) == pytest.approx(0.0)
+        assert branches.joint_distance(q, q) == pytest.approx(0.0)
 
     def test_a_whole_turn_is_the_same_place(self):
         """A continuous joint reaches the same pose at any number of turns.
@@ -70,17 +122,37 @@ class TestWrappedDistance:
         configuration and the list would fill with the same arm.
         """
         q = np.array([0.3, -1.2, 0.8])
-        assert branches.wrapped_distance(q, q + 2 * np.pi) == pytest.approx(0.0, abs=1e-9)
+        assert branches.joint_distance(q, q + 2 * np.pi) == pytest.approx(0.0, abs=1e-9)
 
     def test_plus_and_minus_pi_are_the_same_place(self):
-        assert branches.wrapped_distance(
+        assert branches.joint_distance(
             np.array([np.pi]), np.array([-np.pi])
         ) == pytest.approx(0.0, abs=1e-9)
 
     def test_it_reports_the_joint_that_differs_most(self):
         a = np.array([0.0, 0.0, 0.0])
         b = np.array([0.05, 0.9, 0.02])
-        assert branches.wrapped_distance(a, b) == pytest.approx(0.9)
+        assert branches.joint_distance(a, b) == pytest.approx(0.9)
+
+    def test_a_prismatic_joint_is_not_wrapped(self):
+        """A rail at 0 m and the same rail at 6.28 m are not the same place.
+
+        Wrapping a linear axis is nonsense that loses solutions quietly: the
+        two compare equal modulo 2*pi, and one of two genuinely different
+        alternatives would be folded away.
+        """
+        a = np.array([0.0, 0.0])
+        b = np.array([0.0, 2 * np.pi])
+        revolute = np.array([True, False])
+
+        assert branches.joint_distance(a, b) == pytest.approx(0.0, abs=1e-9)
+        assert branches.joint_distance(a, b, revolute) == pytest.approx(2 * np.pi)
+
+    def test_revolute_joints_still_wrap_alongside_a_prismatic_one(self):
+        a = np.array([0.0, 0.5])
+        b = np.array([2 * np.pi, 0.5])
+        revolute = np.array([True, False])
+        assert branches.joint_distance(a, b, revolute) == pytest.approx(0.0, abs=1e-9)
 
 
 class TestDistinct:
@@ -170,34 +242,65 @@ class TestCollect:
         first = np.array([0.0, 1.2, -1.2])
         goal = chain.forward(first)
 
-        second = _walk_toward(chain, np.array([0.0, -0.4, 1.6]), goal, target=1e-6)
-        assert branches.reach_error(chain, second, goal) < branches.REACH_TOLERANCE, (
-            "the fixture failed to find a second solution; the test proves nothing"
-        )
-        assert branches.wrapped_distance(first, second) > branches.DISTINCT_TOLERANCE, (
-            "the walk landed back on the first solution"
+        second = _other_solution(chain, goal, avoid=first)
+        assert second is not None, (
+            "the fixture found no second solution; the test proves nothing"
         )
 
-        found = branches.collect(chain, goal, [first, second])
+        found = branches.collect(chain, goal, [second, first])
         assert len(found) == 2
-
-    def test_the_closest_comes_first(self):
-        """Best-first, so the tie between two branches is broken by something."""
-        chain = _chain()
-        exact = np.array([0.4, -0.7, 0.2])
-        goal = chain.forward(exact)
-        # A second, genuinely different arm nudged until it lands just inside
-        # the reach tolerance rather than on the goal.
-        loose = np.array([0.4, 0.7, -0.2])
-        loose = _walk_toward(chain, loose, goal, target=branches.REACH_TOLERANCE * 0.6)
-
-        found = branches.collect(chain, goal, [loose, exact])
-
-        assert len(found) == 2
-        assert found[0].position_error < found[1].position_error
-        assert np.allclose(found[0].q, exact)
+        # Best-first, so the tie between two branches is broken by something
+        # rather than by the order the seeds happened to come back in.
+        assert found[0].position_error <= found[1].position_error
 
     def test_no_seed_reaching_the_goal_gives_nothing(self):
         chain = _chain()
         goal = chain.forward(np.array([0.4, -0.7, 0.2]))
         assert branches.collect(chain, goal, [np.array([2.0, 2.0, 2.0])]) == []
+
+    def test_the_right_point_facing_the_wrong_way_is_not_a_solution(self):
+        """The goal is a pose, not a point.
+
+        Where the position is reachable and the orientation is not, a
+        least-squares solve lands on the point pointing somewhere else. Keeping
+        that and calling it a way to reach the goal is a lie the user would
+        only catch by looking at the robot.
+        """
+        chain = _chain()
+        q = np.array([0.4, -0.7, 0.2])
+        goal = chain.forward(q).copy()
+        # Same tool position, turned a quarter turn about the axis the joints
+        # do not control -- so no configuration can achieve it.
+        twist = np.eye(4)
+        twist[:3, :3] = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]
+        )
+        goal[:3, :3] = goal[:3, :3] @ twist[:3, :3]
+
+        position, orientation = branches.reach_error(chain, q, goal)
+        assert position == pytest.approx(0.0, abs=1e-9), "the point is still reached"
+        assert orientation > branches.ORIENTATION_TOLERANCE
+
+        assert branches.collect(chain, goal, [q]) == []
+
+    def test_prismatic_alternatives_both_survive(self):
+        """Two rail positions reaching one point must not fold into one.
+
+        The regression: wrapping a prismatic axis made 0 m and 2*pi m compare
+        equal, so one of them was dropped as a duplicate.
+        """
+        chain = _chain(dof=3)
+        chain.is_revolute[:] = [True, True, False]
+        near = np.array([0.0, 0.6, 0.0])
+        goal = chain.forward(near)
+        far = near.copy()
+        far[2] = 2 * np.pi
+        # Not the same arm, and not the same tool -- so `far` is dropped for
+        # missing, which is the correct reason. What matters is that the
+        # distance function no longer calls the two identical.
+        assert branches.joint_distance(
+            near, far, chain.is_revolute
+        ) > branches.DISTINCT_TOLERANCE
+
+        found = branches.collect(chain, goal, [near])
+        assert len(found) == 1

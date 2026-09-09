@@ -30,18 +30,19 @@ import numpy as np
 
 from .chain import Chain
 
-#: How far apart two configurations must be to count as different, in radians
-#: on the joint that differs most. A tenth of a radian is a little under six
-#: degrees: far wider than solver noise between two runs onto the same branch,
-#: far narrower than the gap between genuinely different ones, which is
-#: typically most of a half-turn.
+#: How far apart two configurations must be to count as different, on the joint
+#: that differs most: radians for a revolute joint, metres for a prismatic one.
+#: A tenth of either is far wider than solver noise between two runs onto the
+#: same branch, and far narrower than the gap between genuinely different ones,
+#: which is typically most of a half-turn or most of a rail.
 DISTINCT_TOLERANCE = 0.1
 
 #: How close the tool has to land for a solution to count as having reached the
-#: goal, in metres. Generous next to the sub-micron a converged PyRoki solve
-#: actually manages -- this is here to throw out the seeds that did not
-#: converge at all, not to grade the ones that did.
+#: goal: metres of position, radians of orientation. Generous next to the
+#: sub-micron a converged PyRoki solve manages -- these are here to throw out
+#: the seeds that did not converge at all, not to grade the ones that did.
 REACH_TOLERANCE = 5e-4
+ORIENTATION_TOLERANCE = 1e-2
 
 #: Seeds to try. Enough that a 6R arm reliably turns up its distinct branches,
 #: few enough that the search stays interactive: PyRoki solves warm in ~5-20 ms,
@@ -79,35 +80,73 @@ def seed_configurations(chain: Chain, count: int, rng) -> np.ndarray:
     return lower + rng.random((count, chain.dof)) * span
 
 
-def wrapped_distance(a: np.ndarray, b: np.ndarray) -> float:
-    """The largest per-joint angle between two configurations, in radians.
+def joint_distance(a: np.ndarray, b: np.ndarray, is_revolute=None) -> float:
+    """The largest per-joint difference between two configurations.
 
-    Wrapped, because a joint at +pi and the same joint at -pi are the same
-    place. Continuous joints reach the same pose at any number of whole turns,
-    and without wrapping every one of those would be reported as a different
-    configuration.
+    Revolute joints are compared *wrapped*, because a joint at +pi and the same
+    joint at -pi are the same place, and a continuous joint reaches the same
+    pose at any number of whole turns -- without wrapping, every one of those
+    would be reported as a different configuration.
+
+    Prismatic joints are compared directly. Wrapping a linear axis would be
+    nonsense in a way that quietly loses solutions: a rail at 0 m and the same
+    rail at 6.28 m are not the same place, but modulo 2*pi they compare equal,
+    and one of two genuinely different alternatives would be dropped.
+
+    ``is_revolute`` defaults to all-revolute, which is what every arm without a
+    rail or a gripper is.
     """
-    return float(np.max(np.abs(np.angle(np.exp(1j * (np.asarray(a) - np.asarray(b)))))))
+    delta = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
+    if is_revolute is None:
+        wrapped = np.angle(np.exp(1j * delta))
+    else:
+        revolute = np.asarray(is_revolute, dtype=bool)
+        wrapped = np.where(revolute, np.angle(np.exp(1j * delta)), delta)
+    return float(np.max(np.abs(wrapped)))
 
 
-def is_distinct(q: np.ndarray, found, tolerance: float = DISTINCT_TOLERANCE) -> bool:
+def is_distinct(
+    q: np.ndarray, found, tolerance: float = DISTINCT_TOLERANCE, is_revolute=None
+) -> bool:
     """True if ``q`` is not already in ``found``."""
-    return all(wrapped_distance(q, other) >= tolerance for other in found)
+    return all(
+        joint_distance(q, other, is_revolute) >= tolerance for other in found
+    )
 
 
-def reach_error(chain: Chain, q: np.ndarray, goal: np.ndarray) -> float:
-    """How far the tool lands from ``goal`` for configuration ``q``, in metres.
+def reach_error(chain: Chain, q: np.ndarray, goal: np.ndarray) -> tuple[float, float]:
+    """How far the tool lands from ``goal``, as (metres, radians).
 
     Measured off the chain rather than taken from the solver's own report, so a
-    solution is checked against the rig the user is looking at. Position only:
-    a solution that reaches the point with the tool twisted is a different
-    configuration, not a failed one, and the pose cost has already weighted
-    orientation during the solve.
+    solution is checked against the rig the user is looking at.
+
+    Both halves, because the goal is a full pose. An earlier version measured
+    position alone, on the reasoning that a tool reaching the point with a
+    different twist is another configuration rather than a failure. That is
+    wrong: where the position is reachable and the orientation is not, the
+    least-squares solve returns a compromise that lands on the point pointing
+    the wrong way, and reporting it as a way to reach the goal is a lie the
+    user would only catch by looking at the robot.
     """
-    return float(np.linalg.norm(chain.forward(np.asarray(q))[:3, 3] - goal[:3, 3]))
+    actual = chain.forward(np.asarray(q))
+    position = float(np.linalg.norm(actual[:3, 3] - goal[:3, 3]))
+    # Angle of the residual rotation, via its trace. Clipped because a rotation
+    # matrix that has drifted a hair outside SO(3) would otherwise put arccos
+    # outside its domain and return nan, which compares false against every
+    # tolerance and would silently keep the solution.
+    relative = actual[:3, :3].T @ goal[:3, :3]
+    cosine = (float(np.trace(relative)) - 1.0) / 2.0
+    orientation = float(np.arccos(np.clip(cosine, -1.0, 1.0)))
+    return position, orientation
 
 
-def collect(chain: Chain, goal: np.ndarray, solved, tolerance: float = REACH_TOLERANCE):
+def collect(
+    chain: Chain,
+    goal: np.ndarray,
+    solved,
+    tolerance: float = REACH_TOLERANCE,
+    orientation_tolerance: float = ORIENTATION_TOLERANCE,
+):
     """Fold an iterable of candidate configurations into distinct solutions.
 
     ``solved`` yields configurations already put through a solver; this decides
@@ -121,10 +160,10 @@ def collect(chain: Chain, goal: np.ndarray, solved, tolerance: float = REACH_TOL
     solutions: list[Solution] = []
     for q in solved:
         q = np.asarray(q, dtype=float)
-        error = reach_error(chain, q, goal)
-        if error > tolerance:
+        position, orientation = reach_error(chain, q, goal)
+        if position > tolerance or orientation > orientation_tolerance:
             continue
-        if not is_distinct(q, [s.q for s in solutions]):
+        if not is_distinct(q, [s.q for s in solutions], is_revolute=chain.is_revolute):
             continue
-        solutions.append(Solution(q=q, position_error=error))
+        solutions.append(Solution(q=q, position_error=position))
     return sorted(solutions, key=lambda s: s.position_error)

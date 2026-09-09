@@ -369,6 +369,12 @@ class KINEMA_OT_apply_solution(KinemaRigOperator):
         if index < 0:
             # Wraps, so cycling with the arrows never dead-ends.
             index = (int(rig.kinema_active_solution) + self.step) % len(stored)
+        elif index >= len(stored):
+            # Only reachable by calling the operator directly -- the arrows
+            # wrap and cannot get here -- but an out-of-range index used to
+            # raise IndexError out of execute rather than report anything.
+            self.report({"ERROR"}, f"There is no solution {index + 1}")
+            return {"CANCELLED"}
 
         solver = manager.get_solver(rig, rig.get(builder.PROP_IK_BONE))
         if solver is None or len(stored[index]) != solver.chain.dof:
@@ -524,6 +530,10 @@ ELBOW_SUFFIX = ".elbow"
 #: robot is no longer being asked to reach.
 PROP_SOLUTIONS = "kinema_solutions"
 PROP_SOLUTIONS_GOAL = "kinema_solutions_goal"
+#: How wide each stored solution is. Kept so reading them back needs no solver:
+#: the panel reads them on every redraw, and building a solver there would put
+#: chain extraction on the UI thread every time the cache had been invalidated.
+PROP_SOLUTIONS_DOF = "kinema_solutions_dof"
 
 
 def _elbow_bone_name(joint: str) -> str:
@@ -537,6 +547,7 @@ def _default_elbow_joint(chain_obj) -> str:
 
 def _store_solutions(rig, solver, found) -> None:
     rig[PROP_SOLUTIONS] = [float(v) for s in found for v in s.q]
+    rig[PROP_SOLUTIONS_DOF] = int(solver.chain.dof)
     rig[PROP_SOLUTIONS_GOAL] = [
         float(v)
         for v in _np4(rig.pose.bones[solver.ik_bone].matrix).flatten()
@@ -545,13 +556,16 @@ def _store_solutions(rig, solver, found) -> None:
 
 
 def _read_solutions(rig) -> list[list[float]]:
-    """The stored solutions, reshaped by the current chain's width."""
+    """The stored solutions, reshaped by the width they were stored at.
+
+    Recorded rather than re-derived, because the panel calls this on every
+    redraw and asking the manager for a solver would build one on a cache miss
+    -- chain extraction on the UI thread, on the first redraw after anything
+    invalidated the cache.
+    """
     flat = rig.get(PROP_SOLUTIONS)
-    if not flat:
-        return []
-    solver = manager.get_solver(rig, rig.get(builder.PROP_IK_BONE))
-    dof = solver.chain.dof if solver is not None else 0
-    if dof <= 0 or len(flat) % dof:
+    dof = int(rig.get(PROP_SOLUTIONS_DOF, 0))
+    if not flat or dof <= 0 or len(flat) % dof:
         return []
     values = [float(v) for v in flat]
     return [values[i : i + dof] for i in range(0, len(values), dof)]

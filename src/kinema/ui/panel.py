@@ -663,10 +663,8 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
     @staticmethod
     def _draw_elbow(layout, rig) -> None:
         """The pole-style control, on redundant arms only."""
-        from ..solver import manager
-
-        solver = manager.get_solver(rig)
-        if solver is None or solver.chain.dof <= 6:
+        dof = _chain_dof(rig)
+        if dof <= 6:
             # Six joints against a six-DoF pose leaves no freedom over, so the
             # control would have nothing to steer. Not an error, just absent.
             return
@@ -680,9 +678,7 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             body.operator(
                 "kinema.add_elbow_target", text="Add Elbow Target", icon="CON_KINEMATIC"
             )
-            body.label(
-                text=f"{solver.chain.dof} joints: the elbow is free.", icon="BLANK1"
-            )
+            body.label(text=f"{dof} joints: the elbow is free.", icon="BLANK1")
             return
 
         body.label(
@@ -719,6 +715,26 @@ def manager_state(rig):
     from ..solver import manager
 
     return manager._cache.get(rig.name)
+
+
+def _chain_dof(rig) -> int:
+    """How many joints the solver drives, without building one to find out.
+
+    ``draw`` runs on every region redraw, and ``manager.get_solver`` builds and
+    caches on a miss -- so calling it here put chain extraction on the UI thread
+    on the first redraw after anything invalidated the cache, including simply
+    reopening the file.
+
+    The cached solver is exact when there is one. Otherwise the rig's own joint
+    bones are the right answer for every rig whose IK aims at the tool, which is
+    the default and the overwhelming case; a tip set part-way up the chain makes
+    this an over-estimate, and the operator behind the button re-checks against
+    the real chain and refuses with a reason.
+    """
+    solver = manager_state(rig)
+    if solver is not None:
+        return solver.chain.dof
+    return len(builder.joint_bones(rig))
 
 
 def _solve_budget_ms() -> float:

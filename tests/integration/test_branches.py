@@ -98,20 +98,32 @@ class TestFindingSolutions:
         assert ik_ops.solution_count(arm6) > 1
 
     def test_every_solution_actually_reaches_the_goal(
-        self, arm6, builder, ik_ops, manager, chain_mod
+        self, arm6, builder, ik_ops, manager, addon
     ):
-        """A configuration that misses is not an alternative, it is a failure."""
+        """A configuration that misses is not an alternative, it is a failure.
+
+        Orientation as well as position. Checking the point alone would pass a
+        configuration that arrives there facing somewhere else, which a
+        least-squares solve will happily return when the orientation is out of
+        reach -- and this test would have called it a solution.
+        """
         import bpy
+
+        branches = importlib.import_module(f"{addon.__name__}.solver.branches")
 
         _set_q(builder, arm6, REACHABLE)
         bpy.ops.kinema.snap_ik()
-        goal = _tool(builder, arm6).copy()
+        bpy.context.view_layer.update()
+        solver = manager.get_solver(arm6)
+        goal = solver.chain.forward(_q(builder, arm6))
         bpy.ops.kinema.find_solutions(seeds=30)
 
-        solver = manager.get_solver(arm6)
         for values in ik_ops._read_solutions(arm6):
-            landed = solver.chain.forward(np.array(values))[:3, 3]
-            assert np.allclose(landed, goal, atol=1e-3), values
+            position, orientation = branches.reach_error(
+                solver.chain, np.array(values), goal
+            )
+            assert position < branches.REACH_TOLERANCE, values
+            assert orientation < branches.ORIENTATION_TOLERANCE, values
 
     def test_the_search_leaves_the_pose_alone(self, arm6, builder):
         """It runs dozens of solves. None of them may be what you are left with."""
@@ -153,6 +165,36 @@ class TestFindingSolutions:
         assert arm6.kinema_active_solution == count - 1, "stepping back did not wrap"
         bpy.ops.kinema.apply_solution(step=1)
         assert arm6.kinema_active_solution == 0
+
+    def test_an_index_past_the_end_is_refused(self, arm6, builder, ik_ops):
+        """It used to raise IndexError out of execute rather than report."""
+        import bpy
+
+        _set_q(builder, arm6, REACHABLE)
+        bpy.ops.kinema.snap_ik()
+        bpy.ops.kinema.find_solutions(seeds=20)
+
+        with pytest.raises(RuntimeError, match="no solution"):
+            bpy.ops.kinema.apply_solution(index=ik_ops.solution_count(arm6) + 5)
+
+    def test_reading_them_back_needs_no_solver(self, arm6, builder, ik_ops, manager):
+        """The panel reads these on every redraw.
+
+        Deriving the width from a solver meant building one on a cache miss --
+        chain extraction on the UI thread, on the first redraw after anything
+        invalidated the cache, which reopening a file does.
+        """
+        import bpy
+
+        _set_q(builder, arm6, REACHABLE)
+        bpy.ops.kinema.snap_ik()
+        bpy.ops.kinema.find_solutions(seeds=20)
+        expected = ik_ops.solution_count(arm6)
+        assert expected > 0
+
+        manager.invalidate()
+        assert not manager._cache, "the cache did not actually clear"
+        assert ik_ops.solution_count(arm6) == expected
 
     def test_a_moved_target_makes_them_stale(self, arm6, builder, ik_ops):
         """They describe one pose. Move it and they describe nothing."""
