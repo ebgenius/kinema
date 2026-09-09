@@ -42,6 +42,11 @@ def chain_mod(addon):
     return importlib.import_module(f"{addon.__name__}.solver.chain")
 
 
+@pytest.fixture
+def handlers(addon):
+    return importlib.import_module(f"{addon.__name__}.handlers")
+
+
 def _rig_from(fixture_dir, builder, name: str):
     import bpy
 
@@ -249,6 +254,37 @@ def arm7(addon, fixture_dir, clean_scene, builder):
 REDUNDANT = [0.3, -0.8, 0.5, 1.0, 0.2, 0.6, 0.0]
 
 
+def _settle(handlers, rig) -> None:
+    """Get the rig to the state a user is in: already solved once, at rest.
+
+    This matters more than it looks. ``solve_rig`` skips a rig whose goal has
+    not changed, and with nothing recorded yet the *first* call always solves --
+    so a test that drags before any solve has happened will see the arm move
+    whether or not the drag was what moved it.
+    """
+    import bpy
+
+    handlers.solve_rig(rig, force=True)
+    bpy.context.view_layer.update()
+
+
+def _drag(handlers, rig, builder, delta) -> None:
+    """Move the elbow control and let live IK respond, as a viewport drag does.
+
+    ``solve_rig`` is called rather than left to the depsgraph handler because
+    the handler drops updates on a time budget -- on a slow machine four in
+    five -- which would make the assertions below intermittent.
+    """
+    import bpy
+    from mathutils import Vector
+
+    elbow = rig.pose.bones[rig.get(builder.PROP_ELBOW_BONE)]
+    elbow.matrix.translation = elbow.matrix.translation + Vector(delta)
+    bpy.context.view_layer.update()
+    handlers.solve_rig(rig)
+    bpy.context.view_layer.update()
+
+
 class TestElbowTarget:
     def test_a_six_axis_arm_is_refused(self, arm6):
         """Six joints against a six-DoF pose leaves nothing to steer."""
@@ -274,60 +310,138 @@ class TestElbowTarget:
         # arm it steers would chase itself.
         assert arm7.data.bones[name].parent.name == builder.ROOT_BONE
 
+    def test_adding_one_does_not_repose_the_arm(self, arm7, builder, handlers):
+        """Creating a control is not a pose change.
+
+        The elbow goal is a position the elbow is pulled toward, so wherever
+        the control lands becomes something the next solve chases. Landing it
+        clear of the joint therefore moved the arm the instant it was added --
+        16 degrees on this fixture -- undoing whatever the animator had set.
+        It lands on the joint, where the goal starts satisfied.
+        """
+        import bpy
+
+        _set_q(builder, arm7, REDUNDANT)
+        bpy.ops.kinema.snap_ik()
+        arm7.kinema_ik_enabled = True
+        _settle(handlers, arm7)
+        before = _q(builder, arm7)
+
+        bpy.ops.kinema.add_elbow_target()
+        handlers.solve_rig(arm7)
+        bpy.context.view_layer.update()
+
+        moved = float(np.max(np.abs(np.degrees(_q(builder, arm7) - before))))
+        assert moved < 1.0, f"adding the control moved the arm {moved:.1f} degrees"
+
     def test_dragging_it_moves_the_elbow_and_not_the_tool(
-        self, arm7, builder, manager
+        self, arm7, builder, handlers
     ):
         """The claim the whole control rests on.
 
         A redundant arm can reconfigure around a tool that stands still, and
         the elbow goal is weighted far below the tool precisely so it can only
         move where that freedom already exists.
+
+        Settled first, on purpose. An earlier version dragged straight after
+        switching live IK on, which made the drag the rig's first solve -- and
+        the first solve runs whatever moved, so the test passed against a build
+        where dragging the elbow did nothing at all.
         """
         import bpy
-        from mathutils import Vector
 
         _set_q(builder, arm7, REDUNDANT)
         bpy.ops.kinema.snap_ik()
         assert "FINISHED" in bpy.ops.kinema.add_elbow_target()
         arm7.kinema_ik_enabled = True
-        bpy.context.view_layer.update()
+        _settle(handlers, arm7)
 
         joint = arm7.get(builder.PROP_ELBOW_JOINT)
         tool_before = _tool(builder, arm7).copy()
         elbow_before = np.array(arm7.pose.bones[joint].matrix.translation)
 
-        elbow = arm7.pose.bones[arm7.get(builder.PROP_ELBOW_BONE)]
-        elbow.matrix.translation = elbow.matrix.translation + Vector((0.0, 0.6, 0.3))
-        for _ in range(3):
-            bpy.context.view_layer.update()
+        _drag(handlers, arm7, builder, (0.0, 0.3, 0.15))
 
-        tool_after = _tool(builder, arm7)
-        elbow_after = np.array(arm7.pose.bones[joint].matrix.translation)
-
-        moved = float(np.linalg.norm(elbow_after - elbow_before))
-        drift = float(np.linalg.norm(tool_after - tool_before))
+        moved = float(np.linalg.norm(
+            np.array(arm7.pose.bones[joint].matrix.translation) - elbow_before
+        ))
+        drift = float(np.linalg.norm(_tool(builder, arm7) - tool_before))
         assert moved > 0.02, f"the elbow did not follow ({moved * 1000:.2f} mm)"
         assert drift < 1e-3, f"the tool gave way ({drift * 1000:.3f} mm)"
 
-    def test_zero_strength_stops_it_steering(self, arm7, builder):
+    def test_every_drag_steers_it_not_just_the_first(
+        self, arm7, builder, handlers
+    ):
+        """The regression: the control worked once per session, then stopped.
+
+        Live IK skips a rig whose goal has not changed, and the elbow target
+        was not part of what "the goal" meant -- so every drag after the first
+        solve compared equal to the last one and was thrown away. Nothing about
+        the elbow cost was wrong; the solve simply never ran.
+        """
+        import bpy
+
+        _set_q(builder, arm7, REDUNDANT)
+        bpy.ops.kinema.snap_ik()
+        bpy.ops.kinema.add_elbow_target()
+        arm7.kinema_ik_enabled = True
+        _settle(handlers, arm7)
+
+        joint = arm7.get(builder.PROP_ELBOW_JOINT)
+        for step in range(3):
+            before = np.array(arm7.pose.bones[joint].matrix.translation)
+            _drag(handlers, arm7, builder, (0.0, 0.15, 0.0))
+            moved = float(np.linalg.norm(
+                np.array(arm7.pose.bones[joint].matrix.translation) - before
+            ))
+            assert moved > 0.005, (
+                f"drag {step + 1} did nothing ({moved * 1000:.2f} mm)"
+            )
+
+    def test_the_strength_slider_reaches_the_solver(self, arm7, builder, handlers):
+        """It scales a cost, so changing it changes the answer.
+
+        Same failure as the bone's: a property that nothing watches leaves the
+        goal comparing equal, and the slider looks like it does nothing.
+        """
+        import bpy
+
+        _set_q(builder, arm7, REDUNDANT)
+        bpy.ops.kinema.snap_ik()
+        bpy.ops.kinema.add_elbow_target()
+        arm7.kinema_ik_enabled = True
+        _settle(handlers, arm7)
+        _drag(handlers, arm7, builder, (0.0, 0.3, 0.0))
+
+        joint = arm7.get(builder.PROP_ELBOW_JOINT)
+        before = np.array(arm7.pose.bones[joint].matrix.translation)
+
+        # Solved straight off the assignment, with no depsgraph update in
+        # between: an update would let the live handler do the solve itself and
+        # this would then pass without the property change having reached
+        # anything.
+        arm7.kinema_elbow_strength = 8.0
+        assert handlers.solve_rig(arm7), "the new strength never reached a solve"
+        bpy.context.view_layer.update()
+
+        after = np.array(arm7.pose.bones[joint].matrix.translation)
+        assert float(np.linalg.norm(after - before)) > 1e-4
+
+    def test_zero_strength_stops_it_steering(self, arm7, builder, handlers):
         """The slider has to actually mean something at both ends."""
         import bpy
-        from mathutils import Vector
 
         _set_q(builder, arm7, REDUNDANT)
         bpy.ops.kinema.snap_ik()
         bpy.ops.kinema.add_elbow_target()
         arm7.kinema_elbow_strength = 0.0
         arm7.kinema_ik_enabled = True
-        bpy.context.view_layer.update()
+        _settle(handlers, arm7)
 
         joint = arm7.get(builder.PROP_ELBOW_JOINT)
         before = np.array(arm7.pose.bones[joint].matrix.translation)
 
-        elbow = arm7.pose.bones[arm7.get(builder.PROP_ELBOW_BONE)]
-        elbow.matrix.translation = elbow.matrix.translation + Vector((0.0, 0.6, 0.3))
-        for _ in range(3):
-            bpy.context.view_layer.update()
+        _drag(handlers, arm7, builder, (0.0, 0.6, 0.3))
 
         after = np.array(arm7.pose.bones[joint].matrix.translation)
         assert np.allclose(after, before, atol=1e-3)

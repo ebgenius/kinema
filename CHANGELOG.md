@@ -33,9 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   continuous family while the tool stands still — so **Add Elbow Target** gives you a bone
   to drag, and the arm reconfigures around a tool that does not move.
 
-  It is a soft position goal on the elbow's link, weighted far below the tool's, so the
-  elbow may only move where the arm has freedom left over. An attractor rather than an
-  angle reference: the elbow is pulled *toward* it rather than aimed *through* it.
+  It is a soft position goal on the elbow's link, weighted far below the tool's, so at the
+  default strength the elbow moves through the null space while the tool holds to well under
+  a millimetre. An attractor rather than an angle reference: the elbow is pulled *toward* it
+  rather than aimed *through* it, and the bone carries no constraint — put it where you want
+  the elbow, and the elbow reaches for it as far as the arm's leftover freedom allows. It
+  lands on the elbow, so adding one does not repose the robot.
+
+  **Strength** is a cost weight rather than a null-space projection, so turning it up trades
+  tool accuracy for elbow travel — about 3 mm of tool error at 5 and 11 mm at 10, for very
+  little extra reach. The solve readout shows the error while you make the trade.
 
   Offered only when the chain has more joints than the task needs — on a six-axis arm there
   is nothing left to steer, so the control is absent rather than present and inert — and it

@@ -684,6 +684,11 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         body.label(
             text=f"Steering '{rig.get(builder.PROP_ELBOW_JOINT, '?')}'", icon="BONE_DATA"
         )
+        # Said out loud because the control looks broken otherwise: the bone has
+        # no constraint on it, so it goes wherever it is dragged and the elbow
+        # does not follow it all the way. That is what an attractor is, and a
+        # pole target behaves the same, but nothing on screen said so.
+        body.label(text="The elbow reaches for it as far as it can", icon="BLANK1")
         body.prop(rig, "kinema_elbow_strength")
         if getattr(rig, "kinema_solver_mode", "PYROKI") != "PYROKI":
             body.label(text="Only the PyRoki solver steers it", icon="ERROR")
@@ -786,6 +791,20 @@ def _on_ik_tip_changed(rig, context) -> None:
     from .. import handlers
 
     handlers.reset(rig.name)
+
+
+def _on_elbow_strength_changed(rig, context) -> None:
+    """Re-solve when the pull changes, not only when the bone moves.
+
+    The strength scales a cost, so changing it changes the answer. A property
+    registered without an update callback tags nothing for re-evaluation, so
+    the live handler would never run and the slider would look inert in exactly
+    the way dragging the elbow bone used to.
+    """
+    from .. import handlers
+
+    handlers.reset(rig.name)
+    rig.update_tag()
 
 
 #: Guards the revert below against the callback it would otherwise re-enter,
@@ -901,12 +920,15 @@ def register_props() -> None:
         name="Elbow Strength",
         description=(
             "How hard the elbow target pulls, against the tool's own weight of "
-            "50. Well below it on purpose: the elbow may only move where the "
-            "arm has freedom left over, never by giving up the tool pose"
+            "50. Low on purpose: the elbow then moves only where the arm has "
+            "freedom left over. Turning it up does move the tool off its "
+            "target -- around 3 mm at 5, and 11 mm at 10. Watch the solve "
+            "readout for the tool error"
         ),
         default=2.0,
         min=0.0,
         soft_max=10.0,
+        update=_on_elbow_strength_changed,
     )
     bpy.types.Object.kinema_tcp_parent = StringProperty(
         name="Parent Bone",

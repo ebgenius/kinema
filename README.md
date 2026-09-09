@@ -160,12 +160,23 @@ continuous family while the tool stands still. That is a control, not a curiosit
 Blender animators already have one for it: the pole target on a character's arm.
 
 **Add Elbow Target** creates a bone you drag. It is a soft position goal on the elbow's link,
-weighted far below the tool's — so the elbow can only move where the arm has freedom left
-over, which on a redundant arm is exactly the null space. Drag it and the arm reconfigures
-around a tool that does not move.
+weighted far below the tool's — so at the default strength the elbow moves through the null
+space and the tool holds to well under a millimetre. Drag it and the arm reconfigures around
+a tool that stays put. It lands on the elbow itself, so adding it changes nothing until you
+move it; the rig draws its bones in front of the geometry, so it is still there to grab.
 
 It is an attractor rather than Blender's angle-reference pole, so the elbow is pulled
-*toward* it rather than aimed *through* it. Close enough that the muscle memory transfers.
+*toward* it rather than aimed *through* it. Close enough that the muscle memory transfers —
+with one consequence worth knowing: the bone does not stick to the elbow and is not supposed
+to. It has no constraint on it. Put it where you want the elbow to go, and the elbow reaches
+for it as far as the arm's leftover freedom allows, then stops. On a seven-axis arm that
+freedom is a single circle, so a target off that circle is approached, never met.
+
+**Strength** is a cost weight, not a null-space projection, so turning it up does start
+moving the tool: on the `arm7` fixture with the target dragged well out of reach, the tool
+sits about 0.5 mm off its goal at the default 2, 3 mm at 5, and 11 mm at 10. It buys little
+extra elbow travel in exchange — the null space runs out first. The solve readout shows the
+tool error, so the trade is visible while you make it.
 
 Offered only when the chain has more joints than the task needs. On a six-axis arm there is
 no freedom left after a full pose, so the control would have nothing to steer, and it is

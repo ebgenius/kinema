@@ -151,9 +151,9 @@ class RigSolver:
 
         Only offered on a redundant chain. With six joints against a six-DoF
         tool pose there is no freedom left over, so an elbow goal could only be
-        satisfied by giving up some of the tool -- and the whole point of
-        weighting it far below the tool is that it never does that. It would be
-        a control that visibly did nothing.
+        satisfied by dragging the tool off its target -- which at the default
+        weight it is far too weak to do to any useful degree. It would be a
+        control that visibly did nothing while quietly costing accuracy.
         """
         bone_name = rig.get(builder.PROP_ELBOW_BONE)
         if not bone_name or self.chain.dof <= 6:

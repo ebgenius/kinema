@@ -400,8 +400,14 @@ class KINEMA_OT_add_elbow_target(KinemaRigOperator):
     A seven-axis arm reaches a pose an infinite number of ways, the elbow
     sweeping through a family while the tool stands still. Blender animators
     already steer a character's elbow with a pole target, so this is one: a
-    bone the elbow is drawn toward, weighted far below the tool so it can only
-    move where the arm has freedom left over.
+    bone the elbow is drawn toward, weighted far below the tool so that at the
+    default strength it moves the elbow within that family and barely disturbs
+    the tool.
+
+    An attractor, not a handle. The elbow reaches for the bone as far as the
+    arm's leftover freedom allows and then stops, so the two do not meet and
+    are not meant to -- the same as a pole target, which does not sit on the
+    elbow either.
     """
 
     bl_idname = "kinema.add_elbow_target"
@@ -438,11 +444,16 @@ class KINEMA_OT_add_elbow_target(KinemaRigOperator):
             return {"CANCELLED"}
 
         context.view_layer.update()
-        # Out to the side of the joint, so it arrives somewhere you can grab
-        # rather than buried inside the arm's own casing.
-        head = rig.pose.bones[joint].matrix.translation.copy()
+        # On the joint, not out to the side of it. The goal is then already
+        # satisfied the moment the control exists, so creating one does not
+        # repose the robot -- landing it a quarter of the rig's size above the
+        # joint pulled the arm through 16 degrees on the arm7 fixture before
+        # the user had touched anything, which is not what "Add" should do.
+        #
+        # Buried in the arm's own casing is fine here: the rig already draws
+        # its bones in front of geometry, for exactly this reason.
+        landing = rig.pose.bones[joint].matrix.translation.copy()
         reach = max(rig.dimensions) if any(rig.dimensions) else 1.0
-        landing = head + Vector((0.0, 0.0, reach * 0.25))
 
         name = _elbow_bone_name(joint)
         previous_active = context.view_layer.objects.active

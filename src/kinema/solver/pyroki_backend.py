@@ -49,10 +49,19 @@ REST_WEIGHT = 0.001
 #: singular configurations. Costs roughly 2.5x the solve time.
 MANIPULABILITY_WEIGHT = 1e-4
 #: Default pull of the elbow target, against POSITION_WEIGHT's 50 for the tool.
-#: Deliberately far weaker: the elbow goal must never win an argument with the
-#: tool, because a tool that missed to put the elbow somewhere nicer is not a
-#: trade any animator wants. At this ratio the elbow moves only where the arm
-#: has freedom left over -- which on a redundant arm is exactly the null space.
+#:
+#: This is a soft cost competing with the pose cost, not a null-space
+#: projection, so it does not leave the tool untouched -- it only makes the tool
+#: expensive to move. Measured on the arm7 fixture with the elbow target dragged
+#: well outside the reachable family, which is the worst case and an ordinary
+#: thing to do with a control you drag freely:
+#:
+#:     strength   0.5    2.0     5.0    10.0    20.0
+#:     tool error 0.04   0.55    3.3    11.4    30.7   mm
+#:
+#: 2.0 keeps the tool inside a millimetre while still steering. Higher values
+#: buy very little extra elbow travel -- the null space runs out first -- and
+#: everything past that point is paid for out of the tool.
 ELBOW_WEIGHT = 2.0
 
 
@@ -158,8 +167,10 @@ class PyrokiSolver:
 
         ``elbow`` is an optional ``(link index, position, weight)`` pulling one
         further link toward a point. It is a *soft* goal weighted far below the
-        tool's, so on a redundant arm it selects among the configurations that
-        already reach the tool, rather than trading the tool away for it.
+        tool's, so on a redundant arm it mostly selects among the configurations
+        that already reach the tool -- but it is a competing cost, not a
+        null-space projection, so a strong enough pull does move the tool. See
+        :data:`ELBOW_WEIGHT` for what that costs at each strength.
         """
         solve_fn, jnp = self._solver(avoid_singularities, elbow is not None)
 
