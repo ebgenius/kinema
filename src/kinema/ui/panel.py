@@ -17,6 +17,7 @@ import bpy
 from bpy.props import (
     BoolProperty,
     EnumProperty,
+    FloatProperty,
     FloatVectorProperty,
     IntProperty,
     PointerProperty,
@@ -588,8 +589,6 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         return active_rig(context) is not None
 
     def draw(self, context: bpy.types.Context) -> None:
-        from .. import handlers
-
         layout = self.layout
         rig = active_rig(context)
         ik_bone = rig.get(builder.PROP_IK_BONE)
@@ -626,7 +625,78 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         row.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
         row.operator("kinema.remove_ik", text="", icon="X")
 
+        self._draw_solutions(layout, rig)
+        self._draw_elbow(layout, rig)
+
         layout.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
+        self._draw_readout(layout, rig)
+
+    @staticmethod
+    def _draw_solutions(layout, rig) -> None:
+        """Cycle among the configurations that reach this pose."""
+        from ..ops import ik as ik_ops
+
+        header, body = layout.panel("kinema_solutions", default_closed=True)
+        header.label(text="Configuration")
+        if body is None:
+            return
+
+        count = ik_ops.solution_count(rig)
+        body.operator(
+            "kinema.find_solutions", text="Find Solutions", icon="VIEWZOOM"
+        )
+        if not count:
+            body.label(text="An arm reaches a pose several ways.", icon="BLANK1")
+            return
+
+        row = body.row(align=True)
+        row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
+        current = int(rig.kinema_active_solution)
+        row.label(text=f"Solution {min(current + 1, count)} of {count}")
+        row.operator("kinema.apply_solution", text="", icon="TRIA_RIGHT").step = 1
+
+        if ik_ops.solutions_are_stale(rig):
+            # They describe how to reach one pose. The target has moved, so
+            # they describe nothing -- better said than silently offered.
+            body.label(text="The target moved; search again", icon="ERROR")
+
+    @staticmethod
+    def _draw_elbow(layout, rig) -> None:
+        """The pole-style control, on redundant arms only."""
+        dof = _chain_dof(rig)
+        if dof <= 6:
+            # Six joints against a six-DoF pose leaves no freedom over, so the
+            # control would have nothing to steer. Not an error, just absent.
+            return
+
+        header, body = layout.panel("kinema_elbow", default_closed=True)
+        header.label(text="Elbow Target")
+        if body is None:
+            return
+
+        if not rig.get(builder.PROP_ELBOW_BONE):
+            body.operator(
+                "kinema.add_elbow_target", text="Add Elbow Target", icon="CON_KINEMATIC"
+            )
+            body.label(text=f"{dof} joints: the elbow is free.", icon="BLANK1")
+            return
+
+        body.label(
+            text=f"Steering '{rig.get(builder.PROP_ELBOW_JOINT, '?')}'", icon="BONE_DATA"
+        )
+        # Said out loud because the control looks broken otherwise: the bone has
+        # no constraint on it, so it goes wherever it is dragged and the elbow
+        # does not follow it all the way. That is what an attractor is, and a
+        # pole target behaves the same, but nothing on screen said so.
+        body.label(text="The elbow reaches for it as far as it can", icon="BLANK1")
+        body.prop(rig, "kinema_elbow_strength")
+        if getattr(rig, "kinema_solver_mode", "PYROKI") != "PYROKI":
+            body.label(text="Only the PyRoki solver steers it", icon="ERROR")
+        body.operator("kinema.remove_elbow_target", text="Remove", icon="X")
+
+    @staticmethod
+    def _draw_readout(layout, rig) -> None:
+        from .. import handlers
 
         elapsed = handlers.last_solve_ms(rig)
         solver = manager_state(rig)
@@ -650,6 +720,26 @@ def manager_state(rig):
     from ..solver import manager
 
     return manager._cache.get(rig.name)
+
+
+def _chain_dof(rig) -> int:
+    """How many joints the solver drives, without building one to find out.
+
+    ``draw`` runs on every region redraw, and ``manager.get_solver`` builds and
+    caches on a miss -- so calling it here put chain extraction on the UI thread
+    on the first redraw after anything invalidated the cache, including simply
+    reopening the file.
+
+    The cached solver is exact when there is one. Otherwise the rig's own joint
+    bones are the right answer for every rig whose IK aims at the tool, which is
+    the default and the overwhelming case; a tip set part-way up the chain makes
+    this an over-estimate, and the operator behind the button re-checks against
+    the real chain and refuses with a reason.
+    """
+    solver = manager_state(rig)
+    if solver is not None:
+        return solver.chain.dof
+    return len(builder.joint_bones(rig))
 
 
 def _solve_budget_ms() -> float:
@@ -701,6 +791,20 @@ def _on_ik_tip_changed(rig, context) -> None:
     from .. import handlers
 
     handlers.reset(rig.name)
+
+
+def _on_elbow_strength_changed(rig, context) -> None:
+    """Re-solve when the pull changes, not only when the bone moves.
+
+    The strength scales a cost, so changing it changes the answer. A property
+    registered without an update callback tags nothing for re-evaluation, so
+    the live handler would never run and the slider would look inert in exactly
+    the way dragging the elbow bone used to.
+    """
+    from .. import handlers
+
+    handlers.reset(rig.name)
+    rig.update_tag()
 
 
 #: Guards the revert below against the callback it would otherwise re-enter,
@@ -804,6 +908,28 @@ def register_props() -> None:
         default=False,
         update=_on_meshes_at_file_origin,
     )
+    # Which of the found configurations is showing. An index rather than the
+    # values themselves, so the arrows can cycle and the list can highlight.
+    bpy.types.Object.kinema_active_solution = IntProperty(
+        name="Solution",
+        description="Which of the configurations found is currently applied",
+        default=0,
+        min=0,
+    )
+    bpy.types.Object.kinema_elbow_strength = FloatProperty(
+        name="Elbow Strength",
+        description=(
+            "How hard the elbow target pulls, against the tool's own weight of "
+            "50. Low on purpose: the elbow then moves only where the arm has "
+            "freedom left over. Turning it up does move the tool off its "
+            "target -- around 3 mm at 5, and 11 mm at 10. Watch the solve "
+            "readout for the tool error"
+        ),
+        default=2.0,
+        min=0.0,
+        soft_max=10.0,
+        update=_on_elbow_strength_changed,
+    )
     bpy.types.Object.kinema_tcp_parent = StringProperty(
         name="Parent Bone",
         description="Joint bone the tool centre point rides",
@@ -841,6 +967,8 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_ik_tip
     del bpy.types.Object.kinema_active_bone_index
     del bpy.types.Object.kinema_meshes_at_file_origin
+    del bpy.types.Object.kinema_active_solution
+    del bpy.types.Object.kinema_elbow_strength
     del bpy.types.Object.kinema_tcp_parent
     del bpy.types.Object.kinema_tcp_offset
     del bpy.types.Object.kinema_tcp_rpy

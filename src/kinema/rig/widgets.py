@@ -155,6 +155,27 @@ def _ik_target_widget() -> bpy.types.Object:
     return _make_widget("ik-target", corners, edges)
 
 
+def _elbow_target_widget() -> bpy.types.Object:
+    """A diamond: the elbow goal.
+
+    Deliberately not the IK target's cube. Both are draggable goals and they
+    sit near each other on a redundant arm, so telling them apart at a glance
+    matters more than either shape being pretty.
+    """
+    s = 0.4
+    points = [
+        (0.0, 0.5 + s, 0.0), (0.0, 0.5 - s, 0.0),
+        (s, 0.5, 0.0), (-s, 0.5, 0.0),
+        (0.0, 0.5, s), (0.0, 0.5, -s),
+    ]
+    edges = [
+        (0, 2), (0, 3), (0, 4), (0, 5),
+        (1, 2), (1, 3), (1, 4), (1, 5),
+        (2, 4), (4, 3), (3, 5), (5, 2),
+    ]
+    return _make_widget("elbow-target", points, edges)
+
+
 def ensure_widgets() -> dict[str, bpy.types.Object]:
     """Create the widget objects if absent and return them by role."""
     return {
@@ -163,4 +184,5 @@ def ensure_widgets() -> dict[str, bpy.types.Object]:
         "root": _root_widget(),
         "tcp": _tcp_widget(),
         "ik_target": _ik_target_widget(),
+        "elbow_target": _elbow_target_widget(),
     }
