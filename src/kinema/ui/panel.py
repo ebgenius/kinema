@@ -229,6 +229,13 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
                 row.prop(pose_bone, "rotation_euler", index=1, text=pose_bone.name)
             else:
                 row.prop(pose_bone, "location", index=1, text=pose_bone.name)
+            # Beside the slider it governs: a held joint is the one you move
+            # here, or by dragging its bone, while IK solves the rest.
+            held = getattr(pose_bone, "kinema_ik_hold", False)
+            row.prop(
+                pose_bone, "kinema_ik_hold", text="",
+                icon="PINNED" if held else "UNPINNED", emboss=False,
+            )
 
             limited = builder.PROP_LOWER in bone
             icon = "CON_ROTLIMIT" if limited else "BLANK1"
@@ -626,7 +633,7 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         row.operator("kinema.remove_ik", text="", icon="X")
 
         self._draw_solutions(layout, rig)
-        self._draw_elbow(layout, rig)
+        self._draw_swivel(layout, rig)
 
         layout.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
         self._draw_readout(layout, rig)
@@ -661,38 +668,46 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             body.label(text="The target moved; search again", icon="ERROR")
 
     @staticmethod
-    def _draw_elbow(layout, rig) -> None:
-        """The pole-style control, on redundant arms only."""
-        dof = _chain_dof(rig)
-        if dof <= 6:
-            # Six joints against a six-DoF pose leaves no freedom over, so the
-            # control would have nothing to steer. Not an error, just absent.
+    def _draw_swivel(layout, rig) -> None:
+        """The elbow swivel, on arms with a joint to spare after the tool pose."""
+        held = sum(
+            1 for pb in builder.joint_bones(rig) if getattr(pb, "kinema_ik_hold", False)
+        )
+        free = _chain_dof(rig) - held
+        if free <= 6:
+            # Six unheld joints against a six-DoF pose leave nothing to swing.
+            # Not an error, just absent -- and a held rail is why a seven-joint
+            # rail robot does not offer one.
             return
 
-        header, body = layout.panel("kinema_elbow", default_closed=True)
-        header.label(text="Elbow Target")
+        header, body = layout.panel("kinema_swivel", default_closed=True)
+        header.label(text="Elbow Swivel")
         if body is None:
             return
 
-        if not rig.get(builder.PROP_ELBOW_BONE):
-            body.operator(
-                "kinema.add_elbow_target", text="Add Elbow Target", icon="CON_KINEMATIC"
-            )
-            body.label(text=f"{dof} joints: the elbow is free.", icon="BLANK1")
+        name = rig.get(builder.PROP_SWIVEL_BONE)
+        handle = rig.pose.bones.get(name) if name else None
+        if handle is None:
+            body.operator("kinema.add_swivel", text="Add Elbow Swivel", icon="CON_ROTLIKE")
+            body.label(text=f"{free} joints: the elbow can swing.", icon="BLANK1")
             return
 
+        # The one channel that matters, with its own keyframe dot: the elbow's
+        # angle round the shoulder-to-wrist line. The ring in the viewport turns
+        # the same channel.
+        body.prop(handle, "rotation_euler", index=1, text="Swivel")
         body.label(
-            text=f"Steering '{rig.get(builder.PROP_ELBOW_JOINT, '?')}'", icon="BONE_DATA"
+            text=(
+                f"{rig.get(builder.PROP_SWIVEL_SHOULDER, '?')} - "
+                f"{rig.get(builder.PROP_ELBOW_JOINT, '?')} - "
+                f"{rig.get(builder.PROP_SWIVEL_WRIST, '?')}"
+            ),
+            icon="BONE_DATA",
         )
-        # Said out loud because the control looks broken otherwise: the bone has
-        # no constraint on it, so it goes wherever it is dragged and the elbow
-        # does not follow it all the way. That is what an attractor is, and a
-        # pole target behaves the same, but nothing on screen said so.
-        body.label(text="The elbow reaches for it as far as it can", icon="BLANK1")
         body.prop(rig, "kinema_elbow_strength")
         if getattr(rig, "kinema_solver_mode", "PYROKI") != "PYROKI":
-            body.label(text="Only the PyRoki solver steers it", icon="ERROR")
-        body.operator("kinema.remove_elbow_target", text="Remove", icon="X")
+            body.label(text="Only the PyRoki solver swings it", icon="ERROR")
+        body.operator("kinema.remove_swivel", text="Remove", icon="X")
 
     @staticmethod
     def _draw_readout(layout, rig) -> None:
@@ -803,6 +818,15 @@ def _on_elbow_strength_changed(rig, context) -> None:
     """
     from .. import handlers
 
+    handlers.reset(rig.name)
+    rig.update_tag()
+
+
+def _on_ik_hold_changed(pose_bone, context) -> None:
+    """Re-solve when a joint is held or released: the problem changed shape."""
+    from .. import handlers
+
+    rig = pose_bone.id_data
     handlers.reset(rig.name)
     rig.update_tag()
 
@@ -919,16 +943,29 @@ def register_props() -> None:
     bpy.types.Object.kinema_elbow_strength = FloatProperty(
         name="Elbow Strength",
         description=(
-            "How hard the elbow target pulls, against the tool's own weight of "
-            "50. Low on purpose: the elbow then moves only where the arm has "
-            "freedom left over. Turning it up does move the tool off its "
-            "target -- around 3 mm at 5, and 11 mm at 10. Watch the solve "
-            "readout for the tool error"
+            "How firmly the swivel holds the elbow at its angle, against the "
+            "tool's own weight of 50. On an arm with a spherical shoulder and "
+            "wrist the elbow's goal is exactly reachable, so this barely "
+            "matters: the arm7 fixture keeps its tool within 0.0003 mm from 0.5 "
+            "to 20. On an arm whose links are offset the goal is only close -- "
+            "watch the solve readout for tool error if you raise it"
         ),
         default=2.0,
         min=0.0,
         soft_max=10.0,
         update=_on_elbow_strength_changed,
+    )
+    # On the pose bone rather than the rig, so it sits beside the joint's own
+    # slider and keys per joint: a rail can be handed back to IK mid-shot.
+    bpy.types.PoseBone.kinema_ik_hold = BoolProperty(
+        name="Hold",
+        description=(
+            "Keep this joint where you put it while IK solves the rest -- a rail, "
+            "gantry axis or turntable you position by hand. Drag the joint's own "
+            "bone and the arm follows with the tool held"
+        ),
+        default=False,
+        update=_on_ik_hold_changed,
     )
     bpy.types.Object.kinema_tcp_parent = StringProperty(
         name="Parent Bone",
@@ -969,6 +1006,7 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_meshes_at_file_origin
     del bpy.types.Object.kinema_active_solution
     del bpy.types.Object.kinema_elbow_strength
+    del bpy.types.PoseBone.kinema_ik_hold
     del bpy.types.Object.kinema_tcp_parent
     del bpy.types.Object.kinema_tcp_offset
     del bpy.types.Object.kinema_tcp_rpy

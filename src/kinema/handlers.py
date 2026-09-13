@@ -17,7 +17,8 @@ that, and both are needed:
 Guard 2 is the one that needs care, because "the problem" is more than the IK
 target: every input the solve reads has to be in it. An elbow target that was
 left out compared equal on every drag, so the handler decided nothing had
-moved and the control did nothing at all -- see :func:`_elbow_signature`.
+moved and the control did nothing at all -- see :func:`_swivel_signature` and
+:func:`_held_signature` for the inputs that are in it now.
 
 There is also a time budget. A rig whose solves run over the user's configured
 limit has some updates dropped, so a 30-DoF humanoid degrades to a laggy but
@@ -40,12 +41,13 @@ from .solver import manager
 #: Guards against the handler re-entering itself via its own scene writes.
 _solving = False
 #: rig name -> the problem we last solved: (tip bone, IK target matrix, elbow
-#: signature). The tip is part of it because it is keyframable: handing the goal
-#: from the wrist to the elbow mid-shot changes the chain while the goal matrix
-#: stays exactly where it was, and comparing the matrix alone would call that
-#: "nothing moved". The elbow is part of it for the mirror-image reason -- see
-#: :func:`_elbow_signature`.
-_last_target: dict[str, tuple[str, np.ndarray, np.ndarray | None]] = {}
+#: signature, held-joint signature). The tip is part of it because it is
+#: keyframable: handing the goal from the wrist to the elbow mid-shot changes the
+#: chain while the goal matrix stays exactly where it was, and comparing the
+#: matrix alone would call that "nothing moved". The swivel and the held joints
+#: are part of it for the mirror-image reason -- see :func:`_swivel_signature`
+#: and :func:`_held_signature`.
+_last_target: dict[str, tuple[str, np.ndarray, np.ndarray | None, np.ndarray]] = {}
 #: rig name -> seconds the last solve took.
 _last_duration: dict[str, float] = {}
 #: rig name -> consecutive live updates skipped for being over budget.
@@ -97,27 +99,54 @@ def _over_budget(rig_name: str, budget: float) -> bool:
     return True
 
 
-def _elbow_signature(rig: bpy.types.Object) -> np.ndarray | None:
-    """Where the elbow target is and how hard it pulls, or None if it has none.
+def _swivel_signature(rig: bpy.types.Object) -> np.ndarray | None:
+    """How far the swivel is turned and how hard it pulls, or None if it has none.
 
-    The elbow target is a second *input* to the same solve, so it belongs in
-    what "has anything changed" means. Dragging it leaves the IK target exactly
-    where it was, and a comparison that looked only at that decided nothing had
-    moved and skipped the solve -- so the control did nothing at all, every drag
-    after the first solve of the session.
+    The swivel is a second *input* to the same solve, so it belongs in what
+    "has anything changed" means. Turning it leaves the IK target exactly where
+    it was, and a comparison that looked only at that would decide nothing had
+    moved and skip the solve -- which is precisely how the elbow target it
+    replaced came to do nothing after the first solve of a session.
 
-    The strength is in here for the same reason: it scales the cost, so turning
-    it up is as much a change to the problem as moving the bone.
+    Its local angle, not its world position. The swivel rides a bone
+    constrained to the shoulder-to-wrist line, so its position moves whenever
+    the arm does; comparing that would make every solve look like a change and,
+    on an arm whose links are offset from that line, keep the handler solving.
+
+    The strength is in here too: it scales the cost, so changing it changes the
+    problem as much as turning the ring does.
     """
-    name = rig.get(builder.PROP_ELBOW_BONE)
+    name = rig.get(builder.PROP_SWIVEL_BONE)
     bone = rig.pose.bones.get(name) if name else None
     if bone is None:
         return None
     strength = float(getattr(rig, "kinema_elbow_strength", 0.0))
-    return np.array([*bone.matrix.translation, strength])
+    return np.array([float(bone.rotation_euler[1]), strength])
 
 
-def _same_problem(previous, tip: str, target: np.ndarray, elbow) -> bool:
+def _held_signature(rig: bpy.types.Object) -> np.ndarray:
+    """Which joints are held by hand, and where they stand.
+
+    Part of the problem for the same reason the elbow is. Dragging a held rail
+    moves nothing the IK target reports, so a comparison without this would see
+    no change, and the rail would slide away with the arm left behind.
+
+    Only held joints contribute a value. An unheld joint's value is the solver's
+    own output, so comparing it would make every solve look like a change and
+    the handler would never settle.
+    """
+    signature = []
+    for pose_bone in builder.joint_bones(rig):
+        if getattr(pose_bone, "kinema_ik_hold", False):
+            prismatic = pose_bone.bone.get(builder.PROP_JOINT_TYPE) == "prismatic"
+            value = pose_bone.location[1] if prismatic else pose_bone.rotation_euler[1]
+            signature += [1.0, float(value)]
+        else:
+            signature += [0.0, 0.0]
+    return np.array(signature)
+
+
+def _same_problem(previous, tip: str, target: np.ndarray, elbow, held) -> bool:
     """True if this is the problem we already solved for this rig."""
     if previous is None or previous[0] != tip:
         return False
@@ -128,7 +157,9 @@ def _same_problem(previous, tip: str, target: np.ndarray, elbow) -> bool:
     # moved, so a None on one side and an array on the other is a difference.
     if (before is None) != (elbow is None):
         return False
-    return elbow is None or np.allclose(elbow, before, atol=1e-7)
+    if elbow is not None and not np.allclose(elbow, before, atol=1e-7):
+        return False
+    return previous[3].shape == held.shape and np.allclose(held, previous[3], atol=1e-7)
 
 
 def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
@@ -139,8 +170,9 @@ def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
 
     target = _np4(rig.pose.bones[ik_bone].matrix)
     tip = manager.tip_bone(rig)
-    elbow = _elbow_signature(rig)
-    if not force and _same_problem(_last_target.get(rig.name), tip, target, elbow):
+    elbow = _swivel_signature(rig)
+    held = _held_signature(rig)
+    if not force and _same_problem(_last_target.get(rig.name), tip, target, elbow, held):
         return False
 
     solver = manager.get_solver(rig, ik_bone)
@@ -164,7 +196,7 @@ def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
 
     # Record the goal we actually solved for, not the one we may have been
     # asked for a moment ago, so the next update compares against reality.
-    _last_target[rig.name] = (tip, target, elbow)
+    _last_target[rig.name] = (tip, target, elbow, held)
     return True
 
 

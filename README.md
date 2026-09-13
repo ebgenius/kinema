@@ -153,35 +153,51 @@ On a KR120 at a working pose, this turns up the arm you are in plus the wrist-fl
 across the switch. The other families a KR120 nominally has are ruled out by its own joint
 limits at that pose, which is the correct answer rather than a shortfall of the search.
 
-### The elbow on a redundant arm
+### Spare joints: rails you move by hand, and the elbow swivel
 
-Seven axes reach a pose an *infinite* number of ways, the elbow sweeping through a
-continuous family while the tool stands still. That is a control, not a curiosity, and
-Blender animators already have one for it: the pole target on a character's arm.
+A robot with more joints than a tool pose needs can reach that pose a continuous family of
+ways. What the spare joint *is* decides which control makes sense, so there are two.
 
-**Add Elbow Target** creates a bone you drag. It is a soft position goal on the elbow's link,
-weighted far below the tool's — so at the default strength the elbow moves through the null
-space and the tool holds to well under a millimetre. Drag it and the arm reconfigures around
-a tool that stays put. It lands on the elbow itself, so adding it changes nothing until you
-move it; the rig draws its bones in front of the geometry, so it is still there to grab.
+**Held joints.** Most redundant robots in a cell are a six-axis arm on a rail or a gantry.
+The extra axes are not something to solve for: an operator positions them, and the arm
+reaches from wherever they stand. So a joint can be **held by hand**. Pin it in the Joints
+panel, move it with its own slider or by dragging its bone along its axis, and IK solves the
+rest of the chain with the tool held where it is. The pin is keyframable, so a rail can be
+handed back to the solver part-way through a shot.
 
-It is an attractor rather than Blender's angle-reference pole, so the elbow is pulled
-*toward* it rather than aimed *through* it. Close enough that the muscle memory transfers —
-with one consequence worth knowing: the bone does not stick to the elbow and is not supposed
-to. It has no constraint on it. Put it where you want the elbow to go, and the elbow reaches
-for it as far as the arm's leftover freedom allows, then stops. On a seven-axis arm that
-freedom is a single circle, so a target off that circle is approached, never met.
+**Add IK Target** pins rails for you. While a chain still has more than six unheld joints,
+its prismatic joints are held, base first. So a six-axis arm on a rail gets its rail held and
+nothing else, and an arm with nothing to spare, or whose spare joint is rotary, holds
+nothing. A turntable can't be told apart from a seventh arm joint, so pin that one yourself.
 
-**Strength** is a cost weight, not a null-space projection, so turning it up does start
-moving the tool: on the `arm7` fixture with the target dragged well out of reach, the tool
-sits about 0.5 mm off its goal at the default 2, 3 mm at 5, and 11 mm at 10. It buys little
-extra elbow travel in exchange — the null space runs out first. The solve readout shows the
-tool error, so the trade is visible while you make it.
+**The elbow swivel.** On a seven-axis arm the spare freedom *is* the elbow: with the tool
+held still, it can swing round the line from shoulder to wrist. **Add Elbow Swivel** puts a
+ring on that line, and turning the ring swings the elbow round it. It's the same idea as the
+control that steers a character's elbow once IK has placed the hand.
 
-Offered only when the chain has more joints than the task needs. On a six-axis arm there is
-no freedom left after a full pose, so the control would have nothing to steer, and it is
-absent rather than present and inert. It also needs the PyRoki solver; the NumPy fallback
-has no notion of a second goal and the panel says so instead of ignoring it quietly.
+- **The ring rides the arm.** A hidden bone follows the shoulder-to-wrist line through
+  Blender's own constraints, so the ring stays with the arm with IK off, during playback and
+  at render.
+- **Its one rotation channel is the elbow's angle.** It keys as a single curve, and the IK
+  panel shows it as a **Swivel** slider with its own keyframe dot.
+- **It aims at a point the elbow can actually reach:** a point on the circle the elbow
+  sweeps, not wherever a bone happened to be dragged. On the `arm7` fixture, swinging the
+  elbow through ±1.5 rad keeps the tool within 0.0003 mm and the elbow within 0.02° of the
+  angle asked for, at every strength from 0.5 to 20. The free-floating elbow target this
+  replaced pulled toward points off that circle and gave up tool accuracy instead: 0.55 mm at
+  its default strength, 30.7 mm at 20.
+- **It keeps up with the target.** The circle is built about where the wrist is going, not
+  where it is, so the single live update a drag produces already puts the tool on its goal.
+  Dragged past the arm's reach, the elbow stays on the side the ring put it instead of
+  flipping over.
+- **Adding one changes nothing.** The ring is turned onto the elbow before anything solves.
+
+Shoulder, elbow and wrist default to the second, middle and second-to-last joints. That is
+exact for an arm with a spherical shoulder and wrist, like the `arm7` fixture or an iiwa, and
+only approximate, and not yet measured, on an arm whose links are offset, like the Panda. The swivel is offered only when more
+than six joints are left to IK, so a rail robot with its rail held has no elbow to spare. It
+also needs the PyRoki solver: the NumPy fallback has no notion of a second goal, and the
+panel says so.
 
 ## Where the tool frame sits
 

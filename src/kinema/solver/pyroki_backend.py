@@ -48,21 +48,28 @@ REST_WEIGHT = 0.001
 #: median), while 1e-4 keeps 20/20 at 0.0001 mm and still steers away from
 #: singular configurations. Costs roughly 2.5x the solve time.
 MANIPULABILITY_WEIGHT = 1e-4
-#: Default pull of the elbow target, against POSITION_WEIGHT's 50 for the tool.
+#: Default pull of the elbow swivel, against POSITION_WEIGHT's 50 for the tool.
 #:
-#: This is a soft cost competing with the pose cost, not a null-space
-#: projection, so it does not leave the tool untouched -- it only makes the tool
-#: expensive to move. Measured on the arm7 fixture with the elbow target dragged
-#: well outside the reachable family, which is the worst case and an ordinary
-#: thing to do with a control you drag freely:
+#: A soft cost competing with the pose cost, not a null-space projection. What
+#: keeps it from costing the tool is where it pulls: the swivel's goal is a
+#: point on the circle the elbow can actually reach (see ``solver/swivel.py``),
+#: so on an arm with a spherical shoulder and wrist both costs are met at once.
+#: Measured on the arm7 fixture, swinging through +-1.5 rad, beside the free
+#: elbow target this replaced, which was dragged out of reach:
 #:
-#:     strength   0.5    2.0     5.0    10.0    20.0
-#:     tool error 0.04   0.55    3.3    11.4    30.7   mm
+#:     strength               0.5     2.0     5.0     10.0    20.0
+#:     swivel, tool error     0.0003  0.0003  0.0003  0.0003  0.0003  mm
+#:     free target, tool      0.04    0.55    3.3     11.4    30.7    mm
 #:
-#: 2.0 keeps the tool inside a millimetre while still steering. Higher values
-#: buy very little extra elbow travel -- the null space runs out first -- and
-#: everything past that point is paid for out of the tool.
+#: The swivel holds the elbow within 0.02 deg of its angle at 0.5 and exactly
+#: from 2 up. An arm whose links are offset, like the Panda, only approximates
+#: the circle and has not been measured.
 ELBOW_WEIGHT = 2.0
+#: How hard a held joint is kept where the animator put it: a rail, a gantry
+#: axis, a turntable. Far above POSITION_WEIGHT on purpose -- when the tool
+#: cannot be reached with the rail where it is, the rail is the one that was
+#: placed by hand, so the tool is the one that gives.
+HOLD_WEIGHT = 1000.0
 
 
 @dataclass
@@ -76,6 +83,10 @@ class PyrokiSolver:
     #: Cached jitted solves, keyed by which optional costs are in the problem:
     #: (manipulability, elbow goal). Each combination is a separate JAX kernel
     #: and a separate compile, which is why the key is not just a bool any more.
+    #:
+    #: Held joints are deliberately *not* in the key. Their cost is in every
+    #: kernel with zero weights when nothing is held, so ticking a rail costs
+    #: no compile -- only a different array.
     _compiled: dict = field(default_factory=dict)
 
     @property
@@ -101,6 +112,7 @@ class PyrokiSolver:
         def _solve(
             robot, target_wxyz, target_position, link_index, seed,
             elbow_index, elbow_position, elbow_weight,
+            held_values, held_weights,
         ):
             joint_var = robot.joint_var_cls(0)
             costs = [
@@ -119,6 +131,10 @@ class PyrokiSolver:
                 pk.costs.limit_constraint(robot, joint_var),
                 # Keeps successive viewport solves on the same IK branch.
                 pk.costs.rest_cost(joint_var, seed, REST_WEIGHT),
+                # Held joints: the same residual with a per-joint weight, zero
+                # everywhere nothing is held. Always present, so holding one
+                # changes an array rather than the problem's shape.
+                pk.costs.rest_cost(joint_var, held_values, held_weights),
             ]
             if avoid_singularities:
                 costs.append(
@@ -162,15 +178,19 @@ class PyrokiSolver:
         *,
         avoid_singularities: bool = True,
         elbow: tuple[int, np.ndarray, float] | None = None,
+        held: tuple[np.ndarray, np.ndarray] | None = None,
     ) -> np.ndarray:
         """Solve for the full actuated vector. ``target`` is a 4x4 in base frame.
+
+        ``held`` is an optional ``(mask, values)`` over the full actuated vector:
+        joints to keep at those values, weighted by :data:`HOLD_WEIGHT`.
 
         ``elbow`` is an optional ``(link index, position, weight)`` pulling one
         further link toward a point. It is a *soft* goal weighted far below the
         tool's, so on a redundant arm it mostly selects among the configurations
         that already reach the tool -- but it is a competing cost, not a
-        null-space projection, so a strong enough pull does move the tool. See
-        :data:`ELBOW_WEIGHT` for what that costs at each strength.
+        null-space projection, so a strong pull toward a point the elbow cannot
+        reach does move the tool. See :data:`ELBOW_WEIGHT`.
         """
         solve_fn, jnp = self._solver(avoid_singularities, elbow is not None)
 
@@ -180,6 +200,11 @@ class PyrokiSolver:
         # and `with_elbow` -- part of the compile key -- decides whether the
         # cost that reads them is in the problem at all.
         index, position, weight = elbow or (0, np.zeros(3), 0.0)
+        if held is None:
+            held_values, held_weights = np.asarray(q_seed), np.zeros(self.dof)
+        else:
+            mask, held_values = held
+            held_weights = np.asarray(mask, dtype=float) * HOLD_WEIGHT
 
         result = solve_fn(
             self.robot,
@@ -190,6 +215,8 @@ class PyrokiSolver:
             jnp.array(index, dtype=jnp.int32),
             jnp.array(position, dtype=jnp.float32),
             jnp.array(weight, dtype=jnp.float32),
+            jnp.array(held_values, dtype=jnp.float32),
+            jnp.array(held_weights, dtype=jnp.float32),
         )
         return np.asarray(result, dtype=np.float64)
 

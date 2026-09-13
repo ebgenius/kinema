@@ -16,7 +16,6 @@ import bpy
 import numpy as np
 from bpy.props import BoolProperty, IntProperty, StringProperty
 from bpy.types import Operator
-from mathutils import Vector
 
 from .. import handlers
 from ..rig import builder, widgets
@@ -97,6 +96,8 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
         pose_bone.matrix = rig.pose.bones[manager.tip_bone(rig)].matrix.copy()
         context.view_layer.update()
 
+        held = hold_external_axes(rig)
+
         manager.invalidate(rig.name)
         handlers.reset(rig.name)
         handlers.register_handlers()
@@ -112,6 +113,8 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
         message = f"IK target '{ik_name}' created"
         if compile_seconds > 1.0:
             message += f" (solver compiled in {compile_seconds:.1f}s)"
+        if held:
+            message += f"; holding {', '.join(held)} by hand"
         self.report({"INFO"}, message)
         return {"FINISHED"}
 
@@ -394,32 +397,33 @@ class KINEMA_OT_apply_solution(KinemaRigOperator):
         return {"FINISHED"}
 
 
-class KINEMA_OT_add_elbow_target(KinemaRigOperator):
-    """A pole-style control for a redundant arm.
+class KINEMA_OT_add_swivel(KinemaRigOperator):
+    """A swivel ring for a redundant arm: turn it and the elbow swings round.
 
-    A seven-axis arm reaches a pose an infinite number of ways, the elbow
-    sweeping through a family while the tool stands still. Blender animators
-    already steer a character's elbow with a pole target, so this is one: a
-    bone the elbow is drawn toward, weighted far below the tool so that at the
-    default strength it moves the elbow within that family and barely disturbs
-    the tool.
-
-    An attractor, not a handle. The elbow reaches for the bone as far as the
-    arm's leftover freedom allows and then stops, so the two do not meet and
-    are not meant to -- the same as a pole target, which does not sit on the
-    elbow either.
+    A seven-axis arm holding its tool still can still swing its elbow round the
+    line from shoulder to wrist. Blender animators steer a character's elbow
+    with a control that rides the arm, so this is one: a ring on that line that
+    only turns about it. Its single rotation channel is the elbow's angle -- it
+    keys as one curve, follows the arm wherever the tool goes, and cannot be put
+    somewhere the elbow could never reach.
     """
 
-    bl_idname = "kinema.add_elbow_target"
-    bl_label = "Add Elbow Target"
+    bl_idname = "kinema.add_swivel"
+    bl_label = "Add Elbow Swivel"
     bl_description = (
-        "Add a control that steers the elbow of a redundant arm, the way a "
-        "pole target steers a character's"
+        "Add a ring on the shoulder-to-wrist line that swings the elbow of a "
+        "redundant arm while the tool stays put"
     )
 
-    bone: StringProperty(name="Joint", default="", options={"SKIP_SAVE"})
+    shoulder: StringProperty(name="Shoulder", default="", options={"SKIP_SAVE"})
+    elbow: StringProperty(name="Elbow", default="", options={"SKIP_SAVE"})
+    wrist: StringProperty(name="Wrist", default="", options={"SKIP_SAVE"})
 
     def execute(self, context: bpy.types.Context) -> set[str]:
+        import numpy as np
+
+        from ..solver import swivel as swivel_mod
+
         rig = active_rig(context)
         ik_name = rig.get(builder.PROP_IK_BONE)
         if not ik_name or ik_name not in rig.pose.bones:
@@ -430,32 +434,51 @@ class KINEMA_OT_add_elbow_target(KinemaRigOperator):
         if solver is None:
             self.report({"ERROR"}, "Could not prepare a solver for this rig")
             return {"CANCELLED"}
-        if solver.chain.dof <= 6:
+        held = manager.held_mask(rig, solver.chain)
+        free = [n for n, h in zip(solver.chain.bone_names, held, strict=True) if not h]
+        if len(free) <= 6:
             self.report(
                 {"ERROR"},
-                f"This arm has {solver.chain.dof} joints. An elbow target needs "
-                "one with freedom left over after the tool pose -- seven or more",
+                f"This arm has {len(free)} joints left to IK. A swivel needs "
+                "freedom left over after the tool pose -- seven or more",
             )
             return {"CANCELLED"}
 
-        joint = self.bone or _default_elbow_joint(solver.chain)
-        if joint not in rig.data.bones:
-            self.report({"ERROR"}, f"'{joint}' is not a bone on this rig")
-            return {"CANCELLED"}
+        # Defaults that are exact on a spherical shoulder and wrist: the second
+        # joint sits on the first's axis, the second-to-last where the wrist
+        # axes cross, and the elbow in the middle.
+        shoulder = self.shoulder or free[1]
+        elbow = self.elbow or _default_elbow_joint(free)
+        wrist = self.wrist or free[-2]
+        for name in (shoulder, elbow, wrist):
+            if name not in rig.data.bones:
+                self.report({"ERROR"}, f"'{name}' is not a bone on this rig")
+                return {"CANCELLED"}
 
         context.view_layer.update()
-        # On the joint, not out to the side of it. The goal is then already
-        # satisfied the moment the control exists, so creating one does not
-        # repose the robot -- landing it a quarter of the rig's size above the
-        # joint pulled the arm through 16 degrees on the arm7 fixture before
-        # the user had touched anything, which is not what "Add" should do.
-        #
-        # Buried in the arm's own casing is fine here: the rig already draws
-        # its bones in front of geometry, for exactly this reason.
-        landing = rig.pose.bones[joint].matrix.translation.copy()
-        reach = max(rig.dimensions) if any(rig.dimensions) else 1.0
+        # Read before Edit mode: Bone.head_local is not live while it is open.
+        bones = rig.data.bones
+        rest_shoulder = bones[shoulder].head_local.copy()
+        rest_wrist = bones[wrist].head_local.copy()
+        span = rest_wrist - rest_shoulder
+        if span.length < 1e-6:
+            self.report({"ERROR"}, "The shoulder and wrist joints coincide")
+            return {"CANCELLED"}
 
-        name = _elbow_bone_name(joint)
+        pose = rig.pose.bones
+        now = {
+            n: np.array(pose[n].matrix.translation, dtype=float)
+            for n in (shoulder, elbow, wrist)
+        }
+        axis_now = now[wrist] - now[shoulder]
+        axis_now /= np.linalg.norm(axis_now)
+        offset = now[elbow] - now[shoulder]
+        # The ring is as wide as the elbow is far from the line, so its knob
+        # starts beside the elbow -- with a floor, so a straight arm still gets
+        # a ring you can see and grab.
+        radius = float(np.linalg.norm(offset - np.dot(offset, axis_now) * axis_now))
+        radius = max(radius, span.length * 0.15)
+
         previous_active = context.view_layer.objects.active
         context.view_layer.objects.active = rig
         if rig.mode != "OBJECT":
@@ -463,55 +486,94 @@ class KINEMA_OT_add_elbow_target(KinemaRigOperator):
         bpy.ops.object.mode_set(mode="EDIT")
         try:
             edit_bones = rig.data.edit_bones
-            elbow = edit_bones.get(name) or edit_bones.new(name)
-            elbow.head = landing
-            elbow.tail = landing + Vector((0.0, 0.0, reach * 0.08))
-            # Parented to Root and never into the chain, for the same reason
-            # the IK goal is: a control that moved with the arm it steers would
-            # chase itself.
-            elbow.parent = edit_bones.get(builder.ROOT_BONE)
-            elbow.use_connect = False
+            axis = edit_bones.get(builder.SWIVEL_AXIS_BONE) or edit_bones.new(
+                builder.SWIVEL_AXIS_BONE
+            )
+            axis.head = rest_shoulder
+            axis.tail = rest_wrist
+            # Parented to Root, never into the chain. Its constraints put it on
+            # the arm; parenting it into the arm would make it chase itself.
+            axis.parent = edit_bones.get(builder.ROOT_BONE)
+            axis.use_connect = False
+
+            ring = edit_bones.get(builder.SWIVEL_BONE) or edit_bones.new(builder.SWIVEL_BONE)
+            middle = rest_shoulder + span * 0.5
+            ring.head = middle
+            ring.tail = middle + span.normalized() * radius
+            ring.parent = axis
+            ring.use_connect = False
         finally:
             bpy.ops.object.mode_set(mode="OBJECT")
 
-        pose_bone = rig.pose.bones[name]
-        pose_bone.rotation_mode = "QUATERNION"
-        pose_bone.custom_shape = widgets.ensure_widgets()["elbow_target"]
-        pose_bone.use_custom_shape_bone_size = True
-        for collection in rig.data.collections_all:
-            if collection.name == builder.COLLECTION_IK:
-                collection.assign(rig.data.bones[name])
-                collection.is_visible = True
+        # The axis follows the arm by Blender's own constraints, evaluated with
+        # the rest of the rig -- so it tracks with IK off, during playback and
+        # at render, and the handler never has to write it.
+        axis_pose = pose[builder.SWIVEL_AXIS_BONE]
+        # One at a time: a pose bone's constraint collection has no clear(),
+        # unlike an object's, and re-adding a swivel must not stack a second
+        # pair of constraints on the first.
+        for constraint in list(axis_pose.constraints):
+            axis_pose.constraints.remove(constraint)
+        copy = axis_pose.constraints.new("COPY_LOCATION")
+        copy.target, copy.subtarget = rig, shoulder
+        track = axis_pose.constraints.new("DAMPED_TRACK")
+        track.target, track.subtarget = rig, wrist
+        track.track_axis = "TRACK_Y"
+        _lock_all(axis_pose)
 
-        rig[builder.PROP_ELBOW_BONE] = name
-        rig[builder.PROP_ELBOW_JOINT] = joint
+        ring_pose = pose[builder.SWIVEL_BONE]
+        _lock_all(ring_pose)
+        # One channel, like a joint bone's: rotation about the line.
+        ring_pose.rotation_mode = "YXZ"
+        ring_pose.lock_rotation = (True, False, True)
+        ring_pose.rotation_euler = (0.0, 0.0, 0.0)
+        ring_pose.custom_shape = widgets.ensure_widgets()["swivel"]
+        ring_pose.use_custom_shape_bone_size = True
+
+        _assign_only(rig, builder.SWIVEL_AXIS_BONE, builder.COLLECTION_MECHANISM)
+        _assign_only(rig, builder.SWIVEL_BONE, builder.COLLECTION_IK)
+
+        # Turn the knob onto the elbow before anything solves, so adding the
+        # control changes nothing until it is turned.
+        context.view_layer.update()
+        matrix = ring_pose.matrix
+        line = np.array(matrix.col[1][:3], dtype=float)
+        knob = np.array(matrix.col[2][:3], dtype=float)
+        toward = now[elbow] - now[shoulder]
+        ring_pose.rotation_euler[1] = swivel_mod.signed_angle(line, knob, toward)
+
+        rig[builder.PROP_SWIVEL_BONE] = builder.SWIVEL_BONE
+        rig[builder.PROP_SWIVEL_AXIS] = builder.SWIVEL_AXIS_BONE
+        rig[builder.PROP_SWIVEL_SHOULDER] = shoulder
+        rig[builder.PROP_ELBOW_JOINT] = elbow
+        rig[builder.PROP_SWIVEL_WRIST] = wrist
         manager.invalidate(rig.name)
         handlers.reset(rig.name)
+        context.view_layer.update()
 
         # An elbow goal is a different problem for JAX, so it compiles again --
-        # paid here behind a wait cursor rather than on the user's first drag,
-        # exactly as Add IK Target does.
+        # paid here behind a wait cursor rather than on the first turn.
         seconds = KINEMA_OT_add_ik._warm_up(context, rig, ik_name)
         if previous_active is not None:
             context.view_layer.objects.active = previous_active
 
-        message = f"Elbow target on '{joint}'"
+        message = f"Swivel on {shoulder} - {elbow} - {wrist}"
         if seconds > 1.0:
             message += f" (solver compiled in {seconds:.1f}s)"
         self.report({"INFO"}, message)
         return {"FINISHED"}
 
 
-class KINEMA_OT_remove_elbow_target(KinemaRigOperator):
-    bl_idname = "kinema.remove_elbow_target"
-    bl_label = "Remove Elbow Target"
-    bl_description = "Delete the elbow control; the arm solves on the tool alone"
+class KINEMA_OT_remove_swivel(KinemaRigOperator):
+    bl_idname = "kinema.remove_swivel"
+    bl_label = "Remove Elbow Swivel"
+    bl_description = "Delete the swivel; the arm solves on the tool alone"
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
-        name = rig.get(builder.PROP_ELBOW_BONE)
-        if not name:
-            self.report({"WARNING"}, "This rig has no elbow target")
+        names = [rig.get(builder.PROP_SWIVEL_BONE), rig.get(builder.PROP_SWIVEL_AXIS)]
+        if not any(names):
+            self.report({"WARNING"}, "This rig has no swivel")
             return {"CANCELLED"}
 
         context.view_layer.objects.active = rig
@@ -520,21 +582,51 @@ class KINEMA_OT_remove_elbow_target(KinemaRigOperator):
         bpy.ops.object.mode_set(mode="EDIT")
         try:
             edit_bones = rig.data.edit_bones
-            if name in edit_bones:
-                edit_bones.remove(edit_bones[name])
+            for name in names:
+                if name and name in edit_bones:
+                    edit_bones.remove(edit_bones[name])
         finally:
             bpy.ops.object.mode_set(mode="OBJECT")
 
-        for key in (builder.PROP_ELBOW_BONE, builder.PROP_ELBOW_JOINT):
+        for key in (
+            builder.PROP_SWIVEL_BONE,
+            builder.PROP_SWIVEL_AXIS,
+            builder.PROP_SWIVEL_SHOULDER,
+            builder.PROP_ELBOW_JOINT,
+            builder.PROP_SWIVEL_WRIST,
+        ):
             if key in rig:
                 del rig[key]
         manager.invalidate(rig.name)
         handlers.reset(rig.name)
-        self.report({"INFO"}, "Elbow target removed")
+        self.report({"INFO"}, "Swivel removed")
         return {"FINISHED"}
 
 
-ELBOW_SUFFIX = ".elbow"
+def _lock_all(pose_bone) -> None:
+    pose_bone.lock_location = (True, True, True)
+    pose_bone.lock_rotation = (True, True, True)
+    pose_bone.lock_rotation_w = True
+    pose_bone.lock_scale = (True, True, True)
+
+
+def _assign_only(rig, bone_name: str, collection_name: str) -> None:
+    """Put a bone in exactly one bone collection.
+
+    A new edit bone lands in whichever collection was active, which for the
+    constrained axis would be a visible one -- and an animator who grabbed it
+    would be fighting its constraints.
+    """
+    bone = rig.data.bones[bone_name]
+    for collection in list(bone.collections):
+        collection.unassign(bone)
+    for collection in rig.data.collections_all:
+        if collection.name == collection_name:
+            collection.assign(bone)
+            if collection_name == builder.COLLECTION_IK:
+                collection.is_visible = True
+
+
 #: Where the solutions live between finding and choosing: a flat list of joint
 #: values on the rig, plus the goal they were found for so a moved target can be
 #: reported as stale rather than silently offering configurations for a pose the
@@ -547,13 +639,39 @@ PROP_SOLUTIONS_GOAL = "kinema_solutions_goal"
 PROP_SOLUTIONS_DOF = "kinema_solutions_dof"
 
 
-def _elbow_bone_name(joint: str) -> str:
-    return f"{joint}{ELBOW_SUFFIX}"
+def hold_external_axes(rig) -> list[str]:
+    """Hold the prismatic joints a chain has beyond six, base first.
+
+    A six-axis arm on a rail or a gantry has more joints than a tool pose needs,
+    but the spare ones are not an elbow to swing. They are axes an operator
+    positions, and the arm reaches from wherever they stand -- so they are held
+    by hand rather than handed to the solver to resolve however it likes.
+
+    Only while the chain would otherwise stay redundant, and prismatic joints
+    only. A three-axis arm with a slide has nothing to spare, and a seventh
+    rotary joint is an elbow, which the swivel is for. Base first, because that
+    is where external axes sit. Returns the joints it held.
+    """
+    from ..solver import chain as chain_mod
+
+    chain = chain_mod.chain_from_rig(rig, manager.tip_bone(rig))
+    if chain is None:
+        return []
+    free = chain.dof
+    held = []
+    for name, revolute in zip(chain.bone_names, chain.is_revolute, strict=True):
+        if free <= 6:
+            break
+        if not revolute:
+            rig.pose.bones[name].kinema_ik_hold = True
+            held.append(name)
+            free -= 1
+    return held
 
 
-def _default_elbow_joint(chain_obj) -> str:
+def _default_elbow_joint(names: list[str]) -> str:
     """The middle of the chain, which is where an elbow is on an arm."""
-    return chain_obj.bone_names[len(chain_obj.bone_names) // 2]
+    return names[len(names) // 2]
 
 
 def _store_solutions(rig, solver, found) -> None:
@@ -858,7 +976,7 @@ classes = (
     KINEMA_OT_key_ik_tip,
     KINEMA_OT_find_solutions,
     KINEMA_OT_apply_solution,
-    KINEMA_OT_add_elbow_target,
-    KINEMA_OT_remove_elbow_target,
+    KINEMA_OT_add_swivel,
+    KINEMA_OT_remove_swivel,
     KINEMA_OT_bake_ik,
 )
