@@ -121,9 +121,13 @@ class TestFindingSolutions:
         bpy.context.view_layer.update()
         solver = manager.get_solver(arm6)
         goal = solver.chain.forward(_q(builder, arm6))
-        bpy.ops.kinema.find_solutions(seeds=30)
+        assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=30)
+        solutions = ik_ops._read_solutions(arm6)
+        # Without this, a search that found nothing skips the loop and the test
+        # passes having checked no residual at all.
+        assert solutions, "the search found nothing, so nothing below was checked"
 
-        for values in ik_ops._read_solutions(arm6):
+        for values in solutions:
             position, orientation = branches.reach_error(
                 solver.chain, np.array(values), goal
             )

@@ -284,23 +284,27 @@ class TestCollect:
         assert branches.collect(chain, goal, [q]) == []
 
     def test_prismatic_alternatives_both_survive(self):
-        """Two rail positions reaching one point must not fold into one.
+        """Two rail positions reaching one pose must not fold into one.
 
         The regression: wrapping a prismatic axis made 0 m and 2*pi m compare
-        equal, so one of them was dropped as a duplicate.
+        equal, so one of two genuine alternatives was dropped as a duplicate.
+
+        Two stacked rails on the same axis make both candidates reach the
+        *same* goal by construction -- every bone here moves along or turns
+        about a Y axis that no joint ever tips, so the rails simply add. That
+        is what lets both go through ``collect`` and the test see whether one
+        is folded away, rather than one being dropped for missing, which
+        proves nothing about the duplicate test.
         """
         chain = _chain(dof=3)
-        chain.is_revolute[:] = [True, True, False]
-        near = np.array([0.0, 0.6, 0.0])
-        goal = chain.forward(near)
-        far = near.copy()
-        far[2] = 2 * np.pi
-        # Not the same arm, and not the same tool -- so `far` is dropped for
-        # missing, which is the correct reason. What matters is that the
-        # distance function no longer calls the two identical.
-        assert branches.joint_distance(
-            near, far, chain.is_revolute
-        ) > branches.DISTINCT_TOLERANCE
+        chain.is_revolute[:] = [False, False, True]
+        first = np.array([0.0, 2 * np.pi, 0.3])
+        second = np.array([2 * np.pi, 0.0, 0.3])
+        goal = chain.forward(first)
 
-        found = branches.collect(chain, goal, [near])
-        assert len(found) == 1
+        assert np.allclose(chain.forward(second), goal), (
+            "the fixture's two candidates do not reach the same pose"
+        )
+
+        found = branches.collect(chain, goal, [first, second])
+        assert len(found) == 2, "a genuine rail alternative was folded away"
