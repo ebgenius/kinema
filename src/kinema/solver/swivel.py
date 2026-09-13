@@ -46,8 +46,9 @@ def elbow_circle(
     A wrist past the arm's reach is clamped to it. The true circle there is a
     point on the straight line, but the radius never drops below
     :data:`STRETCHED_SIDE` of the upper arm -- see the comment below for why a
-    goal on the line is worse than one just off it. The axis is None only when
-    shoulder and wrist coincide, which no real arm does.
+    goal on the line is worse than one just off it. A wrist closer than the arm
+    can fold is clamped to that inner limit in the same way. The axis is None
+    only when shoulder and wrist coincide, which no real arm does.
     """
     shoulder = np.asarray(shoulder, dtype=float)
     span = np.asarray(wrist, dtype=float) - shoulder
@@ -56,7 +57,11 @@ def elbow_circle(
         return shoulder, None, 0.0
     axis = span / distance
 
-    reach = min(distance, upper + fore)
+    # Both ways. Past the outer limit the arm is stretched straight; inside the
+    # inner one it is folded flat, and the formula below would otherwise divide
+    # by a distance that can be millimetres and throw the goal metres away --
+    # a pull the tool would pay for.
+    reach = float(np.clip(distance, abs(upper - fore), upper + fore))
     # How far along S-W the circle's plane sits: the law of cosines, rearranged
     # for the foot of the elbow's perpendicular onto the axis.
     along = (upper * upper - fore * fore + reach * reach) / (2.0 * reach)

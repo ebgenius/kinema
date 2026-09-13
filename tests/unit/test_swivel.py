@@ -77,6 +77,20 @@ class TestDegenerateArms:
         _, _, radius = swivel.elbow_circle(SHOULDER, WRIST, UPPER, FORE)
         assert radius > 3 * swivel.STRETCHED_SIDE * UPPER
 
+    def test_a_wrist_closer_than_the_arm_can_fold_keeps_the_goal_within_reach(self):
+        """Inside the inner limit the circle's formula divides by a tiny distance.
+
+        Unclamped, a wrist 1 mm from the shoulder put the elbow goal over 18 m
+        away -- a pull the tool would pay for. Clamped, the goal is where the
+        folded elbow would be.
+        """
+        near = SHOULDER + np.array([0.001, 0.0, 0.0])
+        goal = swivel.elbow_goal(
+            SHOULDER, near, UPPER, FORE, np.array([0.0, 1.0, 0.0]), near
+        )
+        assert np.all(np.isfinite(goal))
+        assert float(np.linalg.norm(goal - SHOULDER)) < UPPER * 1.01
+
     def test_a_knob_along_the_axis_keeps_the_elbow_on_its_side(self):
         """No side to read from the knob, so keep the one the elbow is on."""
         centre, axis, radius = swivel.elbow_circle(SHOULDER, WRIST, UPPER, FORE)

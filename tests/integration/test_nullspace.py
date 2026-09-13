@@ -56,6 +56,11 @@ def swivel(addon):
     return importlib.import_module(f"{addon.__name__}.solver.swivel")
 
 
+@pytest.fixture
+def panel(addon):
+    return importlib.import_module(f"{addon.__name__}.ui.panel")
+
+
 @pytest.fixture(autouse=True)
 def _free_compiled_solvers(addon, manager):
     """Drop every compiled solver after each test.
@@ -202,6 +207,24 @@ class TestWhatGetsHeld:
     def test_a_seven_axis_arm_holds_nothing(self, arm7_numpy, builder):
         """Its spare joint is rotary: an elbow, not an external axis."""
         assert not any(pb.kinema_ik_hold for pb in builder.joint_bones(arm7_numpy))
+
+    def test_a_joint_already_held_by_hand_counts_as_spare(
+        self, rail6_numpy, builder, ik_ops
+    ):
+        """A joint the user already held is a spare joint already taken out.
+
+        Seven joints with one held by hand leaves six, which is exactly enough.
+        Holding the rail as well would leave the arm five to reach a six-DoF pose.
+        """
+        rig = rail6_numpy
+        pose = rig.pose.bones
+        pose["rail"].kinema_ik_hold = False
+        pose["joint1"].kinema_ik_hold = True
+
+        assert ik_ops.hold_external_axes(rig) == []
+        assert not pose["rail"].kinema_ik_hold
+        free = [pb.name for pb in builder.joint_bones(rig) if not pb.kinema_ik_hold]
+        assert len(free) == 6
 
 
 class TestDraggingAHeldRail:
@@ -376,6 +399,28 @@ class TestWhereTheSwivelIsOffered:
 
         with pytest.raises(RuntimeError, match="freedom left over"):
             bpy.ops.kinema.add_swivel()
+
+
+class TestTheSwivelPanel:
+    def test_holds_past_a_mid_chain_tip_are_not_subtracted(
+        self, arm7_numpy, manager, panel
+    ):
+        """The free count and the chain length must describe the same joints.
+
+        Aim the solver at joint6 and hold joint7, which is past the tip: the
+        chain is six joints and none of them is held. Subtracting joint7 anyway
+        says five, and a count that can come out short can hide a swivel.
+        """
+        rig = arm7_numpy
+        rig.kinema_ik_tip = 5  # joint6
+        solver = manager.get_solver(rig)
+        assert solver.chain.dof == 6
+
+        # Nothing held: the chain's six, not all seven joint bones.
+        assert panel._free_joint_count(rig) == 6
+
+        rig.pose.bones["joint7"].kinema_ik_hold = True
+        assert panel._free_joint_count(rig) == 6
 
 
 class TestTheSwivel:

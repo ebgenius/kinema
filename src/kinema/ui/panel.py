@@ -670,10 +670,7 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
     @staticmethod
     def _draw_swivel(layout, rig) -> None:
         """The elbow swivel, on arms with a joint to spare after the tool pose."""
-        held = sum(
-            1 for pb in builder.joint_bones(rig) if getattr(pb, "kinema_ik_hold", False)
-        )
-        free = _chain_dof(rig) - held
+        free = _free_joint_count(rig)
         if free <= 6:
             # Six unheld joints against a six-DoF pose leave nothing to swing.
             # Not an error, just absent -- and a held rail is why a seven-joint
@@ -755,6 +752,27 @@ def _chain_dof(rig) -> int:
     if solver is not None:
         return solver.chain.dof
     return len(builder.joint_bones(rig))
+
+
+def _free_joint_count(rig) -> int:
+    """Joints left to IK: the solver's chain, less the ones held by hand.
+
+    Both halves have to describe the same joints. Taking the length from the
+    solver's chain while counting holds across every joint bone miscounts a rig
+    whose tip sits part-way up: a held joint past the tip is not in the chain,
+    and subtracting it anyway can hide a swivel the chain has room for.
+
+    No solver is built to find out, for the same reason as :func:`_chain_dof`.
+    """
+    solver = manager_state(rig)
+    if solver is not None:
+        names = list(solver.chain.bone_names)
+    else:
+        names = [pb.name for pb in builder.joint_bones(rig)]
+    pose = rig.pose.bones
+    return sum(
+        1 for name in names if not getattr(pose.get(name), "kinema_ik_hold", False)
+    )
 
 
 def _solve_budget_ms() -> float:

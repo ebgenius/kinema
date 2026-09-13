@@ -471,7 +471,17 @@ class KINEMA_OT_add_swivel(KinemaRigOperator):
             for n in (shoulder, elbow, wrist)
         }
         axis_now = now[wrist] - now[shoulder]
-        axis_now /= np.linalg.norm(axis_now)
+        axis_length = float(np.linalg.norm(axis_now))
+        # A non-zero rest span says nothing about the pose: an arm whose upper arm
+        # and forearm are the same length can fold its wrist onto its shoulder,
+        # and dividing by that would put NaN into the ring's size.
+        if axis_length < 1e-6:
+            self.report(
+                {"ERROR"},
+                "The shoulder and wrist coincide in the current pose; unfold the arm first",
+            )
+            return {"CANCELLED"}
+        axis_now /= axis_length
         offset = now[elbow] - now[shoulder]
         # The ring is as wide as the elbow is far from the line, so its knob
         # starts beside the elbow -- with a floor, so a straight arm still gets
@@ -657,12 +667,18 @@ def hold_external_axes(rig) -> list[str]:
     chain = chain_mod.chain_from_rig(rig, manager.tip_bone(rig))
     if chain is None:
         return []
-    free = chain.dof
+    # Start from what is already free. A joint held by hand -- a turntable, say --
+    # is a spare joint already taken out, and counting it as free would hold the
+    # rail as well and leave the arm fewer than six joints to reach with.
+    already = manager.held_mask(rig, chain)
+    free = chain.dof - int(already.sum())
     held = []
-    for name, revolute in zip(chain.bone_names, chain.is_revolute, strict=True):
+    for name, revolute, is_held in zip(
+        chain.bone_names, chain.is_revolute, already, strict=True
+    ):
         if free <= 6:
             break
-        if not revolute:
+        if not revolute and not is_held:
             rig.pose.bones[name].kinema_ik_hold = True
             held.append(name)
             free -= 1
