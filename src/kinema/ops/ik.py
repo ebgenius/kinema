@@ -13,13 +13,19 @@ the file renders anywhere, on a farm, with the add-on absent.
 from __future__ import annotations
 
 import bpy
-from bpy.props import BoolProperty, IntProperty
+import numpy as np
+from bpy.props import BoolProperty, IntProperty, StringProperty
 from bpy.types import Operator
+from mathutils import Vector
 
 from .. import handlers
 from ..rig import builder, widgets
-from ..solver import manager
+from ..solver import chain, manager
 from ..ui.panel import active_rig
+
+
+def _np4(matrix) -> np.ndarray:
+    return np.array([[matrix[r][c] for c in range(4)] for r in range(4)])
 
 IK_SUFFIX = ".ik"
 
@@ -272,6 +278,326 @@ class KINEMA_OT_key_ik_tip(KinemaRigOperator):
         _force_constant_tip_keys(rig)
         self.report({"INFO"}, f"IK target bone keyed at frame {frame}")
         return {"FINISHED"}
+
+
+class KINEMA_OT_find_solutions(KinemaRigOperator):
+    """Search for the other configurations that reach the current goal.
+
+    A six-axis arm can put its tool in one place up to eight different ways,
+    and until now the rig offered whichever one the solver happened to land on.
+    This finds the rest by seeding the solver from configurations scattered
+    across the joint limits -- see solver/branches.py for why that is a search
+    and not an enumeration.
+    """
+
+    bl_idname = "kinema.find_solutions"
+    bl_label = "Find Solutions"
+    bl_description = (
+        "Search for other arm configurations that reach the same tool pose, "
+        "so you can pick the one that reads best on camera"
+    )
+
+    seeds: IntProperty(
+        name="Seeds",
+        description="How many starting configurations to try. More finds more",
+        default=0,
+        min=0,
+        max=400,
+        options={"SKIP_SAVE"},
+    )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        if not ik_name or ik_name not in rig.pose.bones:
+            self.report({"ERROR"}, "This rig has no IK target to search around")
+            return {"CANCELLED"}
+
+        solver = manager.get_solver(rig, ik_name)
+        if solver is None:
+            self.report({"ERROR"}, "Could not prepare a solver for this rig")
+            return {"CANCELLED"}
+
+        context.view_layer.update()
+        before = chain.read_configuration(rig, solver.chain)
+        context.window.cursor_set("WAIT")
+        # Suspended for the same reason baking suspends: the search writes
+        # nothing, but it runs many solves and the live handler would interleave
+        # its own with them.
+        try:
+            with handlers.suspended():
+                found = manager.find_solutions(rig, solver, seeds=self.seeds)
+        finally:
+            context.window.cursor_set("DEFAULT")
+
+        _store_solutions(rig, solver, found)
+        # Put the arm back: searching is not a way to lose the pose you had.
+        chain.write_configuration(rig, solver.chain, before)
+        context.view_layer.update()
+
+        if not found:
+            self.report(
+                {"WARNING"},
+                "No configuration reached that pose. It may be out of reach",
+            )
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            f"Found {len(found)} configuration{'s' if len(found) != 1 else ''} "
+            f"(from {self.seeds or 40} seeds; more seeds may find more)",
+        )
+        return {"FINISHED"}
+
+
+class KINEMA_OT_apply_solution(KinemaRigOperator):
+    bl_idname = "kinema.apply_solution"
+    bl_label = "Apply Solution"
+    bl_description = "Pose the robot in this configuration"
+
+    #: Index into the stored solutions. -1 steps by ``step`` instead.
+    index: IntProperty(name="Index", default=-1, options={"SKIP_SAVE"})
+    step: IntProperty(name="Step", default=0, options={"SKIP_SAVE"})
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        stored = _read_solutions(rig)
+        if not stored:
+            self.report({"ERROR"}, "No solutions found yet")
+            return {"CANCELLED"}
+
+        index = self.index
+        if index < 0:
+            # Wraps, so cycling with the arrows never dead-ends.
+            index = (int(rig.kinema_active_solution) + self.step) % len(stored)
+        elif index >= len(stored):
+            # Only reachable by calling the operator directly -- the arrows
+            # wrap and cannot get here -- but an out-of-range index used to
+            # raise IndexError out of execute rather than report anything.
+            self.report({"ERROR"}, f"There is no solution {index + 1}")
+            return {"CANCELLED"}
+
+        solver = manager.get_solver(rig, rig.get(builder.PROP_IK_BONE))
+        if solver is None or len(stored[index]) != solver.chain.dof:
+            self.report(
+                {"ERROR"}, "These solutions were found for a different chain"
+            )
+            return {"CANCELLED"}
+
+        rig.kinema_active_solution = index
+        chain.write_configuration(rig, solver.chain, np.array(stored[index]))
+        # The goal has not moved, and PyRoki's rest cost biases toward the seed,
+        # so the next live solve stays on the configuration just chosen rather
+        # than sliding back to the one it came from.
+        handlers.reset(rig.name)
+        context.view_layer.update()
+        self.report({"INFO"}, f"Solution {index + 1} of {len(stored)}")
+        return {"FINISHED"}
+
+
+class KINEMA_OT_add_elbow_target(KinemaRigOperator):
+    """A pole-style control for a redundant arm.
+
+    A seven-axis arm reaches a pose an infinite number of ways, the elbow
+    sweeping through a family while the tool stands still. Blender animators
+    already steer a character's elbow with a pole target, so this is one: a
+    bone the elbow is drawn toward, weighted far below the tool so that at the
+    default strength it moves the elbow within that family and barely disturbs
+    the tool.
+
+    An attractor, not a handle. The elbow reaches for the bone as far as the
+    arm's leftover freedom allows and then stops, so the two do not meet and
+    are not meant to -- the same as a pole target, which does not sit on the
+    elbow either.
+    """
+
+    bl_idname = "kinema.add_elbow_target"
+    bl_label = "Add Elbow Target"
+    bl_description = (
+        "Add a control that steers the elbow of a redundant arm, the way a "
+        "pole target steers a character's"
+    )
+
+    bone: StringProperty(name="Joint", default="", options={"SKIP_SAVE"})
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        if not ik_name or ik_name not in rig.pose.bones:
+            self.report({"ERROR"}, "Add an IK target first")
+            return {"CANCELLED"}
+
+        solver = manager.get_solver(rig, ik_name)
+        if solver is None:
+            self.report({"ERROR"}, "Could not prepare a solver for this rig")
+            return {"CANCELLED"}
+        if solver.chain.dof <= 6:
+            self.report(
+                {"ERROR"},
+                f"This arm has {solver.chain.dof} joints. An elbow target needs "
+                "one with freedom left over after the tool pose -- seven or more",
+            )
+            return {"CANCELLED"}
+
+        joint = self.bone or _default_elbow_joint(solver.chain)
+        if joint not in rig.data.bones:
+            self.report({"ERROR"}, f"'{joint}' is not a bone on this rig")
+            return {"CANCELLED"}
+
+        context.view_layer.update()
+        # On the joint, not out to the side of it. The goal is then already
+        # satisfied the moment the control exists, so creating one does not
+        # repose the robot -- landing it a quarter of the rig's size above the
+        # joint pulled the arm through 16 degrees on the arm7 fixture before
+        # the user had touched anything, which is not what "Add" should do.
+        #
+        # Buried in the arm's own casing is fine here: the rig already draws
+        # its bones in front of geometry, for exactly this reason.
+        landing = rig.pose.bones[joint].matrix.translation.copy()
+        reach = max(rig.dimensions) if any(rig.dimensions) else 1.0
+
+        name = _elbow_bone_name(joint)
+        previous_active = context.view_layer.objects.active
+        context.view_layer.objects.active = rig
+        if rig.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.ops.object.mode_set(mode="EDIT")
+        try:
+            edit_bones = rig.data.edit_bones
+            elbow = edit_bones.get(name) or edit_bones.new(name)
+            elbow.head = landing
+            elbow.tail = landing + Vector((0.0, 0.0, reach * 0.08))
+            # Parented to Root and never into the chain, for the same reason
+            # the IK goal is: a control that moved with the arm it steers would
+            # chase itself.
+            elbow.parent = edit_bones.get(builder.ROOT_BONE)
+            elbow.use_connect = False
+        finally:
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        pose_bone = rig.pose.bones[name]
+        pose_bone.rotation_mode = "QUATERNION"
+        pose_bone.custom_shape = widgets.ensure_widgets()["elbow_target"]
+        pose_bone.use_custom_shape_bone_size = True
+        for collection in rig.data.collections_all:
+            if collection.name == builder.COLLECTION_IK:
+                collection.assign(rig.data.bones[name])
+                collection.is_visible = True
+
+        rig[builder.PROP_ELBOW_BONE] = name
+        rig[builder.PROP_ELBOW_JOINT] = joint
+        manager.invalidate(rig.name)
+        handlers.reset(rig.name)
+
+        # An elbow goal is a different problem for JAX, so it compiles again --
+        # paid here behind a wait cursor rather than on the user's first drag,
+        # exactly as Add IK Target does.
+        seconds = KINEMA_OT_add_ik._warm_up(context, rig, ik_name)
+        if previous_active is not None:
+            context.view_layer.objects.active = previous_active
+
+        message = f"Elbow target on '{joint}'"
+        if seconds > 1.0:
+            message += f" (solver compiled in {seconds:.1f}s)"
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
+class KINEMA_OT_remove_elbow_target(KinemaRigOperator):
+    bl_idname = "kinema.remove_elbow_target"
+    bl_label = "Remove Elbow Target"
+    bl_description = "Delete the elbow control; the arm solves on the tool alone"
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        name = rig.get(builder.PROP_ELBOW_BONE)
+        if not name:
+            self.report({"WARNING"}, "This rig has no elbow target")
+            return {"CANCELLED"}
+
+        context.view_layer.objects.active = rig
+        if rig.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.ops.object.mode_set(mode="EDIT")
+        try:
+            edit_bones = rig.data.edit_bones
+            if name in edit_bones:
+                edit_bones.remove(edit_bones[name])
+        finally:
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        for key in (builder.PROP_ELBOW_BONE, builder.PROP_ELBOW_JOINT):
+            if key in rig:
+                del rig[key]
+        manager.invalidate(rig.name)
+        handlers.reset(rig.name)
+        self.report({"INFO"}, "Elbow target removed")
+        return {"FINISHED"}
+
+
+ELBOW_SUFFIX = ".elbow"
+#: Where the solutions live between finding and choosing: a flat list of joint
+#: values on the rig, plus the goal they were found for so a moved target can be
+#: reported as stale rather than silently offering configurations for a pose the
+#: robot is no longer being asked to reach.
+PROP_SOLUTIONS = "kinema_solutions"
+PROP_SOLUTIONS_GOAL = "kinema_solutions_goal"
+#: How wide each stored solution is. Kept so reading them back needs no solver:
+#: the panel reads them on every redraw, and building a solver there would put
+#: chain extraction on the UI thread every time the cache had been invalidated.
+PROP_SOLUTIONS_DOF = "kinema_solutions_dof"
+
+
+def _elbow_bone_name(joint: str) -> str:
+    return f"{joint}{ELBOW_SUFFIX}"
+
+
+def _default_elbow_joint(chain_obj) -> str:
+    """The middle of the chain, which is where an elbow is on an arm."""
+    return chain_obj.bone_names[len(chain_obj.bone_names) // 2]
+
+
+def _store_solutions(rig, solver, found) -> None:
+    rig[PROP_SOLUTIONS] = [float(v) for s in found for v in s.q]
+    rig[PROP_SOLUTIONS_DOF] = int(solver.chain.dof)
+    rig[PROP_SOLUTIONS_GOAL] = [
+        float(v)
+        for v in _np4(rig.pose.bones[solver.ik_bone].matrix).flatten()
+    ]
+    rig.kinema_active_solution = 0
+
+
+def _read_solutions(rig) -> list[list[float]]:
+    """The stored solutions, reshaped by the width they were stored at.
+
+    Recorded rather than re-derived, because the panel calls this on every
+    redraw and asking the manager for a solver would build one on a cache miss
+    -- chain extraction on the UI thread, on the first redraw after anything
+    invalidated the cache.
+    """
+    flat = rig.get(PROP_SOLUTIONS)
+    dof = int(rig.get(PROP_SOLUTIONS_DOF, 0))
+    if not flat or dof <= 0 or len(flat) % dof:
+        return []
+    values = [float(v) for v in flat]
+    return [values[i : i + dof] for i in range(0, len(values), dof)]
+
+
+def solutions_are_stale(rig) -> bool:
+    """True when the goal has moved since the solutions were found.
+
+    They describe how to reach one pose. Move the target and they describe
+    nothing, so the panel says so instead of offering them.
+    """
+    stored = rig.get(PROP_SOLUTIONS_GOAL)
+    ik_name = rig.get(builder.PROP_IK_BONE)
+    if not stored or len(stored) != 16 or not ik_name or ik_name not in rig.pose.bones:
+        return False
+    goal = _np4(rig.pose.bones[ik_name].matrix).flatten()
+    return bool(np.max(np.abs(np.array([float(v) for v in stored]) - goal)) > 1e-5)
+
+
+def solution_count(rig) -> int:
+    return len(_read_solutions(rig))
 
 
 class KINEMA_OT_bake_ik(KinemaRigOperator):
@@ -530,5 +856,9 @@ classes = (
     KINEMA_OT_snap_ik,
     KINEMA_OT_set_ik_tip,
     KINEMA_OT_key_ik_tip,
+    KINEMA_OT_find_solutions,
+    KINEMA_OT_apply_solution,
+    KINEMA_OT_add_elbow_target,
+    KINEMA_OT_remove_elbow_target,
     KINEMA_OT_bake_ik,
 )

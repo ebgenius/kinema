@@ -9,10 +9,15 @@ another depsgraph update, which calls the handler again. Two guards prevent
 that, and both are needed:
 
 1. A re-entrancy flag, so the write we cause cannot re-enter the solve.
-2. A cached copy of each IK target's matrix, so an update we did *not* cause
-   still does nothing unless the target actually moved. Without this the
-   handler would re-solve on every unrelated scene change, and the write from
-   guard 1 would schedule one more pass every time.
+2. A cached copy of the *problem* we last solved, so an update we did not cause
+   still does nothing unless something the solver reads actually changed.
+   Without this the handler would re-solve on every unrelated scene change, and
+   the write from guard 1 would schedule one more pass every time.
+
+Guard 2 is the one that needs care, because "the problem" is more than the IK
+target: every input the solve reads has to be in it. An elbow target that was
+left out compared equal on every drag, so the handler decided nothing had
+moved and the control did nothing at all -- see :func:`_elbow_signature`.
 
 There is also a time budget. A rig whose solves run over the user's configured
 limit has some updates dropped, so a 30-DoF humanoid degrades to a laggy but
@@ -34,11 +39,13 @@ from .solver import manager
 
 #: Guards against the handler re-entering itself via its own scene writes.
 _solving = False
-#: rig name -> (tip bone, IK target matrix) we last solved for. The tip is part
-#: of the key because it is keyframable: handing the goal from the wrist to the
-#: elbow mid-shot changes the chain while the goal matrix stays exactly where
-#: it was, and comparing the matrix alone would call that "nothing moved".
-_last_target: dict[str, tuple[str, np.ndarray]] = {}
+#: rig name -> the problem we last solved: (tip bone, IK target matrix, elbow
+#: signature). The tip is part of it because it is keyframable: handing the goal
+#: from the wrist to the elbow mid-shot changes the chain while the goal matrix
+#: stays exactly where it was, and comparing the matrix alone would call that
+#: "nothing moved". The elbow is part of it for the mirror-image reason -- see
+#: :func:`_elbow_signature`.
+_last_target: dict[str, tuple[str, np.ndarray, np.ndarray | None]] = {}
 #: rig name -> seconds the last solve took.
 _last_duration: dict[str, float] = {}
 #: rig name -> consecutive live updates skipped for being over budget.
@@ -90,21 +97,50 @@ def _over_budget(rig_name: str, budget: float) -> bool:
     return True
 
 
+def _elbow_signature(rig: bpy.types.Object) -> np.ndarray | None:
+    """Where the elbow target is and how hard it pulls, or None if it has none.
+
+    The elbow target is a second *input* to the same solve, so it belongs in
+    what "has anything changed" means. Dragging it leaves the IK target exactly
+    where it was, and a comparison that looked only at that decided nothing had
+    moved and skipped the solve -- so the control did nothing at all, every drag
+    after the first solve of the session.
+
+    The strength is in here for the same reason: it scales the cost, so turning
+    it up is as much a change to the problem as moving the bone.
+    """
+    name = rig.get(builder.PROP_ELBOW_BONE)
+    bone = rig.pose.bones.get(name) if name else None
+    if bone is None:
+        return None
+    strength = float(getattr(rig, "kinema_elbow_strength", 0.0))
+    return np.array([*bone.matrix.translation, strength])
+
+
+def _same_problem(previous, tip: str, target: np.ndarray, elbow) -> bool:
+    """True if this is the problem we already solved for this rig."""
+    if previous is None or previous[0] != tip:
+        return False
+    if not np.allclose(target, previous[1], atol=1e-7):
+        return False
+    before = previous[2]
+    # Gaining or losing an elbow target changes the problem even when nothing
+    # moved, so a None on one side and an array on the other is a difference.
+    if (before is None) != (elbow is None):
+        return False
+    return elbow is None or np.allclose(elbow, before, atol=1e-7)
+
+
 def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
-    """Solve one rig if its IK target moved. Returns True if it wrote anything."""
+    """Solve one rig if its goal changed. Returns True if it wrote anything."""
     ik_bone = rig.get(builder.PROP_IK_BONE)
     if not ik_bone or ik_bone not in rig.pose.bones:
         return False
 
     target = _np4(rig.pose.bones[ik_bone].matrix)
     tip = manager.tip_bone(rig)
-    previous = _last_target.get(rig.name)
-    if (
-        not force
-        and previous is not None
-        and previous[0] == tip
-        and np.allclose(target, previous[1], atol=1e-7)
-    ):
+    elbow = _elbow_signature(rig)
+    if not force and _same_problem(_last_target.get(rig.name), tip, target, elbow):
         return False
 
     solver = manager.get_solver(rig, ik_bone)
@@ -128,7 +164,7 @@ def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
 
     # Record the goal we actually solved for, not the one we may have been
     # asked for a moment ago, so the next update compares against reality.
-    _last_target[rig.name] = (tip, target)
+    _last_target[rig.name] = (tip, target, elbow)
     return True
 
 

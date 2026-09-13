@@ -128,6 +128,61 @@ from frame 40 to frame 30 does not leave the robot visiting frame 40 as well. Wh
 is right, **Bake IK to Keyframes** turns the whole thing into plain joint curves that render
 with Kinema uninstalled.
 
+## Choosing how the arm reaches
+
+A six-axis arm can put its tool in one place up to eight different ways — elbow bent one way
+or the other, wrist flipped, base swung round behind. Until now you got whichever one the
+solver landed on from wherever the arm happened to be, which is how a shot ends up with the
+elbow on the wrong side of the robot and no obvious way to fix it.
+
+**Find Solutions**, in the IK panel, searches for the others. PyRoki is a nonlinear solver
+rather than an analytic one, so it does not enumerate branches — it converges to whichever
+is nearest its seed. So they are *found*: seed from configurations scattered across the joint
+limits, solve each, keep the ones that reached the goal, fold away the duplicates. That makes
+it a **lower bound** and the panel says so; more seeds may find more.
+
+The ◀ ▶ arrows cycle through what turned up. Applying one only writes joint values, so
+**Key All** keyframes it and it bakes like anything else — flipping the elbow between two
+frames is two keyed poses, which is what a robot programmer would do anyway.
+
+Solutions belong to one goal pose. Move the IK target and the panel says they are stale
+rather than offering configurations for a pose the robot is no longer being asked to reach.
+
+On a KR120 at a working pose, this turns up the arm you are in plus the wrist-flipped one
+— joints 1 to 3 identical, 4 to 6 turned through 180° — with the tool holding to 0.008 mm
+across the switch. The other families a KR120 nominally has are ruled out by its own joint
+limits at that pose, which is the correct answer rather than a shortfall of the search.
+
+### The elbow on a redundant arm
+
+Seven axes reach a pose an *infinite* number of ways, the elbow sweeping through a
+continuous family while the tool stands still. That is a control, not a curiosity, and
+Blender animators already have one for it: the pole target on a character's arm.
+
+**Add Elbow Target** creates a bone you drag. It is a soft position goal on the elbow's link,
+weighted far below the tool's — so at the default strength the elbow moves through the null
+space and the tool holds to well under a millimetre. Drag it and the arm reconfigures around
+a tool that stays put. It lands on the elbow itself, so adding it changes nothing until you
+move it; the rig draws its bones in front of the geometry, so it is still there to grab.
+
+It is an attractor rather than Blender's angle-reference pole, so the elbow is pulled
+*toward* it rather than aimed *through* it. Close enough that the muscle memory transfers —
+with one consequence worth knowing: the bone does not stick to the elbow and is not supposed
+to. It has no constraint on it. Put it where you want the elbow to go, and the elbow reaches
+for it as far as the arm's leftover freedom allows, then stops. On a seven-axis arm that
+freedom is a single circle, so a target off that circle is approached, never met.
+
+**Strength** is a cost weight, not a null-space projection, so turning it up does start
+moving the tool: on the `arm7` fixture with the target dragged well out of reach, the tool
+sits about 0.5 mm off its goal at the default 2, 3 mm at 5, and 11 mm at 10. It buys little
+extra elbow travel in exchange — the null space runs out first. The solve readout shows the
+tool error, so the trade is visible while you make it.
+
+Offered only when the chain has more joints than the task needs. On a six-axis arm there is
+no freedom left after a full pose, so the control would have nothing to steer, and it is
+absent rather than present and inert. It also needs the PyRoki solver; the NumPy fallback
+has no notion of a second goal and the panel says so instead of ignoring it quietly.
+
 ## Where the tool frame sits
 
 The **Tool Centre Point** panel places the TCP on a joint bone and offsets it from there.

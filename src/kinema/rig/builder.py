@@ -104,6 +104,10 @@ PROP_SOURCE = "kinema_source"
 PROP_XACRO_ARGS = "kinema_xacro_args"
 #: IK state, all stored on the rig so it survives save/reload.
 PROP_IK_BONE = "kinema_ik_bone"
+#: The elbow control bone, and the joint bone whose link it pulls. Only ever set
+#: on a redundant rig -- see manager.RigSolver.elbow_goal.
+PROP_ELBOW_BONE = "kinema_elbow_bone"
+PROP_ELBOW_JOINT = "kinema_elbow_joint"
 PROP_IK_ENABLED = "kinema_ik_enabled"
 PROP_SOLVER_MODE = "kinema_solver_mode"
 

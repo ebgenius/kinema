@@ -134,7 +134,9 @@ class RigSolver:
         if mode == MODE_PYROKI:
             solver = self.pyroki(rig)
             if solver is not None:
-                result = self._solve_pyroki(solver, seed, goal)
+                result = self._solve_pyroki(
+                    solver, seed, goal, elbow=self.elbow_goal(rig, solver)
+                )
 
         if result is None:
             result = numpy_backend.solve(self.chain, seed, goal)
@@ -144,7 +146,36 @@ class RigSolver:
         self.solve_count += 1
         return result
 
-    def _solve_pyroki(self, solver, seed: np.ndarray, goal: np.ndarray) -> SolveResult | None:
+    def elbow_goal(self, rig, solver) -> tuple[int, np.ndarray, float] | None:
+        """The elbow target as PyRoki wants it, or None if this rig has none.
+
+        Only offered on a redundant chain. With six joints against a six-DoF
+        tool pose there is no freedom left over, so an elbow goal could only be
+        satisfied by dragging the tool off its target -- which at the default
+        weight it is far too weak to do to any useful degree. It would be a
+        control that visibly did nothing while quietly costing accuracy.
+        """
+        bone_name = rig.get(builder.PROP_ELBOW_BONE)
+        if not bone_name or self.chain.dof <= 6:
+            return None
+        pose_bone = rig.pose.bones.get(bone_name)
+        joint_bone = rig.data.bones.get(rig.get(builder.PROP_ELBOW_JOINT, ""))
+        if pose_bone is None or joint_bone is None:
+            return None
+
+        link = joint_bone.get(builder.PROP_CHILD_LINK)
+        index = solver.link_index(str(link)) if link else None
+        if index is None:
+            return None
+
+        weight = float(getattr(rig, "kinema_elbow_strength", 0.0))
+        if weight <= 0.0:
+            return None
+        return (index, np.array(pose_bone.matrix.translation, dtype=float), weight)
+
+    def _solve_pyroki(
+        self, solver, seed: np.ndarray, goal: np.ndarray, elbow=None
+    ) -> SolveResult | None:
         try:
             # PyRoki targets a URDF link; the IK bone expresses a *bone* goal,
             # so apply the fixed bone->link correction recorded at build time.
@@ -153,7 +184,7 @@ class RigSolver:
 
             full_seed = np.zeros(solver.dof)
             full_seed[self._chain_to_full] = seed
-            full = solver.solve(full_seed, link_goal)
+            full = solver.solve(full_seed, link_goal, elbow=elbow)
 
             result = pyroki_backend.measure(solver, full, link_goal)
             # Write back only the joints on our chain; anything else PyRoki
@@ -410,6 +441,59 @@ def get_solver(rig, ik_bone: str | None = None) -> RigSolver | None:
     if solver is not None:
         _cache[rig.name] = solver
     return solver
+
+
+def find_solutions(rig, solver: RigSolver, seeds: int = 0, seed_value: int = 0):
+    """Every distinct configuration these seeds could reach the current goal in.
+
+    A lower bound, not an enumeration -- see ``solver/branches.py``. Runs the
+    seeds through whichever backend the rig is on, then hands the results to
+    :func:`branches.collect`, which decides what counts and what is a duplicate.
+
+    The rig is left exactly as it was found. Searching should not be a way to
+    lose the pose you were looking at, and the caller applies a solution by
+    choosing one.
+    """
+    from . import branches
+
+    pose = rig.pose
+    if solver.ik_bone not in pose.bones:
+        return []
+    goal = _np4(pose.bones[solver.ik_bone].matrix)
+    chain = solver.chain
+
+    mode = getattr(rig, "kinema_solver_mode", MODE_PYROKI)
+    if mode == MODE_OFF:
+        mode = MODE_PYROKI
+    pyroki = solver.pyroki(rig) if mode == MODE_PYROKI else None
+    elbow = solver.elbow_goal(rig, pyroki) if pyroki is not None else None
+
+    # The goal in the frame each backend wants it in. PyRoki aims at a URDF
+    # link, the NumPy fallback at the tool frame the chain already describes.
+    link_goal = goal @ solver.link_target[1] if solver.link_target else goal
+
+    started = chain_mod.read_configuration(rig, chain)
+    rng = np.random.default_rng(seed_value)
+    candidates = []
+    for q_seed in branches.seed_configurations(
+        chain, seeds or branches.DEFAULT_SEEDS, rng
+    ):
+        if pyroki is not None:
+            full = np.zeros(pyroki.dof)
+            full[solver._chain_to_full] = q_seed
+            try:
+                candidates.append(
+                    pyroki.solve(full, link_goal, elbow=elbow)[solver._chain_to_full]
+                )
+            except Exception:  # noqa: BLE001 - one bad seed must not end the search
+                continue
+        else:
+            candidates.append(numpy_backend.solve(chain, q_seed, goal).q)
+
+    # Include where the arm already is, so the configuration the user is
+    # looking at is in the list rather than conspicuously missing from it.
+    candidates.insert(0, started)
+    return branches.collect(chain, goal, candidates)
 
 
 def invalidate(rig_name: str | None = None) -> None:
