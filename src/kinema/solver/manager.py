@@ -130,6 +130,10 @@ class RigSolver:
         goal = _np4(pose.bones[self.ik_bone].matrix)
         seed = chain_mod.read_configuration(rig, self.chain)
         held = held_mask(rig, self.chain)
+        if held.any():
+            # A held joint stands where the rig shows it, limit constraint and
+            # all, not at its channel value -- see chain.displayed_configuration.
+            seed = chain_mod.displayed_configuration(rig, self.chain, seed, only=held)
 
         result = None
         if mode == MODE_PYROKI:
@@ -142,7 +146,10 @@ class RigSolver:
         if result is None:
             result = numpy_backend.solve(self.chain, seed, goal, held=held)
 
-        chain_mod.write_configuration(rig, self.chain, result.q)
+        # Held joints are not written back. They are the animator's input, and
+        # writing the displayed value over a channel dragged past its limit would
+        # quietly move it.
+        chain_mod.write_configuration(rig, self.chain, result.q, skip=held)
         self.last_result = result
         self.solve_count += 1
         return result
@@ -548,6 +555,8 @@ def find_solutions(rig, solver: RigSolver, seeds: int = 0, seed_value: int = 0):
 
     started = chain_mod.read_configuration(rig, chain)
     held = held_mask(rig, chain)
+    if held.any():
+        started = chain_mod.displayed_configuration(rig, chain, started, only=held)
     rng = np.random.default_rng(seed_value)
     candidates = []
     for q_seed in branches.seed_configurations(

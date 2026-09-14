@@ -669,30 +669,38 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
 
     @staticmethod
     def _draw_swivel(layout, rig) -> None:
-        """The elbow swivel, on arms with a joint to spare after the tool pose."""
-        free = _free_joint_count(rig)
-        if free <= 6:
+        """The elbow swivel: offered with a joint to spare, and kept once added."""
+        state = _swivel_section(rig)
+        if state is None:
             # Six unheld joints against a six-DoF pose leave nothing to swing.
             # Not an error, just absent -- and a held rail is why a seven-joint
             # rail robot does not offer one.
             return
 
         header, body = layout.panel("kinema_swivel", default_closed=True)
-        header.label(text="Elbow Swivel")
+        # Flagged in the header too, so a collapsed section still says so.
+        header.label(text="Elbow Swivel", icon="ERROR" if state == "stalled" else "NONE")
         if body is None:
             return
 
-        name = rig.get(builder.PROP_SWIVEL_BONE)
-        handle = rig.pose.bones.get(name) if name else None
-        if handle is None:
+        free = _free_joint_count(rig)
+        if state == "offer":
             body.operator("kinema.add_swivel", text="Add Elbow Swivel", icon="CON_ROTLIKE")
             body.label(text=f"{free} joints: the elbow can swing.", icon="BLANK1")
             return
 
+        handle = rig.pose.bones[rig.get(builder.PROP_SWIVEL_BONE)]
         # The one channel that matters, with its own keyframe dot: the elbow's
         # angle round the shoulder-to-wrist line. The ring in the viewport turns
         # the same channel.
-        body.prop(handle, "rotation_euler", index=1, text="Swivel")
+        row = body.row()
+        row.enabled = state == "active"
+        row.prop(handle, "rotation_euler", index=1, text="Swivel")
+        if state == "stalled":
+            # Said, not just greyed: the ring is still in the viewport and still
+            # turns, and nothing else would explain why it no longer does anything.
+            body.label(text=f"Only {free} joints left to IK: nothing to swing", icon="ERROR")
+            body.label(text="Release a held joint to use it again", icon="BLANK1")
         body.label(
             text=(
                 f"{rig.get(builder.PROP_SWIVEL_SHOULDER, '?')} - "
@@ -773,6 +781,24 @@ def _free_joint_count(rig) -> int:
     return sum(
         1 for name in names if not getattr(pose.get(name), "kinema_ik_hold", False)
     )
+
+
+def _swivel_section(rig) -> str | None:
+    """What the Elbow Swivel section shows: offer, active, stalled -- or None.
+
+    A swivel that exists always keeps its section, whatever the count. Holding a
+    joint can take the chain down to six free joints, and the pin is keyframable,
+    so hiding the section then took the Remove button with it and would make the
+    whole thing blink in and out over a shot -- while the ring stayed in the
+    viewport, turning and doing nothing. Only the offer to add one depends on
+    there being a joint to spare.
+    """
+    name = rig.get(builder.PROP_SWIVEL_BONE)
+    has_swivel = bool(name) and name in rig.pose.bones
+    spare = _free_joint_count(rig) > 6
+    if has_swivel:
+        return "active" if spare else "stalled"
+    return "offer" if spare else None
 
 
 def _solve_budget_ms() -> float:

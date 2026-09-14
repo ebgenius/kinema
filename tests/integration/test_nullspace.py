@@ -85,7 +85,11 @@ def _rig_from(fixture_dir, builder, name: str, mode: str = "PYROKI"):
     """
     import bpy
 
-    assert "FINISHED" in bpy.ops.kinema.build_robot(filepath=str(fixture_dir / name))
+    # Limits on explicitly: they are what a held joint dragged past its range
+    # has to be solved against, and a default could change under the tests.
+    assert "FINISHED" in bpy.ops.kinema.build_robot(
+        filepath=str(fixture_dir / name), enforce_limits=True
+    )
     rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
     bpy.context.view_layer.objects.active = rig
     rig.select_set(True)
@@ -270,6 +274,32 @@ class TestDraggingAHeldRail:
         assert rig.pose.bones["rail"].location[1] == pytest.approx(0.15, abs=1e-6)
         assert float(np.linalg.norm(_tool(builder, rig) - tool)) < 2e-3
 
+    def test_a_rail_dragged_past_its_limit_is_solved_where_it_stands(
+        self, rail6, builder, handlers
+    ):
+        """The solver has to hold the rail where the rig shows it.
+
+        The rail carries the import's limit constraint, so a carriage dragged to
+        1.55 m against a 1.5 m limit reads 1.55 in its channel while it stands
+        at 1.5. Planned around 1.55, the arm put the displayed tool 5 cm off its
+        goal while the solve reported success.
+        """
+        assert builder.LIMIT_CONSTRAINT in [
+            c.name for c in rail6.pose.bones["rail"].constraints
+        ], "the rail has no limit constraint, so this proves nothing"
+
+        start = list(REACHABLE)
+        start[0] = 1.45
+        _start_at(builder, handlers, rail6, start)
+        goal = np.array(rail6.pose.bones[rail6.get(builder.PROP_IK_BONE)].matrix.translation)
+
+        assert _drag_rail(handlers, rail6, 0.10)
+
+        # The channel keeps what was dragged; the constraint shows the limit.
+        assert rail6.pose.bones["rail"].location[1] == pytest.approx(1.55, abs=1e-6)
+        miss = float(np.linalg.norm(_tool(builder, rail6) - goal))
+        assert miss < 1e-3, f"the displayed tool is {miss * 1000:.1f} mm off its goal"
+
 
 class TestReleasing:
     def test_released_the_solver_may_move_the_rail(
@@ -421,6 +451,32 @@ class TestTheSwivelPanel:
 
         rig.pose.bones["joint7"].kinema_ik_hold = True
         assert panel._free_joint_count(rig) == 6
+
+    def test_a_swivel_keeps_its_section_when_a_hold_leaves_nothing_to_swing(
+        self, arm7_numpy, builder, handlers, panel
+    ):
+        """Its Remove button goes wherever the section goes.
+
+        Holding a joint took arm7 to six free joints and the whole section --
+        slider, explanation and Remove -- vanished, leaving a ring in the
+        viewport that turned and did nothing. The pin is keyframable, so it
+        would have blinked in and out over a shot.
+        """
+        rig = arm7_numpy
+        _with_swivel(builder, handlers, rig)
+        assert panel._swivel_section(rig) == "active"
+
+        rig.pose.bones["joint1"].kinema_ik_hold = True
+        assert panel._swivel_section(rig) == "stalled"
+
+        rig.pose.bones["joint1"].kinema_ik_hold = False
+        assert panel._swivel_section(rig) == "active"
+
+    def test_nothing_is_offered_with_nothing_to_swing(self, arm7_numpy, panel):
+        rig = arm7_numpy
+        assert panel._swivel_section(rig) == "offer"
+        rig.pose.bones["joint1"].kinema_ik_hold = True
+        assert panel._swivel_section(rig) is None
 
 
 class TestTheSwivel:

@@ -69,8 +69,10 @@ def solve(
     held_mask = (
         np.zeros(chain.dof, dtype=bool) if held is None else np.asarray(held, dtype=bool)
     )
-    # Pinned at the seed, not the clamped seed: a held joint is wherever the
-    # user put it, and quietly clamping it would be moving it.
+    # Pinned at the seed, not the clamped seed. The caller hands over a held
+    # joint where the rig displays it -- any limit constraint already applied --
+    # so clamping again to the chain's own limits could only move it away from
+    # what is on screen.
     pinned = seed[held_mask].copy()
 
     q = chain.clamp(seed.copy())

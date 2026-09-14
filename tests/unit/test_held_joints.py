@@ -66,7 +66,11 @@ def test_the_other_joints_still_solve_around_a_held_rail():
 
 
 def test_a_rail_held_outside_its_limits_is_not_clamped_back():
-    """Where the user put it wins. Clamping it would be moving it."""
+    """The backend holds exactly what it is given.
+
+    Deciding what that is -- where the rig displays the joint, limit constraint
+    applied -- is the caller's job; see manager.RigSolver.solve.
+    """
     chain = _rail_arm()
     seed = SEED.copy()
     seed[0] = 2.0
