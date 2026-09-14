@@ -28,25 +28,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   On a KR120 at a working pose this finds the arm you are in plus the wrist-flipped one,
   with the tool holding to 0.008 mm across the switch.
 
-- **An elbow target for redundant arms**, the way a pole target steers a character's arm in
-  Blender. Seven axes reach a pose an infinite number of ways, the elbow sweeping through a
-  continuous family while the tool stands still — so **Add Elbow Target** gives you a bone
-  to drag, and the arm reconfigures around a tool that does not move.
+- **Held joints, for rails, gantries and turntables.** Pin a joint in the Joints panel and IK
+  solves the rest of the chain around it, while you move the pinned joint with its own slider
+  or bone and the tool stays put. **Add IK Target** pins rails automatically: while a chain
+  has more than six unheld joints, its prismatic joints are held, base first, so a six-axis
+  arm on a rail gets its rail held and nothing else. The pin is keyframable.
 
-  It is a soft position goal on the elbow's link, weighted far below the tool's, so at the
-  default strength the elbow moves through the null space while the tool holds to well under
-  a millimetre. An attractor rather than an angle reference: the elbow is pulled *toward* it
-  rather than aimed *through* it, and the bone carries no constraint — put it where you want
-  the elbow, and the elbow reaches for it as far as the arm's leftover freedom allows. It
-  lands on the elbow, so adding one does not repose the robot.
+  PyRoki holds a joint with a cost that is always part of the compiled problem, so pinning
+  one needs no recompile. The held value is restored exactly after every solve, so a rail
+  can't creep. The NumPy fallback and Find Solutions respect the pin too.
 
-  **Strength** is a cost weight rather than a null-space projection, so turning it up trades
-  tool accuracy for elbow travel — about 3 mm of tool error at 5 and 11 mm at 10, for very
-  little extra reach. The solve readout shows the error while you make the trade.
+- **An elbow swivel for seven-axis arms.** **Add Elbow Swivel** puts a ring on the
+  shoulder-to-wrist line, and turning it swings the elbow round that line while the tool
+  holds. The ring follows the arm through Blender's own constraints. Its single rotation
+  channel is the elbow's angle, keyframable as one curve and shown as a **Swivel** slider.
 
-  Offered only when the chain has more joints than the task needs — on a six-axis arm there
-  is nothing left to steer, so the control is absent rather than present and inert — and it
-  needs the PyRoki solver, which the panel says rather than ignoring the control quietly.
+  Its goal is a point on the circle the elbow can actually reach, built about the wrist
+  centre where the tool is going rather than where it is, so the single live update a drag
+  produces already reaches the tool. A target dragged past reach leaves the elbow on its
+  side instead of flipping it over. The free-floating elbow target
+  this replaces, which never shipped, pulled toward wherever it was dragged and gave up tool
+  accuracy there. On the `arm7` fixture the swivel keeps the tool within 0.0003 mm at every
+  strength from 0.5 to 20, where the free target cost 0.55 mm at 2 and 30.7 mm at 20. Adding a swivel doesn't move the arm. It is offered only when more than six
+  joints are left to IK, and it needs the PyRoki solver.
 
 ## [0.4.0] - 2026-09-07
 

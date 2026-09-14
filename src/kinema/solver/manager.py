@@ -129,52 +129,102 @@ class RigSolver:
 
         goal = _np4(pose.bones[self.ik_bone].matrix)
         seed = chain_mod.read_configuration(rig, self.chain)
+        held = held_mask(rig, self.chain)
+        if held.any():
+            # A held joint stands where the rig shows it, limit constraint and
+            # all, not at its channel value -- see chain.displayed_configuration.
+            seed = chain_mod.displayed_configuration(rig, self.chain, seed, only=held)
 
         result = None
         if mode == MODE_PYROKI:
             solver = self.pyroki(rig)
             if solver is not None:
                 result = self._solve_pyroki(
-                    solver, seed, goal, elbow=self.elbow_goal(rig, solver)
+                    solver, seed, goal, elbow=self.elbow_goal(rig, solver), held=held
                 )
 
         if result is None:
-            result = numpy_backend.solve(self.chain, seed, goal)
+            result = numpy_backend.solve(self.chain, seed, goal, held=held)
 
-        chain_mod.write_configuration(rig, self.chain, result.q)
+        # Held joints are not written back. They are the animator's input, and
+        # writing the displayed value over a channel dragged past its limit would
+        # quietly move it.
+        chain_mod.write_configuration(rig, self.chain, result.q, skip=held)
         self.last_result = result
         self.solve_count += 1
         return result
 
     def elbow_goal(self, rig, solver) -> tuple[int, np.ndarray, float] | None:
-        """The elbow target as PyRoki wants it, or None if this rig has none.
+        """The swivel's elbow goal as PyRoki wants it, or None if there is none.
 
-        Only offered on a redundant chain. With six joints against a six-DoF
-        tool pose there is no freedom left over, so an elbow goal could only be
-        satisfied by dragging the tool off its target -- which at the default
-        weight it is far too weak to do to any useful degree. It would be a
-        control that visibly did nothing while quietly costing accuracy.
+        The point lies on the circle the elbow can actually sweep -- see
+        ``solver/swivel.py`` -- at the angle the swivel is turned to. That
+        circle is built about the wrist centre *at the goal*, not where the
+        wrist is now: on the update that moves the target the arm has not got
+        there yet, and a circle about the old wrist would pull the elbow toward
+        a point it cannot reach from the new one.
+
+        Only on a chain with more than six unheld joints. With six there is no
+        freedom left over, and the goal could only be met by moving the tool.
         """
-        bone_name = rig.get(builder.PROP_ELBOW_BONE)
-        if not bone_name or self.chain.dof <= 6:
+        from . import swivel
+
+        handle_name = rig.get(builder.PROP_SWIVEL_BONE)
+        if not handle_name:
             return None
-        pose_bone = rig.pose.bones.get(bone_name)
-        joint_bone = rig.data.bones.get(rig.get(builder.PROP_ELBOW_JOINT, ""))
-        if pose_bone is None or joint_bone is None:
+        if self.chain.dof - int(np.sum(held_mask(rig, self.chain))) <= 6:
+            return None
+        weight = float(getattr(rig, "kinema_elbow_strength", 0.0))
+        if weight <= 0.0:
             return None
 
-        link = joint_bone.get(builder.PROP_CHILD_LINK)
+        pose = rig.pose.bones
+        names = [
+            rig.get(key, "")
+            for key in (
+                builder.PROP_SWIVEL_SHOULDER,
+                builder.PROP_ELBOW_JOINT,
+                builder.PROP_SWIVEL_WRIST,
+            )
+        ]
+        handle, tip, target = (
+            pose.get(handle_name), pose.get(self.tip_bone), pose.get(self.ik_bone)
+        )
+        if handle is None or tip is None or target is None:
+            return None
+        if not all(name and name in pose for name in names):
+            return None
+        shoulder, elbow, wrist = (pose[name] for name in names)
+
+        link = rig.data.bones[elbow.name].get(builder.PROP_CHILD_LINK)
         index = solver.link_index(str(link)) if link else None
         if index is None:
             return None
 
-        weight = float(getattr(rig, "kinema_elbow_strength", 0.0))
-        if weight <= 0.0:
-            return None
-        return (index, np.array(pose_bone.matrix.translation, dtype=float), weight)
+        # Rigid links, so the rest pose gives both lengths once and for all.
+        rest = [np.array(rig.data.bones[name].head_local, dtype=float) for name in names]
+        upper = float(np.linalg.norm(rest[1] - rest[0]))
+        fore = float(np.linalg.norm(rest[2] - rest[1]))
+
+        # The wrist centre rides the tool: every wrist axis passes through it,
+        # so it is fixed in the tool's frame however the wrist is turned.
+        wrist_in_tip = np.linalg.inv(_np4(tip.matrix)) @ np.append(
+            np.array(wrist.matrix.translation, dtype=float), 1.0
+        )
+        wrist_at_goal = (_np4(target.matrix) @ wrist_in_tip)[:3]
+
+        point = swivel.elbow_goal(
+            np.array(shoulder.matrix.translation, dtype=float),
+            wrist_at_goal,
+            upper,
+            fore,
+            np.array(handle.matrix.col[2][:3], dtype=float),
+            np.array(elbow.matrix.translation, dtype=float),
+        )
+        return (index, point, weight)
 
     def _solve_pyroki(
-        self, solver, seed: np.ndarray, goal: np.ndarray, elbow=None
+        self, solver, seed: np.ndarray, goal: np.ndarray, elbow=None, held=None
     ) -> SolveResult | None:
         try:
             # PyRoki targets a URDF link; the IK bone expresses a *bone* goal,
@@ -184,7 +234,16 @@ class RigSolver:
 
             full_seed = np.zeros(solver.dof)
             full_seed[self._chain_to_full] = seed
-            full = solver.solve(full_seed, link_goal, elbow=elbow)
+            full_held = _full_mask(held, self._chain_to_full, solver.dof)
+            full = solver.solve(
+                full_seed, link_goal, elbow=elbow,
+                held=(full_held, full_seed) if full_held is not None else None,
+            )
+            if full_held is not None:
+                # The hold is a heavy cost, not a lock, so put held joints back
+                # exactly. Seeding the next update from a value that crept
+                # would let a rail drift a hair per solve until it visibly had.
+                full[full_held] = full_seed[full_held]
 
             result = pyroki_backend.measure(solver, full, link_goal)
             # Write back only the joints on our chain; anything else PyRoki
@@ -283,6 +342,28 @@ def tip_bone(rig) -> str:
     marker", which is the behaviour every rig had before the property existed.
     """
     return tip_bone_for(rig, getattr(rig, "kinema_ik_tip", -1))
+
+
+def held_mask(rig, chain: chain_mod.Chain) -> np.ndarray:
+    """Which of ``chain``'s joints the animator is positioning by hand.
+
+    Read off each joint bone's ``kinema_ik_hold``. A bone without the property
+    -- a rig saved before it existed -- is simply not held.
+    """
+    bones = rig.pose.bones
+    return np.array(
+        [bool(getattr(bones[name], "kinema_ik_hold", False)) for name in chain.bone_names],
+        dtype=bool,
+    )
+
+
+def _full_mask(held, chain_to_full, dof: int) -> np.ndarray | None:
+    """A chain-joint mask spread onto PyRoki's full actuated vector, or None."""
+    if held is None or not np.any(held):
+        return None
+    mask = np.zeros(dof, dtype=bool)
+    mask[chain_to_full] = held
+    return mask
 
 
 def _load_source_urdf(rig):
@@ -473,22 +554,33 @@ def find_solutions(rig, solver: RigSolver, seeds: int = 0, seed_value: int = 0):
     link_goal = goal @ solver.link_target[1] if solver.link_target else goal
 
     started = chain_mod.read_configuration(rig, chain)
+    held = held_mask(rig, chain)
+    if held.any():
+        started = chain_mod.displayed_configuration(rig, chain, started, only=held)
     rng = np.random.default_rng(seed_value)
     candidates = []
     for q_seed in branches.seed_configurations(
         chain, seeds or branches.DEFAULT_SEEDS, rng
     ):
+        # A held joint is not the search's to vary: every alternative it finds
+        # is an arm reaching from where the rail already stands.
+        q_seed = np.where(held, started, q_seed)
         if pyroki is not None:
             full = np.zeros(pyroki.dof)
             full[solver._chain_to_full] = q_seed
+            mask = _full_mask(held, solver._chain_to_full, pyroki.dof)
             try:
-                candidates.append(
-                    pyroki.solve(full, link_goal, elbow=elbow)[solver._chain_to_full]
+                solved = pyroki.solve(
+                    full, link_goal, elbow=elbow,
+                    held=(mask, full) if mask is not None else None,
                 )
             except Exception:  # noqa: BLE001 - one bad seed must not end the search
                 continue
+            if mask is not None:
+                solved[mask] = full[mask]
+            candidates.append(solved[solver._chain_to_full])
         else:
-            candidates.append(numpy_backend.solve(chain, q_seed, goal).q)
+            candidates.append(numpy_backend.solve(chain, q_seed, goal, held=held).q)
 
     # Include where the arm already is, so the configuration the user is
     # looking at is in the list rather than conspicuously missing from it.

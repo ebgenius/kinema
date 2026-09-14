@@ -155,25 +155,31 @@ def _ik_target_widget() -> bpy.types.Object:
     return _make_widget("ik-target", corners, edges)
 
 
-def _elbow_target_widget() -> bpy.types.Object:
-    """A diamond: the elbow goal.
+def _swivel_widget() -> bpy.types.Object:
+    """A ring round the shoulder-to-wrist line, with a knob where the elbow goes.
 
-    Deliberately not the IK target's cube. Both are draggable goals and they
-    sit near each other on a redundant arm, so telling them apart at a glance
-    matters more than either shape being pretty.
+    Drawn in the swivel bone's space, whose Y *is* that line, so the ring sits
+    round the arm and turning the bone about Y carries the knob round with it.
+    The knob is at +Z because +Z is the direction the elbow goal is read from,
+    and a spoke joins it to the line so it reads as the handle of a dial rather
+    than a loose marker. The bone is sized to the elbow's distance from the line,
+    so the knob starts out beside the elbow itself.
     """
-    s = 0.4
-    points = [
-        (0.0, 0.5 + s, 0.0), (0.0, 0.5 - s, 0.0),
-        (s, 0.5, 0.0), (-s, 0.5, 0.0),
-        (0.0, 0.5, s), (0.0, 0.5, -s),
+    vertices, edges = _ring(1.0, 0.0, segments=32)
+    base = len(vertices)
+    s = 0.12
+    vertices += [
+        (0.0, 0.0, 0.0), (0.0, 0.0, 1.0),                 # spoke
+        (s, 0.0, 1.0), (-s, 0.0, 1.0), (0.0, s, 1.0),     # knob: a small
+        (0.0, -s, 1.0), (0.0, 0.0, 1.0 + s), (0.0, 0.0, 1.0 - s),  # octahedron
     ]
-    edges = [
-        (0, 2), (0, 3), (0, 4), (0, 5),
-        (1, 2), (1, 3), (1, 4), (1, 5),
+    knob = [
         (2, 4), (4, 3), (3, 5), (5, 2),
+        (6, 2), (6, 3), (6, 4), (6, 5),
+        (7, 2), (7, 3), (7, 4), (7, 5),
     ]
-    return _make_widget("elbow-target", points, edges)
+    edges += [(base, base + 1)] + [(base + a, base + b) for a, b in knob]
+    return _make_widget("swivel", vertices, edges)
 
 
 def ensure_widgets() -> dict[str, bpy.types.Object]:
@@ -184,5 +190,5 @@ def ensure_widgets() -> dict[str, bpy.types.Object]:
         "root": _root_widget(),
         "tcp": _tcp_widget(),
         "ik_target": _ik_target_widget(),
-        "elbow_target": _elbow_target_widget(),
+        "swivel": _swivel_widget(),
     }

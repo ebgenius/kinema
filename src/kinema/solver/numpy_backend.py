@@ -47,6 +47,7 @@ def solve(
     max_iterations: int = 60,
     rest_pose: np.ndarray | None = None,
     rest_weight: float = 0.0,
+    held: np.ndarray | None = None,
 ) -> SolveResult:
     """Solve for a configuration putting the tool at ``target``.
 
@@ -58,8 +59,24 @@ def solve(
         target: desired 4x4 tool pose, in armature space.
         rest_pose / rest_weight: optional null-space bias pulling unused
             degrees of freedom toward a preferred posture.
+        held: boolean mask of joints the solver must leave exactly where the
+            seed has them -- a rail the animator positions by hand. Their
+            Jacobian columns are zeroed, so the tool is chased with the other
+            joints alone, and their values are pinned after every step, so
+            neither clamping nor the null-space bias can nudge them.
     """
-    q = chain.clamp(np.asarray(q_seed, dtype=float).copy())
+    seed = np.asarray(q_seed, dtype=float)
+    held_mask = (
+        np.zeros(chain.dof, dtype=bool) if held is None else np.asarray(held, dtype=bool)
+    )
+    # Pinned at the seed, not the clamped seed. The caller hands over a held
+    # joint where the rig displays it -- any limit constraint already applied --
+    # so clamping again to the chain's own limits could only move it away from
+    # what is on screen.
+    pinned = seed[held_mask].copy()
+
+    q = chain.clamp(seed.copy())
+    q[held_mask] = pinned
     damping = LAMBDA_INITIAL
     identity = np.eye(6)
 
@@ -76,6 +93,7 @@ def solve(
             break
 
         jacobian = chain.jacobian(q)
+        jacobian[:, held_mask] = 0.0
         # Solve (J Jᵀ + λ²I) y = e, then dq = Jᵀ y. Going through the 6x6
         # system is cheaper than the dof x dof one for any real robot arm.
         gram = jacobian @ jacobian.T + (damping**2) * identity
@@ -99,6 +117,7 @@ def solve(
             candidate = chain.clamp(
                 candidate + rest_weight * (null @ (rest_pose - candidate))
             )
+        candidate[held_mask] = pinned
 
         candidate_error = pose_error(chain.forward(candidate), target)
         candidate_norm = float(np.linalg.norm(candidate_error))

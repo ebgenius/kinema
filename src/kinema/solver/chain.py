@@ -230,10 +230,50 @@ def read_configuration(armature_object, chain: Chain) -> np.ndarray:
     return values
 
 
-def write_configuration(armature_object, chain: Chain, q: np.ndarray) -> None:
-    """Write joint values back onto the pose bones."""
+def displayed_configuration(
+    armature_object, chain: Chain, raw: np.ndarray, only: np.ndarray | None = None
+) -> np.ndarray:
+    """Joint values as the rig shows them: channels with the constraint stack applied.
+
+    ``read_configuration`` reads the channels, which is what an animator keys and
+    what a solve seeds from. It is not always what is on screen. A joint with a
+    limit constraint is clamped after its channel, so a rail dragged to 1.55 m
+    against a 1.5 m limit reads 1.55 while the carriage stands at 1.5 -- and a
+    joint the solver must hold where it stands has to be held at the 1.5.
+
+    Taken from each bone's evaluated matrix relative to its evaluated parent,
+    which is the composition Blender itself uses, so any constraint counts, not
+    only Kinema's own limit. A revolute value keeps the channel's turn count: a
+    continuous joint wound past half a turn is not unwound. ``only`` restricts
+    the work to a mask of joints; the rest come back as ``raw``.
+    """
+    pose = armature_object.pose
+    values = np.array(raw, dtype=float)
+    for index, name in enumerate(chain.bone_names):
+        if only is not None and not only[index]:
+            continue
+        pose_bone = pose.bones[name]
+        frame = pose_bone.bone.matrix_local
+        if pose_bone.parent is not None:
+            parent = pose_bone.parent
+            frame = parent.matrix @ parent.bone.matrix_local.inverted() @ frame
+        local = frame.inverted() @ pose_bone.matrix
+        if chain.is_revolute[index]:
+            angle = float(np.arctan2(local[0][2], local[2][2]))
+            values[index] = values[index] + float(np.angle(np.exp(1j * (angle - values[index]))))
+        else:
+            values[index] = float(local[1][3])
+    return values
+
+
+def write_configuration(
+    armature_object, chain: Chain, q: np.ndarray, skip: np.ndarray | None = None
+) -> None:
+    """Write joint values back onto the pose bones, leaving any ``skip`` joints alone."""
     pose = armature_object.pose
     for index, name in enumerate(chain.bone_names):
+        if skip is not None and skip[index]:
+            continue
         pose_bone = pose.bones[name]
         if chain.is_revolute[index]:
             pose_bone.rotation_mode = "YXZ"
