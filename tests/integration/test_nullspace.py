@@ -295,8 +295,23 @@ class TestDraggingAHeldRail:
 
         assert _drag_rail(handlers, rail6, 0.10)
 
+        # The limit really clamps: the carriage stands at 1.5 however far its
+        # channel went. Measured off the bone's evaluated position, not through
+        # the code under test -- a muted or misplaced constraint would put the
+        # carriage at 1.55 too, the display and the channel would agree, and a
+        # solve seeded from the channel would pass without the test proving
+        # anything.
+        rail = rail6.pose.bones["rail"]
+        along = np.array(rail.bone.matrix_local.col[1][:3])
+        stands = float(
+            np.dot(np.array(rail.matrix.translation) - np.array(rail.bone.head_local), along)
+        )
+        assert stands == pytest.approx(1.5, abs=1e-4), (
+            f"the limit is not clamping: the carriage stands at {stands:.4f} m"
+        )
+
         # The channel keeps what was dragged; the constraint shows the limit.
-        assert rail6.pose.bones["rail"].location[1] == pytest.approx(1.55, abs=1e-6)
+        assert rail.location[1] == pytest.approx(1.55, abs=1e-6)
         miss = float(np.linalg.norm(_tool(builder, rail6) - goal))
         assert miss < 1e-3, f"the displayed tool is {miss * 1000:.1f} mm off its goal"
 
