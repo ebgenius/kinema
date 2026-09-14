@@ -646,13 +646,49 @@ class TestTheSwivel:
         _turn(handlers, builder, arm7, 0.5)
         assert abs(_wrapped(_elbow_angle(swivel, arm7) - before)) < 0.02
 
-    def test_changing_the_strength_reaches_the_solver(
+    def test_the_strength_slider_forgets_the_cached_problem(
         self, arm7_numpy, builder, handlers
     ):
-        """The handler's comparison again, so NumPy is enough."""
-        _with_swivel(builder, handlers, arm7_numpy)
-        arm7_numpy.kinema_elbow_strength = 8.0
-        assert handlers.solve_rig(arm7_numpy), "the new strength never reached a solve"
+        """What the slider's update callback does, and only that.
+
+        Checked on the cache itself rather than through ``solve_rig``: the
+        handler's comparison also includes the strength, so a re-solve would
+        happen with or without the callback and could not tell the two apart.
+        """
+        rig = arm7_numpy
+        _with_swivel(builder, handlers, rig)
+        assert rig.name in handlers._last_target, "nothing was cached to forget"
+
+        rig.kinema_elbow_strength = 8.0
+        assert rig.name not in handlers._last_target, "the slider left the old problem cached"
+
+    def test_a_strength_change_without_the_callback_still_re_solves(
+        self, arm7_numpy, builder, handlers, monkeypatch
+    ):
+        """The handler's comparison includes the strength in its own right.
+
+        Setting the property fires an update callback that forgets the cached
+        problem, so a test that sets it that way passes whether or not the
+        comparison looks at the strength. A keyed or driven strength changes
+        without that callback, so the comparison has to catch it alone.
+
+        The callback's reset is stubbed out for the one assignment, leaving the
+        comparison as the only thing that can notice. (Writing
+        ``rig["kinema_elbow_strength"]`` does not do it: in Blender 5.2 that
+        reaches a separate custom property, and the registered one keeps its
+        value.)
+        """
+        rig = arm7_numpy
+        _with_swivel(builder, handlers, rig)
+        assert rig.name in handlers._last_target
+
+        monkeypatch.setattr(handlers, "reset", lambda *args, **kwargs: None)
+        rig.kinema_elbow_strength = 8.0
+        monkeypatch.undo()
+        assert rig.kinema_elbow_strength == pytest.approx(8.0)
+        assert rig.name in handlers._last_target, "the cache was forgotten, so this proves nothing"
+
+        assert handlers.solve_rig(rig), "the comparison ignored the new strength"
 
     def test_removing_it_leaves_plain_ik(self, arm7_numpy, builder, handlers):
         import bpy
