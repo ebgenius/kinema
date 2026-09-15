@@ -181,6 +181,12 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
         sub.alignment = "RIGHT"
         sub.label(text=f"{count} DoF")
 
+        # Handles in the viewport, so a joint or the IK target can be grabbed
+        # without entering Pose mode and picking its bone first.
+        row = layout.row(align=True)
+        row.label(text="Handles", icon="GIZMO")
+        row.prop(rig, "kinema_gizmos", expand=True)
+
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_joints"
