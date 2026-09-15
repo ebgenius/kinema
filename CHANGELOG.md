@@ -52,6 +52,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strength from 0.5 to 20, where the free target cost 0.55 mm at 2 and 30.7 mm at 20. Adding a swivel doesn't move the arm. It is offered only when more than six
   joints are left to IK, and it needs the PyRoki solver.
 
+- **Handles in the viewport.** Select a rig, in Object or Pose mode, and you can drag its
+  controls directly:
+  - each rotary joint gets a dial, and each slide an arrow;
+  - the IK target gets a move ring, plus arrows and dials along the tool's axes;
+  - the elbow swivel gets a dial.
+
+  So posing no longer starts with Pose mode and picking a bone. **Handles**, on the robot's
+  row in the sidebar, switches the joint handles and the IK handles per rig.
+
+  These are Blender's own gizmos. Joint and swivel handles are bound to the bones' own
+  channels, so auto-keying, undo, held joints and live IK treat a drag exactly like dragging
+  the bone. A dial sits on its joint's axis and is measured from the joint's zero, so it
+  holds still while dragged, past a limit too, and follows a rig that has been moved, turned
+  or scaled. The IK target's axis handles key the target themselves when auto-keying is on.
+
+  Geometry-node gizmos looked like the obvious route and don't fit a rig:
+  - they only draw for the active object's active modifier;
+  - an armature can't carry a node modifier;
+  - a value kept in a modifier input isn't a bone channel.
+
 ## [0.4.0] - 2026-09-07
 
 The KUKA descriptions that would not import correctly, and then the thing that became

@@ -39,6 +39,33 @@ Concretely, that means:
 [blender-urdf]: https://github.com/kralf/blender-urdf
 [PyRoki]: https://github.com/chungmin99/pyroki
 
+## Grab it in the viewport
+
+Select a robot, in Object or Pose mode, and its controls get handles. Every rotary joint
+gets a dial and every slide an arrow. Once the rig has an IK target, the target gets a move
+ring, three arrows and three dials, and an elbow swivel gets a dial of its own. Drag one and
+the robot moves: no mode switch, and no bone to pick first.
+
+They are Blender's own gizmos, the dial and arrow its transform tools draw, and they drive
+the same channels as everything else.
+
+- **A joint's handle is the joint.** A dial is bound to its bone's rotation channel and an
+  arrow to its location, so dragging one is the same as dragging the joint's slider.
+  Auto-keying keys it on release, undo takes it back, and a held rail dragged by its arrow
+  re-solves the arm around it.
+- **A dial holds still while you drag it.** It sits on the joint's axis at the joint and is
+  measured from where the joint's zero is. It doesn't turn with the joint or with a limit
+  stopping it, and it follows a rig that has been moved, turned or scaled.
+- **The IK target's arrows and dials work along the tool's axes**, the frame the *Tool
+  Centre Point* panel reports. Tool Z is the approach direction, and turning about an axis
+  leaves the tool point where it is. The ring moves the target freely in the view.
+- **The swivel's dial turns the ring's one channel.** It fades when a hold has taken the
+  elbow's freedom, just as the panel greys its slider.
+
+A handle hides with its bone: hide a bone or its bone collection and its handle goes too.
+**Handles**, on the robot's row in the sidebar, switches the joint handles and the IK
+handles on or off for that rig. The viewport's own gizmo toggle hides them all.
+
 ## Dressing a rig, and where IK aims
 
 The sidebar's **Bones** list is one row per bone, and it answers the two questions that come

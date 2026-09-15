@@ -16,12 +16,13 @@ import bpy
 
 from . import handlers, prefs, runtime
 from .ops import attach, ik, import_dae, import_robot, pose, waypoints
-from .ui import panel
+from .ui import gizmos, panel
 
 # panel first: ops/pose imports helpers from it, and registration order
 # decides which classes exist when Blender resolves parent panels. waypoints
 # after ik, which it borrows key_joint_value and own_fcurve_containers from.
-_MODULES = (prefs, panel, import_dae, import_robot, pose, ik, attach, waypoints)
+# gizmos last: its handles only read what the others build.
+_MODULES = (prefs, panel, import_dae, import_robot, pose, ik, attach, waypoints, gizmos)
 
 
 def register() -> None:
