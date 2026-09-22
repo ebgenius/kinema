@@ -243,12 +243,31 @@ def on_frame_change(scene: bpy.types.Scene, depsgraph=None) -> None:
 
 
 @persistent
+def on_pose_settled(scene: bpy.types.Scene, depsgraph=None) -> None:
+    """Record where each rig stands, for the velocity check to measure against.
+
+    Registered after the solving handlers in both lists, so on a frame change
+    the pose it reads is the one live IK has just solved. Skipped while
+    anything is writing the pose -- a solve, a bake -- since a half-written
+    pose is not one the rig ever stood in.
+    """
+    if _solving:
+        return
+    from .ops import velocity
+
+    velocity.observe(scene)
+
+
+@persistent
 def on_load_post(_dummy=None) -> None:
     """A freshly opened file shares nothing with the previous one."""
+    from .ops import velocity
+
     _last_target.clear()
     _last_duration.clear()
     _skipped.clear()
     manager.invalidate()
+    velocity.forget()
 
 
 @contextmanager
@@ -290,10 +309,14 @@ def reset(rig_name: str | None = None) -> None:
         _skipped.pop(rig_name, None)
 
 
+#: Order matters within each list: Blender calls handlers in list order, and
+#: on_pose_settled has to read the pose after the solvers have written it.
 _HANDLERS = (
     (bpy.app.handlers.depsgraph_update_post, on_depsgraph_update),
     (bpy.app.handlers.frame_change_post, on_frame_change),
     (bpy.app.handlers.load_post, on_load_post),
+    (bpy.app.handlers.depsgraph_update_post, on_pose_settled),
+    (bpy.app.handlers.frame_change_post, on_pose_settled),
 )
 
 

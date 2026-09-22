@@ -129,6 +129,44 @@ from frame 40 to frame 30 does not leave the robot visiting frame 40 as well. Wh
 is right, **Bake IK to Keyframes** turns the whole thing into plain joint curves that render
 with Kinema uninstalled.
 
+## Checking joint speeds
+
+A robot can't follow motion faster than its motors, and Blender plays back a joint keyed
+through half a turn in two frames as smoothly as one given two seconds. Most robot
+descriptions give each joint a top speed in `<limit velocity>`. Kinema keeps it on the joint
+and checks the frame on screen against it.
+
+A joint over its limit is flagged in two places:
+
+- **In the panel.** Its slider in **Joints (FK)** turns red, and **Velocity Limits** lists
+  every joint's speed against its limit.
+- **In the viewport.** Its dial or arrow is redrawn in red, with its name and its speed as a
+  percentage of the limit.
+
+**Ignore Velocity Limits**, in that section, turns both off for one rig: for a shot that will
+never run on a robot, or a description whose limits are placeholders. The numbers stay
+listed, greyed out.
+
+| Joint | Measured against | After a jump or a scrub |
+|---|---|---|
+| Keyed, including joint moves from Generate Motion and baked IK | its own curve, one frame back | exact |
+| Driven by live IK, including linear moves | the pose seen one frame earlier | `—` until you play or step a frame |
+| Neither | the pose seen one frame earlier | still |
+
+Speeds use the scene's frame rate. A gap of up to three frames, from playback dropping
+frames, is averaged. An average can miss a spike inside the gap, but never reports one that
+isn't there. A joint pressed against its range stop doesn't count as moving, whatever its
+curve does.
+
+**Load Joint Limits…** reads a MoveIt or ros2_control `joint_limits.yaml`. That is often
+where a robot's real running speeds live. It works joint by joint:
+
+- `has_velocity_limits: true` sets a limit;
+- `false` turns it off;
+- a joint the file doesn't mention keeps the description's value.
+
+MJCF has no velocity limits, so an MJCF rig only gets them from such a file.
+
 ## Choosing how the arm reaches
 
 A six-axis arm can put its tool in one place up to eight different ways — elbow bent one way

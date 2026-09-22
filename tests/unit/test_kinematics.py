@@ -75,6 +75,45 @@ class TestModelStructure:
         assert joint1.upper == pytest.approx(1.5)
         assert joint1.has_limits
 
+    def test_velocity_limits_are_read(self, arm3):
+        joint1 = next(j for j in arm3.joints if j.name == "joint1")
+        assert joint1.velocity == pytest.approx(1.0)
+
+
+class TestVelocityLimits:
+    @staticmethod
+    def _joint(tmp_path, joint_type: str, limit: str):
+        yourdfpy = pytest.importorskip("yourdfpy")
+        path = tmp_path / "v.urdf"
+        path.write_text(
+            '<robot name="v"><link name="a"/><link name="b"/>'
+            f'<joint name="j" type="{joint_type}">'
+            '<parent link="a"/><child link="b"/><axis xyz="0 0 1"/>'
+            f"{limit}</joint></robot>",
+            encoding="utf-8",
+        )
+        return kin.model_from_urdf(yourdfpy.URDF.load(str(path))).joints[0]
+
+    def test_a_continuous_joint_keeps_its_velocity(self, tmp_path):
+        """No range to clamp, but the motor still has a top speed."""
+        joint = self._joint(
+            tmp_path, "continuous", '<limit effort="10" velocity="6.28"/>'
+        )
+        assert not joint.has_limits
+        assert joint.velocity == pytest.approx(6.28)
+
+    def test_zero_means_not_given(self, tmp_path):
+        """Descriptions write velocity="0" as a placeholder; no joint is limited to rest."""
+        joint = self._joint(
+            tmp_path, "revolute",
+            '<limit lower="-1" upper="1" effort="10" velocity="0"/>',
+        )
+        assert joint.velocity is None
+
+    def test_no_limit_element_means_no_velocity(self, tmp_path):
+        joint = self._joint(tmp_path, "continuous", "")
+        assert joint.velocity is None
+
 
 class TestForwardKinematics:
     def test_zero_pose_frames_are_hand_checkable(self, arm3):

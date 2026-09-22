@@ -15,13 +15,16 @@ from __future__ import annotations
 import bpy
 
 from . import handlers, prefs, runtime
-from .ops import attach, ik, import_dae, import_robot, pose, waypoints
-from .ui import panel
+from .ops import attach, ik, import_dae, import_robot, pose, velocity, waypoints
+from .ui import overlay, panel
 
 # panel first: ops/pose imports helpers from it, and registration order
 # decides which classes exist when Blender resolves parent panels. waypoints
-# after ik, which it borrows key_joint_value and own_fcurve_containers from.
-_MODULES = (prefs, panel, import_dae, import_robot, pose, ik, attach, waypoints)
+# after ik, which it borrows key_joint_value and own_fcurve_containers from;
+# velocity after ik for the same reason.
+_MODULES = (
+    prefs, panel, import_dae, import_robot, pose, ik, attach, waypoints, velocity,
+)
 
 
 def register() -> None:
@@ -34,9 +37,11 @@ def register() -> None:
             module.register_props()
 
     handlers.register_handlers()
+    overlay.register_draw()
 
 
 def unregister() -> None:
+    overlay.unregister_draw()
     handlers.unregister_handlers()
 
     for module in reversed(_MODULES):

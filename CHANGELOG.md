@@ -52,6 +52,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strength from 0.5 to 20, where the free target cost 0.55 mm at 2 and 30.7 mm at 20. Adding a swivel doesn't move the arm. It is offered only when more than six
   joints are left to IK, and it needs the PyRoki solver.
 
+- **Joint velocity limits.** A joint moving faster than its limit at the current frame is
+  flagged in red in two places: its slider in the Joints panel, and its own dial or arrow in
+  the viewport, labelled with its speed as a percentage of the limit. A new **Velocity
+  Limits** section lists every joint's speed against its limit. **Ignore Velocity Limits**
+  turns the warnings off for one rig.
+
+  The limits come from the description's `<limit velocity>`. **Load Joint Limits…** reads a
+  MoveIt or ros2_control `joint_limits.yaml` over them, joint by joint. A keyed joint is
+  measured exactly, from its own curve, however the frame was reached. A joint driven by live
+  IK is measured against the pose one frame earlier, which playback and stepping provide.
+  Rigs imported before this carry no limits: import again, or load a `joint_limits.yaml`.
+
 ## [0.4.0] - 2026-09-07
 
 The KUKA descriptions that would not import correctly, and then the thing that became

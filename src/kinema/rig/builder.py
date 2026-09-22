@@ -77,6 +77,10 @@ PROP_JOINT_NAME = "kinema_joint"
 PROP_JOINT_TYPE = "kinema_joint_type"
 PROP_LOWER = "kinema_lower"
 PROP_UPPER = "kinema_upper"
+#: Fastest the joint may move, in rad/s or m/s. From the description's
+#: <limit velocity>, or loaded later from a joint_limits.yaml. Absent when
+#: neither gives one, and then the joint is never checked.
+PROP_VELOCITY = "kinema_velocity"
 PROP_AXIS = "kinema_axis"
 #: The URDF link this joint moves, and the constant transform from the bone's
 #: rest frame to that link's rest frame. PyRoki targets *links*, but Kinema's
@@ -356,6 +360,10 @@ def _setup_pose_bones(
         if joint.has_limits:
             bone[PROP_LOWER] = float(joint.lower)
             bone[PROP_UPPER] = float(joint.upper)
+        # Independent of has_limits: a continuous joint has no range, but a
+        # motor still has a top speed, and URDF gives it one.
+        if joint.velocity is not None:
+            bone[PROP_VELOCITY] = float(joint.velocity)
 
         # bone rest frame -> URDF link rest frame, so the solver can turn a
         # bone-space goal into the link-space goal PyRoki expects.

@@ -51,6 +51,10 @@ class JointSpec:
     axis: np.ndarray
     lower: float | None = None
     upper: float | None = None
+    #: Fastest the joint may move, in rad/s or m/s -- URDF <limit velocity>.
+    #: None when the description gives none, or gives zero: a zero is how
+    #: descriptions say "not specified", since no joint is limited to rest.
+    velocity: float | None = None
     #: URDF <mimic>: this joint follows another. Recorded so the rig can lock
     #: the bone and drive it, instead of exposing a control that does nothing.
     mimic_joint: str | None = None
@@ -234,6 +238,17 @@ def _origin_of(element) -> np.ndarray:
     return np.eye(4)
 
 
+def _positive(value) -> float | None:
+    """A limit that means something, or None for absent, zero, negative or inf."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0.0 and np.isfinite(number) else None
+
+
 def _build_material_map(urdf) -> dict[str, object]:
     """Name -> Material for robot-level ``<material>`` declarations.
 
@@ -370,6 +385,7 @@ def model_from_urdf(urdf, mesh_resolver=None) -> RobotModel:
                 axis=normalize(axis if axis is not None else (1.0, 0.0, 0.0)),
                 lower=float(limit.lower) if limit is not None and limit.lower is not None else None,
                 upper=float(limit.upper) if limit is not None and limit.upper is not None else None,
+                velocity=_positive(getattr(limit, "velocity", None)),
                 mimic_joint=getattr(mimic, "joint", None) if mimic is not None else None,
                 mimic_multiplier=float(getattr(mimic, "multiplier", None) or 1.0)
                 if mimic is not None else 1.0,
