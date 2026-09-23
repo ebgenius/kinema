@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **External axes** (#5): a track, rotary base, positioner, tool spindle or tool slide that
+  the robot description doesn't have. **External Axes → Add External Axis…** opens a dialog
+  with presets. You choose:
+  - the mount: under the robot, on the tool, or standalone;
+  - linear or rotary motion, and its direction;
+  - limits and top speed;
+  - where it sits relative to the robot base or the tool frame;
+  - where what it carries sits on it.
+
+  The axis is an ordinary joint bone, held for IK by default. It has a slider, keys, bake
+  and a velocity check like any imported joint.
+  - **Placement.** An axis under the robot moves everything riding the robot when its
+    placement asks for that: bones, TCP, IK target, swivel, base meshes and waypoints. An
+    axis on the tool carries the TCP.
+  - **Removal** puts every one of those back, stacked axes in any order included.
+  - **Indices.** Waypoints and the keyframable IK tip are remapped by joint name, because
+    an axis under the robot becomes joint 0.
+  - **Placeholders.** The geometry is generated procedurally, so the extension ships no
+    extra files.
+  - **Solver.** A rig with an external axis gives PyRoki a model written from its own bones
+    rather than reloading the description, so IK solves through the new axis.
+
 ## [0.5.0] - 2026-09-23
 
 0.4.0 taught a robot a job. This release is about the choices inside that job, and whether a

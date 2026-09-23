@@ -119,6 +119,21 @@ PROP_ELBOW_JOINT = "kinema_elbow_joint"
 PROP_SWIVEL_WRIST = "kinema_swivel_wrist"
 SWIVEL_BONE = "Swivel"
 SWIVEL_AXIS_BONE = "Swivel.axis"
+#: External axes: a rail, turntable, positioner or tool spindle added after
+#: import. Each is an ordinary joint bone, plus what it takes to remove it again.
+#: How it is mounted: "BEFORE" (the robot rides it), "AFTER" (it rides the tool)
+#: or "EXTERNAL" (it stands on its own).
+PROP_EXTERNAL = "kinema_external"
+#: 4x4, BEFORE only: how far the robot was moved to stand on the axis.
+PROP_EXTERNAL_SHIFT = "kinema_external_shift"
+#: AFTER only: the TCP's parent bone, offset and rotation before the axis took it.
+PROP_EXTERNAL_TCP_PARENT = "kinema_external_tcp_parent"
+PROP_EXTERNAL_TCP_OFFSET = "kinema_external_tcp_offset"
+#: On a placeholder mesh: the axis bone it belongs to.
+PROP_EXTERNAL_MESH = "kinema_external_mesh"
+#: On the rig, 4x4: where the robot's base stands in armature space. Identity
+#: until a BEFORE axis moves the robot.
+PROP_ROBOT_BASE = "kinema_robot_base"
 PROP_IK_ENABLED = "kinema_ik_enabled"
 PROP_SOLVER_MODE = "kinema_solver_mode"
 
@@ -334,58 +349,23 @@ def _setup_pose_bones(
     for joint_name, bone_name in result.joint_bones.items():
         joint: JointSpec = joint_by_name[joint_name]
         pose_bone = pose.bones[bone_name]
-
-        # Y first, so the meaningful channel is the one an animator reaches for.
-        pose_bone.rotation_mode = "YXZ"
-
-        if joint.is_revolute:
-            pose_bone.lock_location = (True, True, True)
-            pose_bone.lock_rotation = (True, False, True)
-            pose_bone.lock_scale = (True, True, True)
-            pose_bone.custom_shape = shapes["revolute"]
-        else:  # prismatic
-            pose_bone.lock_location = (True, False, True)
-            pose_bone.lock_rotation = (True, True, True)
-            pose_bone.lock_scale = (True, True, True)
-            pose_bone.custom_shape = shapes["prismatic"]
-
-        pose_bone.use_custom_shape_bone_size = True
-
-        # Self-describing rig: the FK panel and solver read these back rather
-        # than requiring the original URDF alongside the .blend.
-        bone = pose_bone.bone
-        bone[PROP_JOINT_NAME] = joint.name
-        bone[PROP_JOINT_TYPE] = joint.joint_type
-        bone[PROP_AXIS] = [float(v) for v in joint.axis]
-        if joint.has_limits:
-            bone[PROP_LOWER] = float(joint.lower)
-            bone[PROP_UPPER] = float(joint.upper)
-        # Independent of has_limits: a continuous joint has no range, but a
-        # motor still has a top speed, and URDF gives it one.
-        if joint.velocity is not None:
-            bone[PROP_VELOCITY] = float(joint.velocity)
-
-        # bone rest frame -> URDF link rest frame, so the solver can turn a
-        # bone-space goal into the link-space goal PyRoki expects.
-        bone[PROP_CHILD_LINK] = joint.child_link
-        correction = np.linalg.inv(_np4(bone.matrix_local)) @ link_frames[joint.child_link]
-        bone[PROP_LINK_CORRECTION] = [float(v) for v in correction.flatten()]
-
-        if options.enforce_limits and joint.has_limits:
+        limits = (joint.lower, joint.upper) if joint.has_limits else None
+        if options.enforce_limits and limits is not None:
             _warn_if_zero_is_forbidden(joint, result)
-            if joint.is_revolute:
-                constraint = pose_bone.constraints.new("LIMIT_ROTATION")
-                constraint.use_limit_y = True
-                constraint.min_y = float(joint.lower)
-                constraint.max_y = float(joint.upper)
-            else:
-                constraint = pose_bone.constraints.new("LIMIT_LOCATION")
-                constraint.use_min_y = True
-                constraint.use_max_y = True
-                constraint.min_y = float(joint.lower)
-                constraint.max_y = float(joint.upper)
-            constraint.name = LIMIT_CONSTRAINT
-            constraint.owner_space = "LOCAL"
+        configure_joint_bone(
+            pose_bone, revolute=joint.is_revolute,
+            limits=limits if options.enforce_limits else None,
+        )
+        write_joint_props(
+            pose_bone.bone,
+            joint_name=joint.name,
+            joint_type=joint.joint_type,
+            axis=joint.axis,
+            limits=limits,
+            velocity=joint.velocity,
+            child_link=joint.child_link,
+            link_frame=link_frames[joint.child_link],
+        )
 
     if ROOT_BONE in pose.bones:
         root = pose.bones[ROOT_BONE]
@@ -404,6 +384,71 @@ def _setup_pose_bones(
         tcp.lock_rotation = (True, True, True)
         tcp.lock_rotation_w = True
         tcp.lock_scale = (True, True, True)
+
+
+def configure_joint_bone(pose_bone, *, revolute: bool, limits) -> None:
+    """Channels, locks, widget and limit constraint for one joint bone.
+
+    Shared by the importer and by external axes, so an axis added later behaves
+    exactly like an imported joint. ``limits`` is ``(lower, upper)``, or None for
+    no constraint.
+    """
+    shapes = widgets.ensure_widgets()
+    # Y first, so the meaningful channel is the one an animator reaches for.
+    pose_bone.rotation_mode = "YXZ"
+    if revolute:
+        pose_bone.lock_location = (True, True, True)
+        pose_bone.lock_rotation = (True, False, True)
+        pose_bone.lock_scale = (True, True, True)
+        pose_bone.custom_shape = shapes["revolute"]
+    else:  # prismatic
+        pose_bone.lock_location = (True, False, True)
+        pose_bone.lock_rotation = (True, True, True)
+        pose_bone.lock_scale = (True, True, True)
+        pose_bone.custom_shape = shapes["prismatic"]
+    pose_bone.use_custom_shape_bone_size = True
+
+    if limits is None:
+        return
+    lower, upper = (float(v) for v in limits)
+    if revolute:
+        constraint = pose_bone.constraints.new("LIMIT_ROTATION")
+        constraint.use_limit_y = True
+    else:
+        constraint = pose_bone.constraints.new("LIMIT_LOCATION")
+        constraint.use_min_y = True
+        constraint.use_max_y = True
+    constraint.min_y = lower
+    constraint.max_y = upper
+    constraint.name = LIMIT_CONSTRAINT
+    constraint.owner_space = "LOCAL"
+
+
+def write_joint_props(
+    bone, *, joint_name: str, joint_type: str, axis, limits, velocity, child_link: str,
+    link_frame,
+) -> None:
+    """The facts a joint bone carries, so the rig describes itself.
+
+    The FK panel and the solver read these back rather than requiring the
+    original URDF alongside the .blend. ``link_frame`` is the joint's child link
+    at rest, in armature space; what is stored is the constant bone -> link
+    correction, which lets the solver turn a bone-space goal into the link-space
+    goal PyRoki expects.
+    """
+    bone[PROP_JOINT_NAME] = joint_name
+    bone[PROP_JOINT_TYPE] = joint_type
+    bone[PROP_AXIS] = [float(v) for v in axis]
+    if limits is not None:
+        bone[PROP_LOWER] = float(limits[0])
+        bone[PROP_UPPER] = float(limits[1])
+    # Independent of the range: a continuous joint has no range, but a motor
+    # still has a top speed, and URDF gives it one.
+    if velocity is not None:
+        bone[PROP_VELOCITY] = float(velocity)
+    bone[PROP_CHILD_LINK] = child_link
+    correction = np.linalg.inv(_np4(bone.matrix_local)) @ np.asarray(link_frame, dtype=float)
+    bone[PROP_LINK_CORRECTION] = [float(v) for v in correction.flatten()]
 
 
 def _warn_if_zero_is_forbidden(joint: JointSpec, result: RigBuildResult) -> None:

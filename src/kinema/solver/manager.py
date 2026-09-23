@@ -371,7 +371,20 @@ def _load_source_urdf(rig):
 
     Raises SolverError with a readable reason; the panel shows it. Returns None
     only when the rig records no source at all.
+
+    A rig with an external axis is no longer the robot in its description, so it
+    is described from its own bones instead -- see ``solver/rig_model.py``.
     """
+    from . import rig_model
+
+    if rig_model.has_external_axes(rig):
+        from .urdf_bridge import urdf_from_model
+
+        try:
+            return urdf_from_model(rig_model.model_from_rig(rig))
+        except Exception as exc:  # noqa: BLE001
+            raise SolverError(f"could not describe this rig for the solver: {exc}") from exc
+
     kind = rig.get(builder.PROP_SOURCE_KIND)
     source = rig.get(builder.PROP_SOURCE)
     if not kind or not source:
