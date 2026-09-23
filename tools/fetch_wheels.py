@@ -26,6 +26,13 @@ Four things here are load-bearing and easy to get wrong:
    older release of that one package, which ``check_version_skew`` then
    catches before the manifest is written.
 
+5. **Versions come from ``uv.lock``.** Every package is downloaded as
+   ``name==<locked version>``, so the payload is exactly what the dev venv and
+   the test suite ran against. Unpinned, pip took whatever PyPI had newest:
+   0.4.0 shipped lxml 6.1.3 while the lock and every test had 6.1.2, and a
+   later build picked up rospkg 1.6.3 the same way. To move a package, move
+   the lock (``uv lock --upgrade-package <name>``) and fetch again.
+
 Usage::
 
     uv run python tools/fetch_wheels.py            # all platforms
@@ -45,6 +52,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ADDON_DIR = REPO_ROOT / "src" / "kinema"
 WHEEL_DIR = ADDON_DIR / "wheels"
 MANIFEST = ADDON_DIR / "blender_manifest.toml"
+LOCKFILE = REPO_ROOT / "uv.lock"
 
 PYTHON_VERSION = "3.13"
 ABI = "cp313"
@@ -137,8 +145,57 @@ UNWANTED = ("pyparsing",)
 EXCLUDED = HOST_PROVIDED + UNWANTED
 
 
+def normalise(name: str) -> str:
+    """A distribution name the way PEP 503 compares them: jax_dataclasses == jax-dataclasses."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def locked_versions() -> dict[str, str]:
+    """Normalised package name -> the version ``uv.lock`` pins.
+
+    A lock may hold one package at several versions, forked by environment
+    markers. For a bundled package that is refused rather than letting the last
+    record win: the payload allows one version per package, which is what
+    ``check_version_skew`` enforces on the wheels themselves.
+    """
+    import tomllib
+
+    lock = tomllib.loads(LOCKFILE.read_text(encoding="utf-8"))
+    bundled = {normalise(name) for name in PACKAGES}
+    locked: dict[str, str] = {}
+    for package in lock.get("package", []):
+        if "version" not in package:
+            continue
+        name, version = normalise(package["name"]), package["version"]
+        if name in bundled and locked.get(name, version) != version:
+            raise SystemExit(
+                f"fetch_wheels: uv.lock holds {package['name']} at both {locked[name]} "
+                f"and {version}; a bundled package needs one version"
+            )
+        locked[name] = version
+    return locked
+
+
+def pinned_requirements() -> list[str]:
+    """``PACKAGES`` as ``name==version``, at the versions ``uv.lock`` pins.
+
+    A package missing from the lock is an error, not a reason to take PyPI's
+    newest: it means the dev venv does not have it either, so nothing has ever
+    run against it. Declare it in pyproject.toml and ``uv lock``.
+    """
+    locked = locked_versions()
+    missing = [name for name in PACKAGES if normalise(name) not in locked]
+    if missing:
+        raise SystemExit(
+            f"fetch_wheels: not in uv.lock, so never tested: {', '.join(missing)}. "
+            "Declare them in pyproject.toml and run `uv lock`."
+        )
+    return [f"{name}=={locked[normalise(name)]}" for name in PACKAGES]
+
+
 def download(platform: str, dest: Path) -> None:
     tags = PLATFORM_TAGS[platform]
+    requirements = pinned_requirements()
     cmd = [
         sys.executable, "-m", "pip", "download",
         "--only-binary=:all:", "--no-deps",
@@ -148,9 +205,9 @@ def download(platform: str, dest: Path) -> None:
     ]
     for tag in tags:
         cmd += ["--platform", tag]
-    cmd += list(PACKAGES)
+    cmd += requirements
 
-    print(f"  downloading {len(PACKAGES)} packages for {platform} ({tags[0]})")
+    print(f"  downloading {len(requirements)} packages for {platform} ({tags[0]})")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if "No module named pip" in (result.stderr or ""):
         raise SystemExit(
@@ -161,8 +218,8 @@ def download(platform: str, dest: Path) -> None:
         # pip fails the whole batch if one package has no matching wheel; retry
         # individually so the offender is named rather than hidden.
         print("  batch failed, retrying individually to identify the cause:")
-        for pkg in PACKAGES:
-            one = [c for c in cmd if c not in PACKAGES] + [pkg]
+        for pkg in requirements:
+            one = [c for c in cmd if c not in requirements] + [pkg]
             r = subprocess.run(one, capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"    FAILED {pkg}: {r.stderr.strip().splitlines()[-1][:160]}")
