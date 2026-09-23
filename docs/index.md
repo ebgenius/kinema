@@ -28,6 +28,12 @@ animator would build by hand:
   you see controls, not machinery.
 - **An IK target you keyframe like any other**, but solved by a proper robotics solver
   instead of Blender's built-in one — and *what it aims at* is keyframable too.
+- **Control over *how* the arm reaches.** Step through the other configurations that reach
+  a pose, hold a rail or gantry by hand while IK solves the arm, and swing a seven-axis
+  arm's elbow while the tool stays put.
+- **A warning when a joint is too fast.** Velocity limits come from the robot's own
+  description or its MoveIt configuration, and a joint moving faster than the real motor
+  could turns red.
 - **Waypoints on the timeline.** Teach the arm a set of poses, say how it gets from one to
   the next — joint-space or a straight line — and generate the motion. The workflow a robot
   programmer already knows, writing ordinary Blender keyframes.

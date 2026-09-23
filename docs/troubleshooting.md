@@ -231,6 +231,23 @@ Limits** off — but then you are animating poses the real machine cannot achiev
 
 See [reach](concepts/ik.md#reach).
 
+!!! note "Starting from a fully stretched arm"
+    There is one known case where a reachable target doesn't converge: an arm that starts
+    straight out, like a UR at its rest pose. A small target move from there can stop a
+    fraction of a millimetre and about half a degree short, and stay there. Bend the arm
+    first, with a few FK sliders, and the same target solves exactly. Tracked in
+    [#56](https://github.com/ebgenius/kinema/issues/56).
+
+## A joint shows — in Velocity Limits
+
+**Cause:** live IK drives that joint, and you jumped to this frame. Kinema measures such a
+joint against where the solver put it one frame earlier. After a jump or a scrub it hasn't
+seen that frame, so it has nothing to compare against. A keyed joint never shows this: its
+own curve says where it was.
+
+**Fix:** step a frame, or play. The speed appears as soon as Kinema has seen the frame
+before. See [how a speed is measured](reference/sidebar.md#how-a-speed-is-measured).
+
 ## The IK target and the robot disagree
 
 **Cause:** they have drifted apart — you posed the arm with FK while the solver was Off, or

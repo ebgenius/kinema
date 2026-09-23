@@ -104,7 +104,19 @@ Retime by editing the **frame** in a row and regenerating. Dragging the generate
 too, but the next regeneration writes the stored frames again — the row is where a retime
 sticks.
 
-## 7. Change your mind
+## 7. Check the speeds
+
+Scrub or play the job with the rig selected. A joint moving faster than the real robot's
+motor allows turns **red**: its slider in the Joints panel, and its dial in the viewport,
+which is labelled with how far over it is. Open **Velocity Limits** for every joint's speed
+against its limit.
+
+Red means the move is too quick for the frames you gave it. Give the waypoint a later frame
+and regenerate. The limits come from the robot's description. If you have its MoveIt
+configuration, **Load Joint Limits…** reads the speeds it's really run at. See
+[Velocity Limits](../reference/sidebar.md#velocity-limits).
+
+## 8. Change your mind
 
 - **Moved the robot to a better pose?** Highlight the row and click **Update**.
 - **Want the point somewhere else entirely?** Drag its Empty in the viewport — snap it to a
@@ -117,7 +129,7 @@ sticks.
 Regenerating replaces the previous motion rather than stacking on it, and only across the
 frames the job covers. Animation you keyed elsewhere in the scene survives.
 
-## 8. Hand it off
+## 9. Hand it off
 
 When the shot is right, [bake](bake.md). That turns the whole thing — solved linear spans
 included — into plain joint curves that play back with Kinema uninstalled.
@@ -128,9 +140,10 @@ A motion planner. Kinema will happily generate a linear move that drags the arm 
 own base, or one that cannot be reached at all; nothing checks. It follows the instruction
 you gave.
 
-It also does not know how fast the real robot may move. The timing is whatever your frame
-numbers say, not what the machine's velocity limits would allow. If you need a cycle time
-you can quote, this is not yet the tool that gives it to you.
+It doesn't time the motion for you either. The timing is whatever your frame numbers say.
+Kinema tells you when a joint goes faster than its velocity limit, but it doesn't slow the
+move down, and it doesn't know about acceleration. If you need a cycle time you can quote,
+this is not yet the tool that gives it to you.
 
 ## Next
 
