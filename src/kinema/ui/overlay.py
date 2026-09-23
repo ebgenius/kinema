@@ -127,14 +127,20 @@ def _draw_lines() -> None:
     shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
     batch = batch_for_shader(shader, "LINES", {"pos": points})
     region = context.region
+    # Put back whatever was set, not the defaults: Blender does not reset GPU
+    # state between draw handlers, so the next one inherits what this leaves.
+    depth, blend = gpu.state.depth_test_get(), gpu.state.blend_get()
     gpu.state.blend_set("ALPHA")
     # In front of the robot, as the rig's own bones are.
     gpu.state.depth_test_set("NONE")
-    shader.uniform_float("viewportSize", (region.width, region.height))
-    shader.uniform_float("lineWidth", LINE_WIDTH * context.preferences.system.ui_scale)
-    shader.uniform_float("color", COLOR)
-    batch.draw(shader)
-    gpu.state.blend_set("NONE")
+    try:
+        shader.uniform_float("viewportSize", (region.width, region.height))
+        shader.uniform_float("lineWidth", LINE_WIDTH * context.preferences.system.ui_scale)
+        shader.uniform_float("color", COLOR)
+        batch.draw(shader)
+    finally:
+        gpu.state.depth_test_set(depth)
+        gpu.state.blend_set(blend)
 
 
 def _draw_labels() -> None:
