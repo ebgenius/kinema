@@ -126,7 +126,8 @@ Move the playhead, pose it somewhere else, **Record** again. Set the second row'
 **Joint** if it just has to arrive.
 
 Press **Generate Motion** and scrub. The robot runs the job, and what it wrote is ordinary
-keyframes you can shape in the graph editor like anything else.
+keyframes you can shape in the graph editor like anything else. If a joint turns red, the
+move is faster than the real robot can go, so give it more frames.
 
 See [Teach a robot a job](../tutorials/teach-a-job.md).
 

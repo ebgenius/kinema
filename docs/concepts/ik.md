@@ -88,6 +88,66 @@ Targets outside the workspace do not converge. The solver gets as close as it ca
 stops. If the tool consistently stops short, the target is out of reach — move it, or move
 the robot's root closer.
 
+## Several ways to reach one pose
+
+A six-axis arm can usually put its tool in one place, facing one way, up to eight different
+ways: elbow up or elbow down, wrist flipped or not, base facing the target or swung round
+behind. These are the robot's **configurations**. The solver lands on whichever is nearest
+where the arm already was, which is usually what you want. But it's how a shot ends up with
+the elbow on the wrong side of the robot.
+
+**Find Solutions**, in the [Inverse Kinematics panel](../reference/sidebar.md#configuration),
+looks for the others. PyRoki converges to the solution nearest its starting point rather
+than listing them all, so the others are *found*, not derived:
+
+- start the solver from configurations scattered across the joint limits;
+- keep the ones that reach the goal;
+- fold away duplicates.
+
+What it shows is a lower bound. Flipping between two configurations is two keyed poses,
+which is what a robot programmer would do anyway.
+
+## Spare joints: rails and the elbow
+
+A tool pose has six numbers, so a chain of six joints has, in general, a finite set of ways
+to reach it. With more joints than that, the arm can reach one pose a continuous family of
+ways. What the spare joint *is* decides the right control, so there are two.
+
+**Held joints.** Most redundant robots in a cell are a six-axis arm on a rail or a gantry.
+The extra axis isn't something to solve for: an operator places it, and the arm reaches
+from wherever it stands. So a joint can be **held**:
+
+- click the pin beside its slider in [Joints (FK)](../reference/sidebar.md#joints-fk);
+- move it with that slider, or by dragging its bone;
+- IK then solves the rest of the chain with the tool where it is.
+
+**Add IK Target** holds slides for you. While a chain has more than six unheld joints, its
+prismatic joints are held, base first. So an arm on a rail gets its rail held. A turntable
+can't be told apart from a seventh arm joint, so pin that one yourself. The pin is
+keyframable.
+
+**The elbow swivel.** On a seven-axis arm the spare freedom *is* the elbow. With the tool
+held still, the elbow can swing round the line from shoulder to wrist. **Add Elbow Swivel**
+puts a ring on that line, and turning the ring swings the elbow. It's the same idea as the
+control that steers a character's elbow once IK has placed the hand. The ring's one
+rotation channel is the elbow's angle, so it keys as a single curve.
+
+The swivel aims the elbow at a point it can actually reach, on the circle it sweeps. So the
+tool doesn't pay for it: on a seven-axis test arm the tool holds within 0.0003 mm while the
+elbow swings. It needs the PyRoki solver, and it's offered only while more than six joints
+are left to IK.
+
+## Joint speed
+
+Every motor has a top speed, and most robot descriptions record it for each joint. Blender
+doesn't know that. It will play back a joint keyed through half a turn in two frames as
+smoothly as one given two seconds, and the real robot can't do the first.
+
+Kinema checks the frame on screen against those limits. A joint moving faster than its
+limit is flagged in red on its slider and on its dial in the viewport. See
+[Velocity Limits](../reference/sidebar.md#velocity-limits) for where the limits come from
+and how speed is measured. It is a warning, not a limit: fix it by retiming the move.
+
 ## The two solvers
 
 | | PyRoki | NumPy |
@@ -130,6 +190,9 @@ Two things affect when you feel it:
   so a session where you never touch a robot never pays it.
 - Loading a *second* robot of a different structure compiles again. Same robot, same
   session, no recompile.
+- **Adding an elbow swivel** compiles once more, because an elbow goal makes a different
+  problem. Holding or releasing a joint costs nothing: that cost is always part of the
+  compiled problem.
 
 ## The solve budget
 
