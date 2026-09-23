@@ -219,11 +219,18 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
             if rig.kinema_meshes_at_file_origin:
                 layout.label(text="Meshes are off the rig", icon="ERROR")
 
+        from ..ops import velocity
+
+        # Red on the slider of a joint moving faster than its limit here, so
+        # the warning sits on the control that fixes it.
+        too_fast = {reading.joint for reading in velocity.warnings(rig, context.scene)}
+
         column = layout.column(align=True)
         for pose_bone in joints:
             bone = pose_bone.bone
             is_revolute = bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic"
             row = column.row(align=True)
+            row.alert = pose_bone.name in too_fast
             # index=1 is the Y channel: the one aligned to the joint axis.
             if is_revolute:
                 row.prop(pose_bone, "rotation_euler", index=1, text=pose_bone.name)
@@ -242,6 +249,70 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
             sub = row.row(align=True)
             sub.enabled = limited
             sub.label(text="", icon=icon)
+
+
+class KINEMA_PT_velocity(KinemaPanelBase, Panel):
+    """Each joint's speed at this frame, against its velocity limit."""
+
+    bl_idname = "KINEMA_PT_velocity"
+    bl_parent_id = "KINEMA_PT_main"
+    bl_label = "Velocity Limits"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw_header(self, context: bpy.types.Context) -> None:
+        from ..ops import velocity
+
+        # Flagged in the header too, so a closed section still says so.
+        if velocity.warnings(active_rig(context), context.scene):
+            self.layout.label(text="", icon="ERROR")
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from ..ops import velocity
+        from ..rig.velocity import format_speed
+
+        layout = self.layout
+        rig = active_rig(context)
+        scene = context.scene
+        readings = velocity.readings(rig, scene)
+
+        if not readings:
+            layout.label(text="No velocity limits on this rig", icon="INFO")
+            layout.operator(
+                "kinema.load_joint_limits", text="Load Joint Limits…", icon="FILE_FOLDER"
+            )
+            return
+
+        layout.prop(rig, "kinema_ignore_velocity")
+        ignored = velocity.ignored(rig)
+        degrees = scene.unit_settings.system_rotation == "DEGREES"
+
+        column = layout.column(align=True)
+        column.active = not ignored
+        for reading in readings:
+            row = column.row(align=True)
+            row.alert = reading.over and not ignored
+            row.label(text=reading.joint, icon="ERROR" if row.alert else "BLANK1")
+            speed, limit = (
+                format_speed(value, prismatic=reading.prismatic, degrees=degrees)
+                for value in (reading.speed, reading.limit)
+            )
+            sub = row.row(align=True)
+            sub.alignment = "RIGHT"
+            sub.label(text=f"{speed}  of  {limit}")
+
+        fps = scene.render.fps / scene.render.fps_base
+        layout.label(text=f"Frame {scene.frame_current} at {fps:g} fps", icon="TIME")
+        if any(reading.speed is None for reading in readings):
+            # Only a joint live IK drives can read "—": its last frame is
+            # remembered, not stored, and a jump leaves nothing to compare.
+            layout.label(text="— : play or step a frame to measure", icon="INFO")
+        layout.operator(
+            "kinema.load_joint_limits", text="Load Joint Limits…", icon="FILE_FOLDER"
+        )
 
 
 def _joint_indices(rig: bpy.types.Object) -> dict[str, int]:
@@ -837,6 +908,7 @@ classes = (
     KINEMA_UL_waypoints,
     KINEMA_PT_main,
     KINEMA_PT_joints,
+    KINEMA_PT_velocity,
     KINEMA_PT_bones,
     KINEMA_PT_waypoints,
     KINEMA_PT_tcp,

@@ -110,7 +110,11 @@ PACKAGES: tuple[str, ...] = (
     # and everything Kinema calls works without it. Its five transitive
     # requirements -- docutils, packaging, pyparsing, python-dateutil, setuptools
     # -- were once listed here to satisfy a package that was never present.
-    "xacrodoc", "xacro", "rospkg", "pyyaml",
+    "xacrodoc", "xacro", "rospkg",
+    # --- joint_limits.yaml (io/joint_limits.py imports it directly) ---
+    # Also required by xacro and rospkg, but not only for them: Blender's own
+    # Python has no PyYAML, so dropping xacro would still leave this needed.
+    "pyyaml",
     # --- COLLADA meshes: Blender 5.0 removed its own .dae importer ---
     # python-dateutil is pycollada's, not rospkg's: it is a hard Requires-Dist
     # of pycollada, which imports it at module scope.
