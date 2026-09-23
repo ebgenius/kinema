@@ -151,8 +151,53 @@ def test_bundled_versions_match_the_lock(wheel_names):
 def test_every_bundled_package_is_locked():
     """fetch_wheels downloads the lock's versions, so each package has to be in it."""
     fetch_wheels = _load_fetch_wheels()
-    requirements = fetch_wheels.pinned_requirements()
-    assert len(requirements) == len(fetch_wheels.PACKAGES)
+    try:
+        fetch_wheels.pinned_requirements()
+    except SystemExit as exc:
+        pytest.fail(str(exc))
+
+
+def test_every_fetched_package_is_in_the_manifest(wheel_names):
+    """The other direction from the version check: nothing fetch_wheels names is left out.
+
+    Blender installs only the wheels the manifest lists, so a package dropped
+    from it -- by a hand edit, or a fetch limited to one platform -- installs
+    cleanly and fails at its first import.
+    """
+    fetch_wheels = _load_fetch_wheels()
+    expected = {fetch_wheels.normalise(name) for name in fetch_wheels.PACKAGES}
+    bundled = {fetch_wheels.normalise(wheel_tags(name)[0]) for name in wheel_names}
+    missing = sorted(expected - bundled)
+    assert not missing, f"fetched packages missing from the manifest: {missing}"
+
+
+def _lock_with(tmp_path, *records: tuple[str, str]) -> Path:
+    body = "".join(
+        f'[[package]]\nname = "{name}"\nversion = "{version}"\n\n' for name, version in records
+    )
+    path = tmp_path / "uv.lock"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_a_bundled_package_locked_at_two_versions_is_refused(tmp_path, monkeypatch):
+    """A lock forked by markers must not have its last record quietly win."""
+    fetch_wheels = _load_fetch_wheels()
+    lock = _lock_with(tmp_path, ("rospkg", "1.6.2"), ("rospkg", "1.6.3"))
+    monkeypatch.setattr(fetch_wheels, "LOCKFILE", lock)
+    with pytest.raises(SystemExit, match="rospkg at both 1.6.2 and 1.6.3"):
+        fetch_wheels.locked_versions()
+
+
+def test_agreeing_or_unbundled_duplicates_are_fine(tmp_path, monkeypatch):
+    fetch_wheels = _load_fetch_wheels()
+    lock = _lock_with(
+        tmp_path,
+        ("rospkg", "1.6.3"), ("rospkg", "1.6.3"),
+        ("mujoco", "3.1.0"), ("mujoco", "3.2.0"),
+    )
+    monkeypatch.setattr(fetch_wheels, "LOCKFILE", lock)
+    assert fetch_wheels.locked_versions()["rospkg"] == "1.6.3"
 
 
 def test_pyyaml_is_bundled(wheel_names):

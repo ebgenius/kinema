@@ -151,15 +151,29 @@ def normalise(name: str) -> str:
 
 
 def locked_versions() -> dict[str, str]:
-    """Normalised package name -> the version ``uv.lock`` pins."""
+    """Normalised package name -> the version ``uv.lock`` pins.
+
+    A lock may hold one package at several versions, forked by environment
+    markers. For a bundled package that is refused rather than letting the last
+    record win: the payload allows one version per package, which is what
+    ``check_version_skew`` enforces on the wheels themselves.
+    """
     import tomllib
 
     lock = tomllib.loads(LOCKFILE.read_text(encoding="utf-8"))
-    return {
-        normalise(package["name"]): package["version"]
-        for package in lock.get("package", [])
-        if "version" in package
-    }
+    bundled = {normalise(name) for name in PACKAGES}
+    locked: dict[str, str] = {}
+    for package in lock.get("package", []):
+        if "version" not in package:
+            continue
+        name, version = normalise(package["name"]), package["version"]
+        if name in bundled and locked.get(name, version) != version:
+            raise SystemExit(
+                f"fetch_wheels: uv.lock holds {package['name']} at both {locked[name]} "
+                f"and {version}; a bundled package needs one version"
+            )
+        locked[name] = version
+    return locked
 
 
 def pinned_requirements() -> list[str]:
