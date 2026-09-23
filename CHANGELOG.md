@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-23
+
+0.4.0 taught a robot a job. This release is about the choices inside that job, and whether a
+real robot could carry it out:
+
+- which of a pose's configurations the arm takes;
+- what a rail, a gantry or a seventh axis does while the tool holds still;
+- whether the motion is one the robot's motors can follow.
+
 ### Added
 
 - **Find Solutions**, in the IK panel: the other arm configurations that reach the same tool
@@ -46,11 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Its goal is a point on the circle the elbow can actually reach, built about the wrist
   centre where the tool is going rather than where it is, so the single live update a drag
   produces already reaches the tool. A target dragged past reach leaves the elbow on its
-  side instead of flipping it over. The free-floating elbow target
-  this replaces, which never shipped, pulled toward wherever it was dragged and gave up tool
-  accuracy there. On the `arm7` fixture the swivel keeps the tool within 0.0003 mm at every
-  strength from 0.5 to 20, where the free target cost 0.55 mm at 2 and 30.7 mm at 20. Adding a swivel doesn't move the arm. It is offered only when more than six
-  joints are left to IK, and it needs the PyRoki solver.
+  side instead of flipping it over. The free-floating elbow target this replaces, which never
+  shipped, pulled toward wherever it was dragged and gave up tool accuracy there. On the
+  `arm7` fixture the swivel keeps the tool within 0.0003 mm at every strength from 0.5 to 20,
+  where the free target cost 0.55 mm at 2 and 30.7 mm at 20. Adding a swivel doesn't move
+  the arm. It is offered only when more than six joints are left to IK, and it needs the
+  PyRoki solver.
 
 - **Joint velocity limits.** A joint moving faster than its limit at the current frame is
   flagged in red in two places: its slider in the Joints panel, and its own dial or arrow in
@@ -63,6 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured exactly, from its own curve, however the frame was reached. A joint driven by live
   IK is measured against the pose one frame earlier, which playback and stepping provide.
   Rigs imported before this carry no limits: import again, or load a `joint_limits.yaml`.
+
+### Changed
+
+- **The bundled wheels are exactly the versions `uv.lock` pins.** They used to be whatever
+  PyPI had newest when the payload was fetched. So 0.4.0 shipped lxml 6.1.3 while every test
+  ran against 6.1.2, and a later build picked up rospkg 1.6.3 the same way. Payload and lock
+  now agree, and a test fails if they part.
+- **rospkg 1.6.3.** It was 1.6.2 in 0.4.0. lxml stays at 6.1.3, now tested.
 
 ## [0.4.0] - 2026-09-07
 
@@ -510,7 +528,8 @@ are rejected, the first IK solve compiles for ~14 s, and Windows needs long path
 
 [PyRoki]: https://github.com/chungmin99/pyroki
 
-[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ebgenius/kinema/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ebgenius/kinema/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/ebgenius/kinema/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ebgenius/kinema/compare/v0.3.0...v0.3.1

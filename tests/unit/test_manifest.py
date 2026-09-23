@@ -130,6 +130,31 @@ def test_every_compiled_package_covers_every_platform(manifest, wheel_names):
     assert not missing, f"compiled packages missing a platform wheel: {missing}"
 
 
+def test_bundled_versions_match_the_lock(wheel_names):
+    """Every bundled wheel is the version ``uv.lock`` pins: what the tests ran against.
+
+    The dev venv is built from the lock and the zip from the manifest, and in a
+    dev checkout the bundled wheels are never imported, so nothing else notices
+    when they part. 0.4.0 shipped lxml 6.1.3 over a locked 6.1.2, and a later
+    build rewrote the manifest to rospkg 1.6.3 over a locked 1.6.2.
+    """
+    fetch_wheels = _load_fetch_wheels()
+    locked = fetch_wheels.locked_versions()
+    apart = {}
+    for name in wheel_names:
+        dist, version = name.split("-")[:2]
+        if locked.get(fetch_wheels.normalise(dist)) != version:
+            apart[dist] = (version, locked.get(fetch_wheels.normalise(dist)))
+    assert not apart, f"bundled (manifest, lock) versions disagree: {apart}"
+
+
+def test_every_bundled_package_is_locked():
+    """fetch_wheels downloads the lock's versions, so each package has to be in it."""
+    fetch_wheels = _load_fetch_wheels()
+    requirements = fetch_wheels.pinned_requirements()
+    assert len(requirements) == len(fetch_wheels.PACKAGES)
+
+
 def test_pyyaml_is_bundled(wheel_names):
     """Load Joint Limits imports yaml, and Blender's own Python has none.
 

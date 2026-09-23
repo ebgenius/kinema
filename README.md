@@ -4,14 +4,14 @@
 armature you can actually animate — with IK that understands singularities, joint limits and
 multi-turn joints. A built-in catalogue of 186 real robots says where to find one.
 
-> Status: released as [v0.4.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
+> Status: released as [v0.5.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
 > bake all function, and the built extension installs and runs from a clean Blender
 > profile. Nothing is downloaded, no threads are started, and no environment
 > variables are written — an import blocks Blender while it works.
 >
 > Docs: <https://ebgenius.github.io/kinema/>
 
-[v0.4.0]: https://github.com/ebgenius/kinema/releases/tag/v0.4.0
+[v0.5.0]: https://github.com/ebgenius/kinema/releases/tag/v0.5.0
 
 ## Why this exists
 
@@ -330,10 +330,15 @@ uv run python tools/dev.py build           # per-platform zips into dist/
 
 `vendor/` and `wheels/` are both gitignored, so a fresh clone has neither and the first
 two commands are not optional. They are one-time setup rather than per-build steps —
-re-run `vendor.py` only when its pins move, and `fetch_wheels.py` only when the payload
-should change. `dev.py build` refuses to run if either directory is missing, stale
-against its pin, or holds one package at two versions; `vendor.py --check` reports the
-vendored state on its own, offline.
+re-run `vendor.py` only when its pins move, and `fetch_wheels.py` only when `uv.lock` does.
+`dev.py build` refuses to run if either directory is missing, stale against its pin, or
+holds one package at two versions; `vendor.py --check` reports the vendored state on its
+own, offline.
+
+The wheels are downloaded at exactly the versions `uv.lock` pins, so the zip carries what
+the dev venv and the tests ran against. To move a package, run
+`uv lock --upgrade-package <name>` and fetch again. A unit test fails if the manifest and
+the lock disagree.
 
 `--split-platforms` is the default and is not optional in practice: a combined zip would
 carry three copies of `jaxlib` and exceed the extensions platform's size limit. Current
@@ -341,14 +346,18 @@ output, all comfortably under the ~200 MB ceiling:
 
 | Platform | Zip |
 |---|---|
-| `linux-x64` | 136.4 MB |
+| `linux-x64` | 136.5 MB |
 | `windows-x64` | 116.5 MB |
-| `macos-arm64` | 99.7 MB |
+| `macos-arm64` | 99.8 MB |
 
-Verified by installing the built zip into a clean Blender profile
-(`BLENDER_USER_RESOURCES` pointed at an empty directory): all ten dependencies resolve
-from the bundled wheels, a UR5e imports, PyRoki solves at 0.0001 mm in ~5 ms, and the
-baked .blend still animates after the extension is removed entirely.
+For 0.5.0, the Windows zip was installed into a clean Blender 5.2.1 profile
+(`BLENDER_USER_RESOURCES` pointed at an empty directory) and checked:
+
+- every bundled dependency loads from the zip's own wheels;
+- a UR5e imports, and PyRoki solves it from a working pose to 0.00 mm in ~2 ms warm;
+- xacro, MJCF and COLLADA files import, and Load Joint Limits reads a yaml;
+- Blender reports no extension policy warnings, and no thread is started;
+- a baked .blend still animates in a Blender with no Kinema installed at all.
 
 [uv]: https://docs.astral.sh/uv/
 [debugpy]: https://github.com/microsoft/debugpy

@@ -1,6 +1,6 @@
 [project]
 name = "kinema"
-version = "0.4.0"
+version = "0.5.0"
 description = "Animation-ready robot rigs in Blender: import any robot, get a clean armature with correct IK."
 readme = "README.md"
 requires-python = "==3.13.*"          # must match Blender 5.2 LTS (Python 3.13.13)
@@ -20,7 +20,10 @@ dependencies = [
     "loguru",
     "lxml",
     "pycollada",
+    "pyyaml",             # io/joint_limits.py imports it; Blender's Python has none
+    "rich",               # vendored jaxls imports it, lazily, to report a failed solve
     "scipy",
+    "termcolor",          # vendored pyroki and jaxls import it at module level
     "trimesh",            # deliberately WITHOUT [easy]: the extras add ~90 MB
     "xacrodoc",
     "yourdfpy",
