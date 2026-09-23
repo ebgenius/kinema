@@ -47,6 +47,11 @@ def handlers(addon):
 
 
 @pytest.fixture
+def manager(addon):
+    return importlib.import_module(f"{addon.__name__}.solver.manager")
+
+
+@pytest.fixture
 def arm6(addon, builder, fixture_dir, clean_scene):
     """arm6: joints 1-3 limited to 3.15 rad/s, joints 4-6 to 3.2."""
     import bpy
@@ -284,6 +289,29 @@ class TestLiveIk:
         readings = _by_joint(velocity, live)
         assert readings["joint1"].speed == pytest.approx(0.5 * FPS, rel=1e-5)
         assert readings["joint2"].speed is None, "precondition: the others are driven"
+
+    @pytest.mark.parametrize("cached", [True, False], ids=["solver-cached", "no-solver-yet"])
+    def test_a_joint_past_the_tip_follows_its_curve(self, live, velocity, manager, cached):
+        """Aimed at joint3, the solver never writes joints 4 to 6, so their curves hold.
+
+        Without a cached solver -- a file just opened, nothing solved yet -- this
+        has to come out the same: the chain is read off the tip, not the cache.
+        """
+        import bpy
+
+        live.kinema_ik_tip = 2
+        _key(live, "joint5", [(10, 0.0), (11, 0.5)])
+        scene = bpy.context.scene
+        scene.frame_set(1)
+        scene.frame_set(11)
+        if not cached:
+            manager.invalidate()
+        assert (manager._cache.get(live.name) is not None) == cached, "precondition"
+
+        readings = _by_joint(velocity, live)
+        assert readings["joint5"].speed == pytest.approx(0.5 * FPS, rel=1e-5)
+        assert readings["joint5"].over
+        assert readings["joint2"].speed is None, "precondition: the chain is driven"
 
 
 class TestOverlay:

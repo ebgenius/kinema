@@ -25,7 +25,9 @@ from bpy_extras.io_utils import ImportHelper
 from ..io.joint_limits import JointLimitsError, read_velocity_limits
 from ..rig import builder
 from ..rig.velocity import History, Reading, clamp, speed
-from ..ui.panel import active_rig, manager_state
+from ..solver import manager
+from ..solver.chain import chain_bones
+from ..ui.panel import active_rig
 from .ik import own_fcurve_containers
 
 #: The frames each rig was last seen at, for the joints live IK drives.
@@ -95,10 +97,11 @@ def _joint_curves(rig) -> dict[str, bpy.types.FCurve]:
 def _ik_driven(rig) -> set[str]:
     """Joints live IK writes on this frame, whatever their curves say.
 
-    The same test the live handler makes. The chain comes from the cached
-    solver when there is one -- building a solver from a draw callback is not
-    an option -- and is otherwise taken to be every joint, which is right for
-    the default tip at the tool.
+    The same test the live handler makes. The chain is walked from the tip the
+    rig aims at now, the way the solver builds it, rather than read off a
+    cached solver: there may be none yet -- a file just opened -- and the tip
+    is keyframable, so a cached one can describe a different chain. Joints
+    past a tip set part-way up are never written, and keep their curves.
     """
     if not getattr(rig, "kinema_ik_enabled", False):
         return set()
@@ -107,16 +110,11 @@ def _ik_driven(rig) -> set[str]:
     ik_name = rig.get(builder.PROP_IK_BONE)
     if not ik_name or ik_name not in rig.pose.bones:
         return set()
-    solver = manager_state(rig)
-    names = (
-        list(solver.chain.bone_names)
-        if solver is not None
-        else [pose_bone.name for pose_bone in builder.joint_bones(rig)]
-    )
     pose = rig.pose.bones
     return {
-        name for name in names
-        if name in pose and not getattr(pose[name], "kinema_ik_hold", False)
+        bone.name
+        for bone in chain_bones(rig, manager.tip_bone(rig))
+        if bone.name in pose and not getattr(pose[bone.name], "kinema_ik_hold", False)
     }
 
 

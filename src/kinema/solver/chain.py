@@ -158,6 +158,25 @@ def pose_error(current: np.ndarray, target: np.ndarray) -> np.ndarray:
 # --------------------------------------------------------------------------
 # Building a chain from a rig
 # --------------------------------------------------------------------------
+def chain_bones(armature_object, tip_bone_name: str) -> list:
+    """The joint bones from the root down to ``tip_bone_name``, root first.
+
+    Which joints a solver aimed at that tip drives, without building one: no
+    matrices, so it is cheap enough for a draw callback. Empty when the tip is
+    missing or has no joint above it.
+    """
+    from ..rig import builder
+
+    # Walk up to the root, collecting only bones that represent joints.
+    ancestry = []
+    node = armature_object.data.bones.get(tip_bone_name)
+    while node is not None:
+        ancestry.append(node)
+        node = node.parent
+    ancestry.reverse()
+    return [b for b in ancestry if builder.PROP_JOINT_NAME in b]
+
+
 def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
     """Extract the chain of joint bones from the root down to ``tip_bone_name``.
 
@@ -169,20 +188,8 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
 
     from ..rig import builder
 
-    bones = armature_object.data.bones
-    tip = bones.get(tip_bone_name)
-    if tip is None:
-        return None
-
-    # Walk up to the root, collecting only bones that represent joints.
-    ancestry = []
-    node = tip
-    while node is not None:
-        ancestry.append(node)
-        node = node.parent
-    ancestry.reverse()
-
-    joints = [b for b in ancestry if builder.PROP_JOINT_NAME in b]
+    tip = armature_object.data.bones.get(tip_bone_name)
+    joints = chain_bones(armature_object, tip_bone_name)
     if not joints:
         return None
 
