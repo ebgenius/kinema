@@ -130,6 +130,17 @@ def test_every_compiled_package_covers_every_platform(manifest, wheel_names):
     assert not missing, f"compiled packages missing a platform wheel: {missing}"
 
 
+def test_pyyaml_is_bundled(wheel_names):
+    """Load Joint Limits imports yaml, and Blender's own Python has none.
+
+    It arrives as a wheel or not at all. Checked by name rather than trusted to
+    xacro and rospkg, which need it too but are not why Kinema imports it. The
+    compiled-package test above then holds it to every platform.
+    """
+    dists = {wheel_tags(name)[0].lower() for name in wheel_names}
+    assert "pyyaml" in dists, "PyYAML is missing from the bundled wheels"
+
+
 def test_no_wheel_requires_a_newer_glibc_than_blender(wheel_names):
     """Linux wheels must stay within Blender's own glibc baseline.
 

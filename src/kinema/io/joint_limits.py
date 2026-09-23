@@ -38,7 +38,12 @@ def velocity_limits(text: str, *, source: str = "the file") -> dict[str, float |
     or a limit switched on without a positive ``max_velocity`` -- are left out,
     so the description's own value stands for them.
     """
-    import yaml
+    try:
+        import yaml
+    except ImportError:
+        # Bundled as a wheel, since Blender's Python has none. Missing means a
+        # broken install, which is worth a sentence rather than a traceback.
+        raise JointLimitsError("PyYAML is unavailable; check Kinema's dependencies") from None
 
     try:
         document = yaml.safe_load(text)

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from ..conftest import load_addon_module
 
-pytest.importorskip("yaml")
+# No importorskip("yaml"): PyYAML is a shipped dependency, so its absence is a
+# failure to see, not a reason to pass quietly.
 joint_limits = load_addon_module("io.joint_limits")
 
 MOVEIT = """
@@ -83,6 +86,12 @@ class TestUnusable:
     def test_a_quoted_false_is_false(self):
         text = 'joint_limits:\n  j:\n    has_velocity_limits: "false"\n'
         assert joint_limits.velocity_limits(text) == {"j": None}
+
+    def test_missing_pyyaml_is_an_error_not_a_traceback(self, monkeypatch):
+        """A broken install should say what is wrong, from the operator's report."""
+        monkeypatch.setitem(sys.modules, "yaml", None)
+        with pytest.raises(joint_limits.JointLimitsError, match="PyYAML"):
+            joint_limits.velocity_limits(MOVEIT)
 
     def test_a_missing_file_is_an_error(self, tmp_path):
         with pytest.raises(joint_limits.JointLimitsError, match="Could not open"):
