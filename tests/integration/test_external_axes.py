@@ -275,6 +275,35 @@ class TestTrackUnderTheRobot:
         assert base.parent_bone == builder.ROOT_BONE
         np.testing.assert_allclose(_np4(base.matrix_world), before, atol=1e-6)
 
+    def test_an_object_parented_by_hand_stays_where_it_stands_on_removal(
+        self, arm6, builder, ops, ext
+    ):
+        """Only what rode the robot onto the axis moves back with the robot.
+
+        A cable parented to the carriage by hand never moved with the robot, so taking
+        the axis away must not drop it by the robot's lift.
+        """
+        import bpy
+
+        _add(ops, ext, arm6, **{**TRACK, "base_location": (0.0, 0.0, 0.0),
+                                "offset_location": (0.0, 0.0, 0.2)})
+        cable = bpy.data.objects.new("cable", bpy.data.meshes.new("cable"))
+        bpy.context.scene.collection.objects.link(cable)
+        cable.location = (0.3, 0.1, 0.05)
+        bpy.context.view_layer.update()
+        placed = cable.matrix_world.copy()
+        cable.parent = arm6
+        cable.parent_type = "BONE"
+        cable.parent_bone = "track"
+        cable.matrix_world = placed
+        bpy.context.view_layer.update()
+        before = _np4(cable.matrix_world)
+
+        _remove(ops, arm6, "track")
+        bpy.context.view_layer.update()
+        assert cable.parent_bone == builder.ROOT_BONE
+        np.testing.assert_allclose(_np4(cable.matrix_world), before, atol=1e-6)
+
     def test_stacked_axes_come_off_in_either_order(
         self, arm6, fixture_dir, builder, ops, ext
     ):

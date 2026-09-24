@@ -260,6 +260,16 @@ def placeholders(rig, axis_name: str) -> list:
     return [o for o in rig.children if o.get(builder.PROP_EXTERNAL_MESH) == axis_name]
 
 
+def _rides_the_robot(obj) -> bool:
+    """Whether a bone-parented object is Kinema's to move with the robot.
+
+    A link mesh is, and so is an axis placeholder -- an axis's own are removed with
+    it, so any other found on it belongs to an axis further up. Anything else was
+    parented by hand.
+    """
+    return builder.PROP_LINK_NAME in obj or builder.PROP_EXTERNAL_MESH in obj
+
+
 def _remove_objects(objects) -> None:
     for obj in objects:
         data = obj.data
@@ -556,8 +566,12 @@ def remove_axis(rig, name: str) -> None:
         if obj.parent_type == "BONE" and obj.parent_bone == name and obj not in own
     ]
     attached = [obj for obj in on_bone if builder.PROP_ATTACHMENT in obj]
+    # Only what rode the robot onto the axis goes back with it: the robot's own link
+    # meshes, and other axes' placeholders. Anything parented here by hand never
+    # moved with the robot, so it stays where it stands, as an attachment does.
     reseat = [
-        (obj, _matrix(undo) @ _rest_placement(rig, obj))
+        (obj, (_matrix(undo) if _rides_the_robot(obj) else Matrix.Identity(4))
+         @ _rest_placement(rig, obj))
         for obj in on_bone if obj not in attached
     ]
 
