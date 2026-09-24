@@ -264,28 +264,48 @@ rides, a turntable under it, a positioner holding the part, a spindle on its fla
   placement. A rotary axis can be continuous.
 - **Limits and top speed.** The speed feeds the **Velocity Limits** check like any other
   joint's.
-- **Base:** where the axis sits. Measured from the robot's base, or from the tool frame for
-  an axis on the tool. Location, plus roll, pitch and yaw about fixed X, Y and Z, as in URDF.
-- **Offset:** where what the axis carries sits on it, relative to the axis's moving frame.
-  That is the robot base for an axis under the robot, and the TCP for one on the tool.
+- **External axis base:** where the axis sits, calculated from the current robot base, or
+  from the current tool frame for an axis on the tool. Location, plus roll, pitch and yaw
+  about fixed X, Y and Z, as in URDF.
+- **External axis offset:** where what the axis carries sits on its moving part. That is the
+  current robot base for an axis under the robot, and the TCP for one on the tool.
+
+**The current robot base** includes any axes already under the robot. A new axis under the
+robot goes in at the bottom of that stack, and its base is measured from just under the
+lowest one's rail or turntable. Add an X track, then a Y track, and the Y track goes under
+the X track's rail and carries it, as if the X track were already part of the robot.
 
 The axis is an ordinary joint bone, built by the same code as an imported joint. It gets a
 slider in **Joints (FK)**, keys, bake and a velocity check, and it starts **held**, since it
 is positioned by hand and the arm reaches from wherever it stands. Release the pin to let IK
 move it too.
 
+**See it before you add it.** While the dialog is open, the viewport shows the result and
+follows every field you change:
+
+- the rail and carriage, or base and plate, when **Placeholder** is ticked;
+- the travel: the carriage outlined at both end stops, or an arc from stop to stop, with the
+  limits written beside them;
+- for an axis under the robot that moves it, a ghost of the robot and the axes it already
+  rides, where they will stand.
+
+The ghost is a coarse copy of the meshes, moved as one block. Nothing is solved, and nothing
+is added to the scene until you press OK. Cancel leaves no trace.
+
 **Moving the robot, and putting it back.** With base and offset at zero nothing moves: the
-axis slides in under the robot, or behind the TCP, exactly where they are. Give them values
-and the robot ends up at base-then-offset on the carriage. Everything riding the robot moves
-with it by one rigid transform, so the pose you had is still the pose you have:
+axis slides in under the robot and its axes, or behind the TCP, exactly where they are. Give
+them values and the robot ends up at base-then-offset on the carriage. Everything riding the
+robot moves with it by one rigid transform, so the pose you had is still the pose you have:
 
 - the robot's bones and its TCP;
+- the axes already under it, and their placeholders;
 - the IK target and the swivel;
 - the base link's meshes;
 - the waypoints.
 
-**Remove** undoes all of it, stacked axes in any order included. An axis on the tool moves
-the TCP to its offset, and removing the axis puts the TCP back with the offset it had.
+**Remove** undoes all of it, stacked axes in any order included. Something you parented to
+the axis bone by hand stays where it stands. An axis on the tool moves the TCP to its offset,
+and removing the axis puts the TCP back with the offset it had.
 
 **Joint indices follow names.** Blender orders bones by hierarchy, so an axis under the robot
 becomes joint 0. Waypoints' joint vectors and the IK tip, keyframes included, are remapped

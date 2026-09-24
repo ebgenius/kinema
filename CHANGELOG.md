@@ -15,15 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the mount: under the robot, on the tool, or standalone;
   - linear or rotary motion, and its direction;
   - limits and top speed;
-  - where it sits relative to the robot base or the tool frame;
+  - where it sits relative to the current robot base or the tool frame;
   - where what it carries sits on it.
+
+  While the dialog is open, the viewport previews the result: the placeholder, the travel
+  between the end stops, and a ghost of the robot where it will stand.
 
   The axis is an ordinary joint bone, held for IK by default. It has a slider, keys, bake
   and a velocity check like any imported joint.
-  - **Placement.** An axis under the robot moves everything riding the robot when its
-    placement asks for that: bones, TCP, IK target, swivel, base meshes and waypoints. An
-    axis on the tool carries the TCP.
-  - **Removal** puts every one of those back, stacked axes in any order included.
+  - **Placement.** A new axis under the robot goes in under any already there, placed from
+    just below the lowest one, so a second track carries the first. It moves everything
+    riding the robot when its placement asks for that: bones, the axes above it, TCP, IK
+    target, swivel, base meshes and waypoints. An axis on the tool carries the TCP.
+  - **Removal** puts every one of those back, stacked axes in any order included. An object
+    parented to the axis by hand stays where it is.
   - **Indices.** Waypoints and the keyframable IK tip are remapped by joint name, because
     an axis under the robot becomes joint 0.
   - **Placeholders.** The geometry is generated procedurally, so the extension ships no

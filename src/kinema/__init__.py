@@ -25,7 +25,7 @@ from .ops import (
     velocity,
     waypoints,
 )
-from .ui import overlay, panel
+from .ui import axis_preview, overlay, panel
 
 # panel first: ops/pose imports helpers from it, and registration order
 # decides which classes exist when Blender resolves parent panels. waypoints
@@ -52,6 +52,7 @@ def register() -> None:
 
 
 def unregister() -> None:
+    axis_preview.stop()
     overlay.unregister_draw()
     handlers.unregister_handlers()
 

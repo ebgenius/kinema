@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import types
 
 import numpy as np
 import pytest
@@ -304,14 +305,65 @@ class TestTrackUnderTheRobot:
         assert cable.parent_bone == builder.ROOT_BONE
         np.testing.assert_allclose(_np4(cable.matrix_world), before, atol=1e-6)
 
-    def test_stacked_axes_come_off_in_either_order(
-        self, arm6, fixture_dir, builder, ops, ext
-    ):
-        """Take the lower one off first, and the robot is as if it was never there.
+    @pytest.mark.parametrize("first_off", ["track", "cross"])
+    def test_a_second_axis_goes_in_under_the_first(self, arm6, builder, ops, ext, first_off):
+        """A Y track added after an X track carries it, like part of the robot.
 
-        The IK target is made at the TCP, and must stay on it through every step:
-        the second axis stands on the first, so what rides the robot is found from
-        there, and the target hangs off Root rather than off either.
+        At its defaults it stands just under the first track's rail and moves nothing;
+        the first track's rail rides it. Either can come off first, and everything is
+        back where it was.
+        """
+        import bpy
+
+        original = _tcp_rest(builder, arm6)
+        track = {**TRACK, "base_location": (0.0, 0.0, 0.0)}
+        _add(ops, ext, arm6, **track)
+        rail = next(o for o in ops.placeholders(arm6, "track") if o.name.endswith("base"))
+        rail_rest = _np4(rail.matrix_world)
+        track_frame = _np4(builder.link_frame_of(arm6.data.bones["track"]))
+        under_the_rail = track_frame @ ext.footing(ext.AxisSpec(**track))
+        np.testing.assert_allclose(ops.stack_base(arm6), under_the_rail, atol=1e-6)
+
+        _add(ops, ext, arm6, **{**track, "name": "cross", "direction": "Y"})
+        bones = arm6.data.bones
+        assert _joint_names(builder, arm6)[:3] == ["cross", "track", "joint1"]
+        assert bones["cross"].parent.name == builder.ROOT_BONE
+        assert bones["track"].parent.name == "cross"
+        np.testing.assert_allclose(
+            _np4(builder.link_frame_of(bones["cross"])), under_the_rail, atol=1e-6
+        )
+        # Just under the rail, which reaches 0.45 of the default 0.3 m size down.
+        below = track_frame[2, 3] - 0.45 * 0.3
+        assert _np4(bones["cross"].matrix_local)[2, 3] == pytest.approx(below, abs=1e-6)
+        np.testing.assert_allclose(_tcp_rest(builder, arm6), original, atol=1e-6)
+        np.testing.assert_allclose(ops.robot_base(arm6), np.eye(4), atol=1e-9)
+        bpy.context.view_layer.update()
+        assert rail.parent_bone == "cross", "the first track's rail rides the second"
+        np.testing.assert_allclose(_np4(rail.matrix_world), rail_rest, atol=1e-6)
+        cross_rail = next(o for o in ops.placeholders(arm6, "cross") if o.name.endswith("base"))
+        assert cross_rail.parent_bone == builder.ROOT_BONE
+
+        _pose(builder, arm6, {"cross": 0.4})
+        moved = _np4(rail.matrix_world)[:3, 3] - rail_rest[:3, 3]
+        np.testing.assert_allclose(moved, [0.0, 0.4, 0.0], atol=1e-6)
+        _pose(builder, arm6, {"cross": 0.0})
+
+        _remove(ops, arm6, first_off)
+        _remove(ops, arm6, "cross" if first_off == "track" else "track")
+        bpy.context.view_layer.update()
+        assert _joint_names(builder, arm6)[0] == "joint1"
+        np.testing.assert_allclose(_tcp_rest(builder, arm6), original, atol=1e-6)
+        np.testing.assert_allclose(ops.robot_base(arm6), np.eye(4), atol=1e-9)
+
+    def test_a_lower_axis_that_moves_the_stack_carries_the_upper_one(
+        self, arm6, builder, ops, ext
+    ):
+        """The whole stack moves by the new axis's shift, and comes apart in any order.
+
+        The IK target is made at the TCP, and must stay on it through every step. The
+        track's own lift is stored in a frame the riser then moves, so it is carried
+        into the new frame -- without that, taking the track off first leaves the robot
+        where neither axis puts it. The two shifts do not commute, so that would show.
         """
         import bpy
 
@@ -326,21 +378,32 @@ class TestTrackUnderTheRobot:
             )
 
         original = _tcp_rest(builder, arm6)
-        _add(ops, ext, arm6, **{**TRACK, "base_location": (0.5, 0.0, 0.04),
-                                "base_rotation": (0.0, 0.0, math.pi / 2)})
+        _add(ops, ext, arm6, **{**TRACK, "offset_location": (0.1, 0.0, 0.2)})
         target_on_tool()
+        rail = next(o for o in ops.placeholders(arm6, "track") if o.name.endswith("base"))
+        before = {
+            "tcp": _tcp_rest(builder, arm6),
+            "track": _np4(arm6.data.bones["track"].matrix_local),
+            "rail": _np4(rail.matrix_world),
+        }
         riser = dict(name="riser", mount="BEFORE", kind="ROTARY", direction="Z",
                      offset_location=(0.1, 0.0, 0.2), offset_rotation=(0.0, 0.0, 0.3))
         _add(ops, ext, arm6, **riser)
-        assert _joint_names(builder, arm6)[:2] == ["track", "riser"]
+        assert _joint_names(builder, arm6)[:2] == ["riser", "track"]
+        shift = np.array(arm6.data.bones["riser"][builder.PROP_EXTERNAL_SHIFT]).reshape(4, 4)
+        assert not np.allclose(shift, np.eye(4), atol=1e-3)
+        bpy.context.view_layer.update()
+        np.testing.assert_allclose(_tcp_rest(builder, arm6), shift @ before["tcp"], atol=1e-5)
+        np.testing.assert_allclose(
+            _np4(arm6.data.bones["track"].matrix_local), shift @ before["track"], atol=1e-6
+        )
+        np.testing.assert_allclose(_np4(rail.matrix_world), shift @ before["rail"], atol=1e-6)
         target_on_tool()
 
         _remove(ops, arm6, "track")
         target_on_tool()
-        alone = _import(fixture_dir, builder, "arm6.urdf")
-        _add(ops, ext, alone, **riser)
-        np.testing.assert_allclose(_tcp_rest(builder, arm6), _tcp_rest(builder, alone), atol=1e-5)
-        np.testing.assert_allclose(ops.robot_base(arm6), ops.robot_base(alone), atol=1e-6)
+        np.testing.assert_allclose(_tcp_rest(builder, arm6), shift @ original, atol=1e-5)
+        np.testing.assert_allclose(ops.robot_base(arm6), shift, atol=1e-6)
 
         _remove(ops, arm6, "riser")
         target_on_tool()
@@ -622,6 +685,7 @@ class TestTheOperators:
 
             def label(self, *, text="", icon="NONE"):
                 log.append(("icon", icon))
+                log.append(("label", text))
 
             def prop(self, data, name, **options):
                 log.append(("prop", data, name))
@@ -659,6 +723,13 @@ class TestTheOperators:
         drawn = {entry[2] for entry in log if entry[0] == "prop" and entry[1] is dialog}
         assert drawn <= set(values), drawn - set(values)
         assert {"base_location", "offset_location", "speed_angle", "lower_distance"} <= drawn
+        labels = {entry[1] for entry in log if entry[0] == "label"}
+        assert {
+            "External axis base: calculated from the current robot base",
+            "External axis offset: calculated from the current robot base",
+            "External axis base: calculated from the current tool frame",
+            "External axis offset: calculated from the current TCP",
+        } <= labels
         assert {entry[1] for entry in log if entry[0] == "icon"} <= icons
         for entry in (e for e in log if e[0] == "operator"):
             getattr(bpy.ops.kinema, entry[1].split(".")[1]).get_rna_type()
@@ -674,3 +745,130 @@ class TestTheOperators:
         ops._apply_preset(dialog, bpy.context)
         assert (dialog.mount, dialog.kind, dialog.continuous) == ("AFTER", "ROTARY", True)
         assert dialog.size == pytest.approx(ext.default_size("AFTER", ops.robot_reach(arm6)))
+
+
+class TestThePreview:
+    """What the dialog draws while it is open. The drawing itself needs a window;
+    what it draws, and that it goes away, do not."""
+
+    @pytest.fixture
+    def preview(self, addon):
+        module = importlib.import_module(f"{addon.__name__}.ui.axis_preview")
+        yield module
+        module.stop()
+
+    @pytest.mark.parametrize(
+        "spec", [TRACK, {**TRACK, "direction": "Z"}, SPINDLE, POSITIONER,
+                 {**TRACK, "name": "riser", "kind": "ROTARY", "base_rotation": (0.4, 0.0, 0.2)}],
+    )
+    def test_it_draws_the_bone_blender_builds(self, arm6, builder, ops, ext, spec):
+        """``bone_matrix`` is the axis bone's rest matrix, before the bone exists."""
+        spec = ext.AxisSpec(**spec)
+        _, frame, _ = ops.placement(arm6, spec)
+        name = _add(ops, ext, arm6, **vars(spec))
+        np.testing.assert_allclose(
+            ext.bone_matrix(frame, spec.axis), _np4(arm6.data.bones[name].matrix_local),
+            atol=1e-6,
+        )
+
+    def test_the_ghost_is_the_robot_coarsened_and_moved_by_the_shift(
+        self, arm6, builder, ops, ext, preview
+    ):
+        import types
+
+        import bpy
+
+        sources = ops._ghost_sources(arm6)
+        assert sources, "arm6 has visual meshes"
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        full = 0
+        for obj in sources:
+            mesh = obj.evaluated_get(depsgraph).to_mesh()
+            mesh.calc_loop_triangles()
+            full += len(mesh.loop_triangles)
+            obj.evaluated_get(depsgraph).to_mesh_clear()
+
+        dialog = types.SimpleNamespace(mount="BEFORE")
+        preview.start(dialog, bpy.context, arm6, sources)
+        assert preview.active()
+        points, tris = preview._state["ghost"]
+        assert 0 < len(tris) <= full
+        assert len(points) < sum(len(o.data.vertices) for o in sources)
+
+        lift = ext.AxisSpec(**{**TRACK, "base_location": (0.0, 0.0, 0.0),
+                               "offset_location": (0.0, 0.0, 0.2)})
+        preview.show(dialog, lift, ops.placement(arm6, lift))
+        shown = preview._state["shapes"]
+        np.testing.assert_allclose(shown["shift"][:3, 3], [0.0, 0.0, 0.2], atol=1e-9)
+        assert len(shown["fill"]) and len(shown["lines"]) and len(shown["labels"]) == 2
+
+        still = ext.AxisSpec(**{**TRACK, "base_location": (0.0, 0.0, 0.0),
+                                "placeholder": False})
+        preview.show(dialog, still, ops.placement(arm6, still))
+        shown = preview._state["shapes"]
+        assert shown["shift"] is None, "nothing moves, so no ghost"
+        assert not len(shown["fill"]), "no placeholder, no fill"
+        assert len(shown["lines"]), "the travel still shows"
+
+        preview.show(types.SimpleNamespace(mount="BEFORE"), lift, ops.placement(arm6, lift))
+        assert preview._state["shapes"] is shown, "another dialog's fields are ignored"
+
+        preview.stop()
+        assert not preview.active() and not preview._state
+
+    def test_the_ghost_includes_the_axes_already_under_the_robot(self, arm6, ops, ext):
+        _add(ops, ext, arm6, **TRACK)
+        _add(ops, ext, arm6, **POSITIONER)
+        sources = ops._ghost_sources(arm6)
+        assert {o.name for o in ops.placeholders(arm6, "track")} <= {o.name for o in sources}
+        assert not set(ops.placeholders(arm6, "positioner")) & set(sources)
+
+    def test_opening_and_leaving_the_dialog_leaves_nothing_behind(self, arm6, ops, preview):
+        """invoke starts the preview; execute and cancel both end it."""
+        import bpy
+
+        objects, meshes = len(bpy.data.objects), len(bpy.data.meshes)
+        dialog_class = ops.KINEMA_OT_add_external_axis
+
+        def open_dialog():
+            dialog_class.invoke(_Dialog(dialog_class), _NoDialogContext(bpy.context), None)
+            assert preview.active()
+
+        open_dialog()
+        assert (len(bpy.data.objects), len(bpy.data.meshes)) == (objects, meshes)
+        dialog_class.cancel(None, bpy.context)
+        assert not preview.active()
+
+        open_dialog()
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
+        assert not preview.active()
+
+
+class _NoDialogContext:
+    """The real context, but a dialog opened in it is taken as open: invoke runs in the
+    background, where Blender has no window to show one in."""
+
+    def __init__(self, real):
+        self.real = real
+        self.window_manager = types.SimpleNamespace(
+            invoke_props_dialog=lambda operator, **_: {"RUNNING_MODAL"}
+        )
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+def _Dialog(dialog_class):
+    """A stand-in for the operator, with every property at its default."""
+    import types
+
+    import bpy
+
+    properties = bpy.ops.kinema.add_external_axis.get_rna_type().properties
+    values = {
+        p.identifier: (tuple(p.default_array) if getattr(p, "is_array", False) else p.default)
+        for p in properties if p.identifier != "rna_type"
+    }
+    dialog = types.SimpleNamespace(**values)
+    dialog.spec = types.MethodType(dialog_class.spec, dialog)
+    return dialog

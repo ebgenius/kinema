@@ -181,3 +181,132 @@ class TestPlaceholders:
         np.testing.assert_allclose(
             np.array(large[1][0]), 2.0 * np.array(small[1][0]), atol=1e-12
         )
+
+
+class TestStacking:
+    def test_a_track_stands_on_what_is_under_its_rail(self):
+        spec = ext.from_preset("LINEAR_TRACK")
+        drop = ext.footing(spec)
+        np.testing.assert_allclose(drop[:3, :3], np.eye(3))
+        assert drop[:3, 3] == pytest.approx([0.0, 0.0, -0.45 * spec.size])
+
+    def test_a_rotary_base_stands_on_what_is_under_its_base(self):
+        spec = ext.from_preset("ROTARY_BASE")
+        assert ext.footing(spec)[2, 3] == pytest.approx(-0.35 * spec.size)
+
+    def test_the_footing_is_the_lowest_point_of_the_shape(self):
+        """Taken from the shape, so a lift along Z stands on the bottom of its column."""
+        for direction in ext.DIRECTIONS:
+            spec = ext.AxisSpec("a", direction=direction, size=0.2)
+            static, _ = ext.placeholder(spec)
+            bone = ext.bone_matrix(np.eye(4), spec.axis)
+            lowest = (bone[:3, :3] @ np.array(static[0]).T)[2].min()
+            assert ext.footing(spec)[2, 3] == pytest.approx(min(0.0, lowest)), direction
+
+    def test_placeholder_or_not_the_footing_is_the_same(self):
+        spec = ext.from_preset("LINEAR_TRACK")
+        bare = ext.from_preset("LINEAR_TRACK", placeholder=False)
+        np.testing.assert_allclose(ext.footing(spec), ext.footing(bare))
+
+
+class TestBoneMatrix:
+    @pytest.mark.parametrize("direction", list(ext.DIRECTIONS))
+    def test_it_is_the_placement_as_a_right_handed_frame(self, direction):
+        rng = np.random.default_rng(len(direction))
+        frame = _random_pose(rng)
+        axis = ext.DIRECTIONS[direction]
+        matrix = ext.bone_matrix(frame, axis)
+        head, y_direction, z_reference = ext.bone_placement(frame, axis)
+        np.testing.assert_allclose(matrix[:3, :3].T @ matrix[:3, :3], np.eye(3), atol=1e-12)
+        assert np.linalg.det(matrix[:3, :3]) == pytest.approx(1.0)
+        np.testing.assert_allclose(matrix[:3, 3], head)
+        np.testing.assert_allclose(matrix[:3, 1], y_direction, atol=1e-12)
+        np.testing.assert_allclose(matrix[:3, 2], z_reference, atol=1e-12)
+
+
+class TestPreviewShapes:
+    def test_triangles_cover_the_faces(self):
+        vertices, faces = ext.box((0.0, 1.0), (0.0, 2.0), (0.0, 3.0))
+        tris = ext.triangles((vertices, faces))
+        assert tris.shape == (12, 3, 3)
+        area = sum(0.5 * np.linalg.norm(np.cross(b - a, c - a)) for a, b, c in tris)
+        assert area == pytest.approx(2 * (1 * 2 + 2 * 3 + 1 * 3))
+
+    def test_edges_are_counted_once(self):
+        assert ext.edges(ext.box((0, 1), (0, 1), (0, 1))).shape == (12, 2, 3)
+
+    def test_a_linear_travel_reaches_both_end_stops(self):
+        spec = ext.AxisSpec("a", lower=-0.5, upper=1.25, size=0.2)
+        lines, labels = ext.travel(spec)
+        along = lines[..., 1]
+        # The carriage's outline reaches past each stop by half its own length.
+        assert along.min() == pytest.approx(-0.5 - 0.35 * 0.2)
+        assert along.max() == pytest.approx(1.25 + 0.35 * 0.2)
+        assert [text for _, text in labels] == ["-0.50 m", "+1.25 m"]
+        assert [point[1] for point, _ in labels] == pytest.approx([-0.5, 1.25])
+
+    def test_a_rotary_travel_is_an_arc_from_stop_to_stop(self):
+        spec = ext.AxisSpec("a", kind="ROTARY", lower=0.0, upper=math.pi / 2, size=0.4)
+        lines, labels = ext.travel(spec, segments=8)
+        arc = lines[:8]
+        radius = 0.55 * 0.4
+        np.testing.assert_allclose(np.linalg.norm(arc[..., [0, 2]], axis=-1), radius)
+        np.testing.assert_allclose(arc[0, 0], [radius, 0.0, 0.0], atol=1e-12)
+        np.testing.assert_allclose(arc[-1, 1], [0.0, 0.0, -radius], atol=1e-12)
+        assert [text for _, text in labels] == ["+0°", "+90°"]
+
+    def test_a_continuous_one_is_a_full_circle_with_no_stops(self):
+        spec = ext.AxisSpec("a", kind="ROTARY", continuous=True)
+        lines, labels = ext.travel(spec, segments=12)
+        assert labels == []
+        assert len(lines) == 12
+        np.testing.assert_allclose(lines[0, 0], lines[-1, 1], atol=1e-12)
+
+
+class TestClustering:
+    def _sphere(self, rings: int = 40):
+        """A UV sphere of radius 1: many small triangles."""
+        points = [(0.0, 0.0, 1.0)]
+        for i in range(1, rings):
+            theta = math.pi * i / rings
+            for j in range(2 * rings):
+                phi = math.pi * j / rings
+                points.append((math.sin(theta) * math.cos(phi),
+                               math.sin(theta) * math.sin(phi), math.cos(theta)))
+        points.append((0.0, 0.0, -1.0))
+        ring = 2 * rings
+        tris = [(0, 1 + j, 1 + (j + 1) % ring) for j in range(ring)]
+        for i in range(rings - 2):
+            for j in range(ring):
+                a, b = 1 + i * ring + j, 1 + i * ring + (j + 1) % ring
+                tris += [(a, a + ring, b), (b, a + ring, b + ring)]
+        last = len(points) - 1
+        tris += [(last, 1 + (rings - 2) * ring + (j + 1) % ring, 1 + (rings - 2) * ring + j)
+                 for j in range(ring)]
+        return np.array(points), np.array(tris)
+
+    def test_it_has_fewer_triangles_and_keeps_the_shape(self):
+        points, tris = self._sphere()
+        cell = 0.25
+        merged, kept = ext.cluster_triangles(points, tris, cell)
+        assert len(kept) < len(tris) / 4
+        assert len(merged) < len(points)
+        np.testing.assert_allclose(merged.min(axis=0), points.min(axis=0), atol=cell)
+        np.testing.assert_allclose(merged.max(axis=0), points.max(axis=0), atol=cell)
+        assert kept.max() < len(merged)
+
+    def test_no_triangle_is_collapsed_or_repeated(self):
+        points, tris = self._sphere()
+        _, kept = ext.cluster_triangles(points, tris, 0.3)
+        assert all(len(set(t)) == 3 for t in kept.tolist())
+        assert len({tuple(sorted(t)) for t in kept.tolist()}) == len(kept)
+
+    def test_a_fine_grid_changes_nothing(self):
+        points, tris = self._sphere(8)
+        merged, kept = ext.cluster_triangles(points, tris, 1e-6)
+        assert len(kept) == len(tris)
+        assert len(merged) == len(points)
+
+    def test_nothing_in_nothing_out(self):
+        merged, kept = ext.cluster_triangles(np.empty((0, 3)), np.empty((0, 3)), 0.1)
+        assert merged.shape == (0, 3) and kept.shape == (0, 3)

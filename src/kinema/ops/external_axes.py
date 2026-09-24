@@ -12,11 +12,13 @@ description already had.
 
 What adding one has to keep right:
 
-* **The robot, for an axis under it.** A track's base and offset can put the robot
-  somewhere other than where it stood. Everything that rides the robot then moves by
-  the same rigid transform: its bones, the TCP, the IK target and swivel, the base
-  link's meshes, the waypoints. The transform is stored on the axis, so removing it
-  moves them all back.
+* **The stack, for an axis under the robot.** A new one goes in at the bottom, under
+  any already there, and is placed from the footing of the lowest -- the robot and the
+  axes it already rides are carried like one bigger robot. Its base and offset can put
+  that stack somewhere other than where it stood. Everything on it then moves by the
+  same rigid transform: its bones, the axes and their placeholders, the TCP, the IK
+  target and swivel, the base link's meshes, the waypoints. The transform is stored on
+  the axis, so removing it moves them all back.
 * **The TCP, for an axis on the tool.** The TCP moves onto the axis at its offset,
   and the offset and parent it had are stored, so removing it puts them back.
 * **Joint indices.** Blender orders pose bones by hierarchy, so an axis under the
@@ -42,6 +44,7 @@ from .. import handlers
 from ..rig import builder
 from ..rig import external_axes as ext
 from ..solver import manager
+from ..ui import axis_preview
 from ..ui.panel import active_rig
 from . import attach, ik
 from .waypoints import MAX_STORED_DOF
@@ -102,43 +105,62 @@ def _mount_of(bone) -> str | None:
     return bone.get(builder.PROP_EXTERNAL) if bone is not None else None
 
 
-def _base_parent(rig) -> str:
-    """The bone the robot stands on: Root, or the last axis already under it.
+def _bottom_axis(rig):
+    """The lowest axis under the robot -- the one standing on Root -- or None.
 
-    Axes under the robot form one chain down from Root, each added directly under
-    the robot, so the robot's first joints always hang off the end of it.
+    Axes under the robot form one chain up from Root, and each new one goes in at the
+    bottom, so the robot and the axes already there ride it like one bigger robot.
     """
-    node = rig.data.bones.get(builder.ROOT_BONE)
-    if node is None:
-        raise ValueError("This rig has no Root bone to stand an axis on")
-    while True:
-        below = next((c for c in node.children if _mount_of(c) == "BEFORE"), None)
-        if below is None:
-            return node.name
-        node = below
+    root = rig.data.bones.get(builder.ROOT_BONE)
+    if root is None:
+        return None
+    return next((c for c in root.children if _mount_of(c) == "BEFORE"), None)
+
+
+def stack_base(rig) -> np.ndarray:
+    """Where the robot stands, with any axes already under it, in armature space.
+
+    The robot's own base until an axis goes under it; then the footing of the lowest
+    axis, just under its rail or base. It is what a new axis under the robot is placed
+    from, and what "the current robot base" means in the dialog.
+    """
+    bottom = _bottom_axis(rig)
+    if bottom is None:
+        return robot_base(rig)
+    frame = builder.link_frame_of(bottom)
+    footing = _stored(bottom, builder.PROP_EXTERNAL_FOOTING)
+    return _np4(frame) @ (footing if footing is not None else np.eye(4))
 
 
 def _subtree(bone) -> list[str]:
     return [bone.name, *(child.name for child in bone.children_recursive)]
 
 
-def _riding_the_robot(rig, stands_on: str) -> list[str]:
-    """Every bone that moves with the robot when what it stands on moves.
+def _riding_the_robot(rig) -> list[str]:
+    """Every bone that moves when a new axis goes in under the robot and moves it.
 
-    The robot's own bones, and the controls hung off Root to steer it -- the IK
-    target and the swivel -- which move with it so the pose it holds is unchanged.
-    Not other axes under the robot, nor standalone ones: those are the cell.
+    The robot's own bones and the axes already under it, and the controls hung off
+    Root to steer it -- the IK target and the swivel -- which move with it so the pose
+    it holds is unchanged. Not standalone axes: those are the cell.
     """
-    bones = rig.data.bones
     names: list[str] = []
-    for owner in (bones[stands_on], bones[builder.ROOT_BONE]):
-        for child in owner.children:
-            if _mount_of(child) in ("BEFORE", "EXTERNAL"):
-                continue
-            for name in _subtree(child):
-                if name not in names:
-                    names.append(name)
+    for child in rig.data.bones[builder.ROOT_BONE].children:
+        if _mount_of(child) == "EXTERNAL":
+            continue
+        names += [name for name in _subtree(child) if name not in names]
     return names
+
+
+def _on_the_stack(rig, obj) -> bool:
+    """Whether an object on Root belongs to what a new axis under the robot carries.
+
+    The robot's base-link meshes, and the fixed part of the lowest axis already under
+    it. Not a standalone axis's placeholder, and nothing parented there by hand.
+    """
+    if builder.PROP_LINK_NAME in obj:
+        return True
+    owner = rig.data.bones.get(str(obj.get(builder.PROP_EXTERNAL_MESH, "")))
+    return _mount_of(owner) == "BEFORE"
 
 
 def _joint_names(rig) -> list[str]:
@@ -414,14 +436,41 @@ class _EditMode:
 # --------------------------------------------------------------------------
 # add
 # --------------------------------------------------------------------------
+def placement(rig, spec: ext.AxisSpec) -> tuple[str, np.ndarray, np.ndarray]:
+    """``(parent bone, joint frame, robot shift)`` for ``spec`` on ``rig``, all at rest.
+
+    An axis under the robot goes in at the bottom of the stack, on Root, placed from
+    :func:`stack_base`; one on the tool from the tool frame; a standalone one from the
+    robot's base. The shift is what moves the robot, identity unless under it. Raises
+    ValueError when the rig cannot take the axis.
+    """
+    bones = rig.data.bones
+    if builder.ROOT_BONE not in bones:
+        raise ValueError("This rig has no Root bone")
+    shift = np.eye(4)
+    if spec.mount == "AFTER":
+        tcp = bones.get(rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE)
+        if tcp is None or tcp.parent is None:
+            raise ValueError("An axis on the tool needs a TCP; create one first")
+        parent_name = tcp.parent.name
+        reference = _np4(tcp.matrix_local @ builder.BONE_TO_TOOL)
+    elif spec.mount == "BEFORE":
+        parent_name = builder.ROOT_BONE
+        reference = stack_base(rig)
+        shift = ext.robot_shift(spec, reference)
+    else:
+        parent_name = builder.ROOT_BONE
+        reference = robot_base(rig)
+    return parent_name, ext.base_frame(spec, reference), shift
+
+
 def add_axis(rig, spec: ext.AxisSpec) -> str:
     """Add ``spec`` to ``rig``. Returns the new bone's name; raises ValueError."""
     problems = spec.problems()
     if problems:
         raise ValueError("; ".join(problems).capitalize())
+    parent_name, frame, shift = placement(rig, spec)
     bones = rig.data.bones
-    if builder.ROOT_BONE not in bones:
-        raise ValueError("This rig has no Root bone")
 
     before = _joint_names(rig)
     if len(rig.kinema_waypoints) and len(before) + 1 > MAX_STORED_DOF:
@@ -431,44 +480,31 @@ def add_axis(rig, spec: ext.AxisSpec) -> str:
     link = _unique_link_name(rig, f"{name}_link")
     length = _bone_length(rig)
     base = robot_base(rig)
-    shift = np.eye(4)
     tcp_name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
-
-    if spec.mount == "AFTER":
-        tcp = bones.get(tcp_name)
-        if tcp is None or tcp.parent is None:
-            raise ValueError("An axis on the tool needs a TCP; create one first")
-        parent_name = tcp.parent.name
-        reference = _np4(tcp.matrix_local @ builder.BONE_TO_TOOL)
-    elif spec.mount == "BEFORE":
-        parent_name = _base_parent(rig)
-        reference = base
-        shift = ext.robot_shift(spec, base)
-    else:
-        parent_name = builder.ROOT_BONE
-        reference = base
-
-    frame = ext.base_frame(spec, reference)
     head, y_direction, z_reference = ext.bone_placement(frame, spec.axis)
 
     # Everything that reads Bone data is read here: none of it is live in Edit mode.
     moves_robot = spec.mount == "BEFORE" and not _is_identity(shift)
-    riding = _riding_the_robot(rig, parent_name) if moves_robot else []
+    riding = _riding_the_robot(rig) if moves_robot else []
     to_reparent = []
-    base_meshes = []
+    carried = []
+    stacked = []
     if spec.mount == "BEFORE":
+        # What stood on Root now stands on the new axis: the lowest axis already
+        # under the robot, or the robot's first joints when there is none.
         to_reparent = [
             child.name for child in bones[parent_name].children
-            if builder.PROP_JOINT_NAME in child and _mount_of(child) not in ("BEFORE", "EXTERNAL")
+            if builder.PROP_JOINT_NAME in child and _mount_of(child) != "EXTERNAL"
         ]
-        # The base link's meshes hang off what the robot stands on. They are the
-        # robot's, so they ride the axis from now on.
-        base_meshes = [
+        # So do the objects on Root that belong to it: the robot's base-link meshes,
+        # or the lowest axis's rail or base.
+        carried = [
             (obj, _matrix(shift) @ _rest_placement(rig, obj))
             for obj in rig.children
             if obj.parent_type == "BONE" and obj.parent_bone == parent_name
-            and builder.PROP_LINK_NAME in obj
+            and _on_the_stack(rig, obj)
         ]
+        stacked = [b.name for b in bones if _mount_of(b) == "BEFORE"]
     previous_tcp = None
     if spec.mount == "AFTER":
         previous_tcp = (parent_name, _tcp_offset(rig, bones[tcp_name]))
@@ -503,10 +539,19 @@ def add_axis(rig, spec: ext.AxisSpec) -> str:
 
         if spec.mount == "BEFORE":
             pose_bone.bone[builder.PROP_EXTERNAL_SHIFT] = _flat(shift)
+            pose_bone.bone[builder.PROP_EXTERNAL_FOOTING] = _flat(ext.footing(spec))
             rig[builder.PROP_ROBOT_BASE] = _flat(shift @ base)
-            for obj, rest in base_meshes:
+            for obj, rest in carried:
                 _place_on_bone(rig, obj, name, rest)
             if moves_robot:
+                # The axes above were stored in a frame this one has just moved.
+                for other_name in stacked:
+                    other = rig.data.bones[other_name]
+                    inner = _stored(other, builder.PROP_EXTERNAL_SHIFT)
+                    if inner is not None:
+                        other[builder.PROP_EXTERNAL_SHIFT] = _flat(
+                            shift @ inner @ np.linalg.inv(shift)
+                        )
                 _move_waypoints(rig, shift)
 
         if spec.placeholder:
@@ -655,7 +700,8 @@ PRESET_ITEMS = [
 ]
 MOUNT_ITEMS = [
     ("BEFORE", MOUNT_LABELS["BEFORE"],
-     "The robot rides it: a track or a rotary base. Placed from the robot's base"),
+     "The robot rides it: a track or a rotary base. It goes in under any axis already "
+     "there, placed from the bottom of the robot as it stands now"),
     ("AFTER", MOUNT_LABELS["AFTER"],
      "It rides the tool: a spindle or a slide. Placed from the tool frame, and the "
      "TCP moves onto it"),
@@ -715,6 +761,23 @@ def _compiled(seconds: float) -> str:
     return f" (solver compiled in {seconds:.1f}s)" if seconds > 1.0 else ""
 
 
+def _ghost_sources(rig) -> list:
+    """What the preview's ghost is made of: everything an axis under the robot carries.
+
+    The robot's visual meshes and the placeholders of the axes already under it.
+    """
+    visual = [
+        mesh for mesh in builder.link_meshes(rig)
+        if mesh.get(builder.PROP_GEOMETRY_KIND, builder.KIND_VISUAL) == builder.KIND_VISUAL
+    ]
+    stacked = [
+        obj for obj in rig.children
+        if _mount_of(rig.data.bones.get(str(obj.get(builder.PROP_EXTERNAL_MESH, ""))))
+        == "BEFORE"
+    ]
+    return visual + stacked
+
+
 def _apply_size(operator, context) -> None:
     rig = active_rig(context)
     operator.size = ext.default_size(operator.mount, robot_reach(rig) if rig else 1.0)
@@ -765,7 +828,10 @@ class KINEMA_OT_add_external_axis(Operator):
     )
     base_location: FloatVectorProperty(
         name="Location", size=3, subtype="TRANSLATION", unit="LENGTH",
-        description="Where the axis sits, from the robot base -- or from the tool, on the tool",
+        description=(
+            "Where the axis sits, from the current robot base -- under any axis already "
+            "beneath the robot -- or from the tool frame, on the tool"
+        ),
     )
     base_rotation: FloatVectorProperty(
         name="Rotation", size=3, subtype="EULER",
@@ -773,7 +839,10 @@ class KINEMA_OT_add_external_axis(Operator):
     )
     offset_location: FloatVectorProperty(
         name="Location", size=3, subtype="TRANSLATION", unit="LENGTH",
-        description="Where what it carries sits on it: the robot base, or the TCP",
+        description=(
+            "Where what it carries sits on its moving part: the current robot base, "
+            "or the TCP. Anything but zero moves it there"
+        ),
     )
     offset_rotation: FloatVectorProperty(
         name="Rotation", size=3, subtype="EULER",
@@ -798,7 +867,12 @@ class KINEMA_OT_add_external_axis(Operator):
 
     def invoke(self, context, event):
         _apply_preset(self, context)
-        return context.window_manager.invoke_props_dialog(self, width=360)
+        rig = active_rig(context)
+        axis_preview.start(self, context, rig, _ghost_sources(rig) if rig else [])
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def cancel(self, context):
+        axis_preview.stop()
 
     def spec(self) -> ext.AxisSpec:
         linear = self.kind == "LINEAR"
@@ -839,23 +913,35 @@ class KINEMA_OT_add_external_axis(Operator):
             column.prop(self, "upper_distance" if linear else "upper_angle")
         layout.prop(self, "speed_distance" if linear else "speed_angle")
 
-        header = "From the tool frame" if self.mount == "AFTER" else "From the robot base"
+        on_tool = self.mount == "AFTER"
         box = layout.box()
-        box.label(text=f"Base: {header.lower()}", icon="EMPTY_AXIS")
+        box.label(
+            text="External axis base: calculated from the current "
+            + ("tool frame" if on_tool else "robot base"),
+            icon="EMPTY_AXIS",
+        )
         column = box.column(align=True)
         column.prop(self, "base_location")
         column.prop(self, "base_rotation")
         if self.mount != "EXTERNAL":
-            carried = "the TCP" if self.mount == "AFTER" else "the robot base"
             box = layout.box()
-            box.label(text=f"Offset: {carried}, from the axis", icon="ORIENTATION_PARENT")
+            box.label(
+                text="External axis offset: calculated from the current "
+                + ("TCP" if on_tool else "robot base"),
+                icon="ORIENTATION_PARENT",
+            )
             column = box.column(align=True)
             column.prop(self, "offset_location")
             column.prop(self, "offset_rotation")
         spec = self.spec()
         rig = active_rig(context)
-        if self.mount == "BEFORE" and rig is not None and not spec.problems():
-            moved = ext.robot_shift(spec, robot_base(rig))
+        try:
+            placed = placement(rig, spec) if rig is not None and not spec.problems() else None
+        except ValueError:
+            placed = None
+        axis_preview.show(self, spec, placed)
+        if self.mount == "BEFORE" and placed is not None:
+            moved = placed[2]
             if not _is_identity(moved, 1e-6):
                 x, y, z = moved[:3, 3]
                 layout.label(
@@ -872,6 +958,7 @@ class KINEMA_OT_add_external_axis(Operator):
             layout.label(text=problem.capitalize(), icon="ERROR")
 
     def execute(self, context):
+        axis_preview.stop()
         rig = active_rig(context)
         spec = self.spec()
         try:

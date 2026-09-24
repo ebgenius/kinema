@@ -126,6 +126,9 @@ SWIVEL_AXIS_BONE = "Swivel.axis"
 PROP_EXTERNAL = "kinema_external"
 #: 4x4, BEFORE only: how far the robot was moved to stand on the axis.
 PROP_EXTERNAL_SHIFT = "kinema_external_shift"
+#: 4x4, BEFORE only, in the axis's own frame: where the next axis added under the
+#: robot stands -- just below this one's rail or base.
+PROP_EXTERNAL_FOOTING = "kinema_external_footing"
 #: AFTER only: the TCP's parent bone, offset and rotation before the axis took it.
 PROP_EXTERNAL_TCP_PARENT = "kinema_external_tcp_parent"
 PROP_EXTERNAL_TCP_OFFSET = "kinema_external_tcp_offset"
