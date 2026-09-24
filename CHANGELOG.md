@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **IK with the Root bone posed** (#61). Moving or turning Root, say to hang the robot upside
+  down, left the tool off its target by Root's own pose: 0.2 m off for a 0.2 m move, up to
+  1.6 m off upside down. The solvers work with Root at rest, and the goal now has Root's pose
+  taken out before it is solved for. This covers the live solve, Find Solutions and the
+  swivel's elbow goal.
+
 ## [0.5.0] - 2026-09-23
 
 0.4.0 taught a robot a job. This release is about the choices inside that job, and whether a

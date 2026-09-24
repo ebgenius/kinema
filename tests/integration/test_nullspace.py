@@ -636,6 +636,32 @@ class TestTheSwivel:
         assert abs(swung) == pytest.approx(0.5, abs=0.05), f"swung {swung:.3f} rad"
         assert float(np.linalg.norm(_tool(builder, arm7) - tool)) < 1e-4
 
+    def test_a_root_turned_upside_down_swings_the_same(
+        self, arm7, builder, handlers, swivel
+    ):
+        """The elbow goal is built from posed bones; the solver works with Root at rest.
+
+        Left in the posed frame, the goal pulls the elbow toward a point on the wrong
+        side of the robot, and the tool gives way to it.
+        """
+        import bpy
+        from mathutils import Quaternion
+
+        root = arm7.pose.bones[builder.ROOT_BONE]
+        root.location = (0.1, 0.0, 0.3)
+        root.rotation_quaternion = Quaternion((0.0, 1.0, 0.0), np.pi)
+        bpy.context.view_layer.update()
+
+        _with_swivel(builder, handlers, arm7)
+        tool = _tool(builder, arm7).copy()
+        start = _elbow_angle(swivel, arm7)
+
+        assert _turn(handlers, builder, arm7, 0.5)
+        swung = _wrapped(_elbow_angle(swivel, arm7) - start)
+        assert abs(swung) == pytest.approx(0.5, abs=0.05), f"swung {swung:.3f} rad"
+        drift = float(np.linalg.norm(_tool(builder, arm7) - tool))
+        assert drift < 1e-4, f"the tool gave way ({drift * 1000:.4f} mm)"
+
     def test_zero_strength_stops_it_swinging(self, arm7, builder, handlers, swivel):
         """On PyRoki: under NumPy the swivel does nothing anyway, so this would pass."""
         _with_swivel(builder, handlers, arm7)
