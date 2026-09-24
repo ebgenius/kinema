@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - where what it carries sits on it.
 
   While the dialog is open, the viewport previews the result: the placeholder, the travel
-  between the end stops, and a ghost of the robot where it will stand.
+  between the end stops, and a ghost of the robot where it will stand. The dialog remembers
+  its fields when it closes by losing focus. Adjusting the axis afterwards solves on NumPy
+  and compiles PyRoki only once the adjusting is done.
 
   The axis is an ordinary joint bone, held for IK by default. It has a slider, keys, bake
   and a velocity check like any imported joint.

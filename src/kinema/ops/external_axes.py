@@ -744,21 +744,85 @@ def _apply_preset(operator, context) -> None:
     _apply_size(operator, context)
 
 
-def _warm_up(context, rig) -> float:
-    """Pay the solver's compile for the changed rig now, behind a wait cursor.
+# --------------------------------------------------------------------------
+# the solver compile, put off until the axis is in place
+# --------------------------------------------------------------------------
+#: The operators whose Adjust Last Operation panel is still editing an axis.
+_ADJUSTING = ("KINEMA_OT_add_external_axis", "KINEMA_OT_remove_external_axis")
+#: Seconds between looks at whether the axis is in place yet.
+_SETTLE_POLL = 0.5
+#: Rigs whose compile is waiting for the axis to be in place.
+_waiting: set[str] = set()
 
-    Adding or removing an axis changes the model PyRoki solves on, so the next solve
-    compiles it -- tens of seconds -- and without this that lands on the user's first
-    drag of the target. Add IK Target and Add Elbow Swivel pay it up front the same way.
+
+def _defer_compile(rig) -> None:
+    """Solve ``rig`` on NumPy until the axis is in place, then compile PyRoki once.
+
+    Adding or removing an axis changes the model PyRoki solves on, and a compile is
+    tens of seconds. Every change in the Adjust Last Operation panel runs the operator
+    again, so paying it there -- as Add IK Target does -- paid it on every nudge of
+    an offset. Instead the rig solves on NumPy, which needs no compile, until the
+    panel is gone: then the axis is where the user wants it, and the compile is paid
+    once, behind a wait cursor.
     """
-    ik_name = rig.get(builder.PROP_IK_BONE)
-    if not ik_name or ik_name not in rig.pose.bones:
-        return 0.0
-    return ik.KINEMA_OT_add_ik._warm_up(context, rig, ik_name)
+    manager.defer(rig.name)
+    _waiting.add(rig.name)
+    if not bpy.app.timers.is_registered(_compile_when_settled):
+        bpy.app.timers.register(_compile_when_settled, first_interval=_SETTLE_POLL)
 
 
-def _compiled(seconds: float) -> str:
-    return f" (solver compiled in {seconds:.1f}s)" if seconds > 1.0 else ""
+def still_adjusting(window_manager) -> bool:
+    """Whether the last operation is still an axis add or remove the user can adjust.
+
+    Its panel stays open until another operation is registered; after that, a change
+    to it would have to be an undo, and the axis is as good as placed.
+    """
+    operators = getattr(window_manager, "operators", None)
+    return bool(operators) and operators[-1].bl_idname in _ADJUSTING
+
+
+def _compile_when_settled() -> float | None:
+    """Timer: release the waiting rigs once the axis is in place, and compile them."""
+    if still_adjusting(bpy.context.window_manager):
+        return _SETTLE_POLL
+    for name in list(_waiting):
+        _waiting.discard(name)
+        manager.release(name)
+        rig = bpy.data.objects.get(name)
+        if rig is None or not builder.is_kinema_rig(rig):
+            continue
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        if ik_name and ik_name in rig.pose.bones:
+            with handlers.suspended():
+                ik.KINEMA_OT_add_ik._warm_up(bpy.context, rig, ik_name)
+    return None
+
+
+#: rig name -> the dialog's fields as it last drew them. A click in the viewport to
+#: look at the preview closes the dialog, and Blender keeps an operator's fields only
+#: when it finishes -- so without this, reopening it started again from the preset.
+_drafts: dict[str, dict] = {}
+
+
+def _remember(operator, rig) -> None:
+    _drafts[rig.name] = {
+        name: (tuple(value) if hasattr(value, "__len__") and not isinstance(value, str)
+               else value)
+        for name, value in ((name, getattr(operator, name)) for name in _fields())
+    }
+
+
+def _restore(operator, draft: dict) -> None:
+    """Put a draft back. Preset and mount first: setting them refills other fields."""
+    first, last = ("preset", "mount"), ("size",)
+    middle = tuple(name for name in _fields() if name not in first + last)
+    for name in (*first, *middle, *last):
+        if name in draft:
+            setattr(operator, name, draft[name])
+
+
+def _fields() -> tuple[str, ...]:
+    return tuple(KINEMA_OT_add_external_axis.__annotations__)
 
 
 def _ghost_sources(rig) -> list:
@@ -866,8 +930,12 @@ class KINEMA_OT_add_external_axis(Operator):
         return active_rig(context) is not None
 
     def invoke(self, context, event):
-        _apply_preset(self, context)
         rig = active_rig(context)
+        draft = _drafts.get(rig.name) if rig is not None else None
+        if draft:
+            _restore(self, draft)
+        else:
+            _apply_preset(self, context)
         axis_preview.start(self, context, rig, _ghost_sources(rig) if rig else [])
         return context.window_manager.invoke_props_dialog(self, width=460)
 
@@ -935,6 +1003,8 @@ class KINEMA_OT_add_external_axis(Operator):
             column.prop(self, "offset_rotation")
         spec = self.spec()
         rig = active_rig(context)
+        if rig is not None:
+            _remember(self, rig)
         try:
             placed = placement(rig, spec) if rig is not None and not spec.problems() else None
         except ValueError:
@@ -961,6 +1031,9 @@ class KINEMA_OT_add_external_axis(Operator):
         axis_preview.stop()
         rig = active_rig(context)
         spec = self.spec()
+        # Before the edit: add_axis ends on a depsgraph update, and live IK would
+        # compile on it.
+        _defer_compile(rig)
         try:
             name = add_axis(rig, spec)
         except ValueError as exc:
@@ -969,7 +1042,7 @@ class KINEMA_OT_add_external_axis(Operator):
         message = f"Added '{name}' {MOUNT_LABELS[spec.mount].lower()}"
         if spec.hold:
             message += ", held for IK"
-        self.report({"INFO"}, message + _compiled(_warm_up(context, rig)))
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -993,12 +1066,13 @@ class KINEMA_OT_remove_external_axis(Operator):
 
     def execute(self, context):
         rig = active_rig(context)
+        _defer_compile(rig)
         try:
             remove_axis(rig, self.bone)
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Removed '{self.bone}'" + _compiled(_warm_up(context, rig)))
+        self.report({"INFO"}, f"Removed '{self.bone}'")
         return {"FINISHED"}
 
 

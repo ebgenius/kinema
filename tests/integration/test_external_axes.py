@@ -872,3 +872,99 @@ def _Dialog(dialog_class):
     dialog = types.SimpleNamespace(**values)
     dialog.spec = types.MethodType(dialog_class.spec, dialog)
     return dialog
+
+
+class _AnyLayout:
+    """A layout that accepts any drawing call, for running a draw function headless."""
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: _AnyLayout()
+
+
+class TestTheDialogRemembers:
+    def test_reopening_brings_back_every_field(self, arm6, ops, addon):
+        """Clicking away closes the dialog; opening it again finds what was typed."""
+        import bpy
+
+        preview = importlib.import_module(f"{addon.__name__}.ui.axis_preview")
+        ops._drafts.clear()
+        dialog_class = ops.KINEMA_OT_add_external_axis
+        first = _Dialog(dialog_class)
+        dialog_class.invoke(first, _NoDialogContext(bpy.context), None)
+        first.axis_name = "cross"
+        first.direction = "Y"
+        first.base_location = (0.1, -0.2, 0.0)
+        first.offset_location = (0.0, 0.0, 0.25)
+        first.upper_distance = 2.5
+        first.placeholder = False
+        first.layout = _AnyLayout()
+        dialog_class.draw(first, bpy.context)
+        dialog_class.cancel(None, bpy.context)
+
+        second = _Dialog(dialog_class)
+        dialog_class.invoke(second, _NoDialogContext(bpy.context), None)
+        preview.stop()
+        for name in ("axis_name", "direction", "upper_distance", "placeholder"):
+            assert getattr(second, name) == getattr(first, name), name
+        assert tuple(second.base_location) == pytest.approx((0.1, -0.2, 0.0))
+        assert tuple(second.offset_location) == pytest.approx((0.0, 0.0, 0.25))
+
+    def test_a_rig_without_a_draft_starts_from_the_preset(self, arm6, ops, addon, ext):
+        import bpy
+
+        preview = importlib.import_module(f"{addon.__name__}.ui.axis_preview")
+        ops._drafts.clear()
+        dialog_class = ops.KINEMA_OT_add_external_axis
+        dialog = _Dialog(dialog_class)
+        dialog.axis_name = "leftover"
+        dialog_class.invoke(dialog, _NoDialogContext(bpy.context), None)
+        preview.stop()
+        assert dialog.axis_name == ext.PRESETS["LINEAR_TRACK"].values["name"]
+
+
+class TestTheCompileWaits:
+    """Adjusting an axis in its redo panel re-runs the operator; none of that compiles."""
+
+    def test_pyroki_is_not_built_until_the_axis_is_in_place(
+        self, arm6, builder, manager, ops, monkeypatch
+    ):
+        import types
+
+        import bpy
+
+        arm6.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        arm6.kinema_solver_mode = "PYROKI"
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
+        assert manager.deferred(arm6.name)
+
+        solver = manager.get_solver(arm6)
+        assert solver.pyroki(arm6) is None, "nothing is compiled while it is deferred"
+        assert solver.pyroki_error is None, "and it is not an error"
+        assert not any(entry[2] == arm6.name for entry in manager._pyroki_cache.values())
+        ik = arm6.pose.bones[arm6[builder.PROP_IK_BONE]]
+        ik.location[0] += 0.02
+        bpy.context.view_layer.update()
+        assert solver.last_result is not None, "NumPy keeps the arm on its target"
+        assert not any(entry[2] == arm6.name for entry in manager._pyroki_cache.values())
+
+        adjusting = types.SimpleNamespace(
+            operators=[types.SimpleNamespace(bl_idname="KINEMA_OT_add_external_axis")]
+        )
+        moved_on = types.SimpleNamespace(
+            operators=[*adjusting.operators,
+                       types.SimpleNamespace(bl_idname="TRANSFORM_OT_translate")]
+        )
+        assert ops.still_adjusting(adjusting)
+        assert not ops.still_adjusting(moved_on)
+        assert not ops.still_adjusting(types.SimpleNamespace(operators=[]))
+
+        # Released once the panel is gone. Compiling is not what this checks.
+        arm6.kinema_solver_mode = "NUMPY"
+        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: True)
+        assert ops._compile_when_settled() == ops._SETTLE_POLL
+        assert manager.deferred(arm6.name)
+        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: False)
+        assert ops._compile_when_settled() is None
+        assert not manager.deferred(arm6.name)
+        assert not ops._waiting

@@ -842,6 +842,11 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         if solver is not None and solver.pyroki_error:
             info.label(text="PyRoki unavailable for this rig:", icon="INFO")
             info.label(text=solver.pyroki_error[:46], icon="BLANK1")
+        from ..solver import manager
+
+        if manager.deferred(rig.name):
+            info.label(text="PyRoki waits until the axis is placed", icon="SORTTIME")
+            info.label(text="Solving on NumPy meanwhile", icon="BLANK1")
 
 
 def manager_state(rig):

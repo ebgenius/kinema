@@ -71,7 +71,7 @@ class RigSolver:
         price of that bound, and with a limit of four it does not come up for
         the case this cache exists for.
         """
-        if self._pyroki_failed:
+        if self._pyroki_failed or self.rig_name in _deferred:
             return None
         cached = _pyroki_cache_get(self.identity, self.link_target)
         # Length check, not trust: the cached mapping was derived from whatever
@@ -601,6 +601,26 @@ def find_solutions(rig, solver: RigSolver, seeds: int = 0, seed_value: int = 0):
     return branches.collect(chain, goal, candidates)
 
 
+#: Rigs whose PyRoki build is put off: their model is still being edited, and each
+#: edit would pay a fresh JAX compile. They solve on NumPy meanwhile -- no compile,
+#: and good enough to keep the arm on its target while the edit goes on.
+_deferred: set[str] = set()
+
+
+def defer(rig_name: str) -> None:
+    """Put off building PyRoki for ``rig_name`` until :func:`release`."""
+    _deferred.add(rig_name)
+
+
+def release(rig_name: str) -> None:
+    """Let ``rig_name`` build PyRoki again, on its next solve."""
+    _deferred.discard(rig_name)
+
+
+def deferred(rig_name: str) -> bool:
+    return rig_name in _deferred
+
+
 def invalidate(rig_name: str | None = None) -> None:
     """Drop cached solvers -- after a rig rebuild, or on unregister.
 
@@ -611,6 +631,7 @@ def invalidate(rig_name: str | None = None) -> None:
     if rig_name is None:
         _cache.clear()
         _pyroki_cache.clear()
+        _deferred.clear()
     else:
         _cache.pop(rig_name, None)
         # Matched on the stored name rather than the key, which is now an

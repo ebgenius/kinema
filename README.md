@@ -290,7 +290,13 @@ follows every field you change:
   rides, where they will stand.
 
 The ghost is a coarse copy of the meshes, moved as one block. Nothing is solved, and nothing
-is added to the scene until you press OK. Cancel leaves no trace.
+is added to the scene until you press OK. Cancel leaves no trace. Clicking in the viewport
+to look closer closes the dialog, but opening it again brings back everything you typed.
+
+**No compile while you adjust it.** After OK, the **Adjust Last Operation** panel re-runs
+the add on every change. A PyRoki compile is tens of seconds, so none happens there: the rig
+solves on NumPy, and the panel says so, until you move on to something else. Then PyRoki is
+compiled once, behind a wait cursor.
 
 **Moving the robot, and putting it back.** With base and offset at zero nothing moves: the
 axis slides in under the robot and its axes, or behind the TCP, exactly where they are. Give
