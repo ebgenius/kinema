@@ -53,6 +53,7 @@ def register() -> None:
 
 def unregister() -> None:
     axis_preview.stop()
+    external_axes.forget()
     overlay.unregister_draw()
     handlers.unregister_handlers()
 

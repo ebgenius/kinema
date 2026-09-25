@@ -788,6 +788,18 @@ def still_adjusting(window_manager) -> bool:
     return bool(operators) and operators[-1].bl_idname in _ADJUSTING
 
 
+def forget() -> None:
+    """Drop every draft and pending compile: a new file shares no rig with the old one.
+
+    A rig waiting for its compile is looked up by name, and the next file may well
+    hold a different robot under it.
+    """
+    _drafts.clear()
+    _waiting.clear()
+    if bpy.app.timers.is_registered(_compile_when_settled):
+        bpy.app.timers.unregister(_compile_when_settled)
+
+
 def _interface_locked() -> bool:
     return bool(getattr(bpy.context.window_manager, "is_interface_locked", False))
 
@@ -848,14 +860,16 @@ def _compile(rig) -> None:
             window.cursor_set("DEFAULT")
 
 
-#: rig name -> the dialog's fields as it last drew them. A click in the viewport to
+#: rig -> the dialog's fields as it last drew them. A click in the viewport to
 #: look at the preview closes the dialog, and Blender keeps an operator's fields only
 #: when it finishes -- so without this, reopening it started again from the preset.
-_drafts: dict[str, dict] = {}
+#: Keyed by the rig's identity, not its name: a rig deleted and another imported
+#: under its name, or another file's rig of the same name, is a different robot.
+_drafts: dict[int | str, dict] = {}
 
 
 def _remember(operator, rig) -> None:
-    _drafts[rig.name] = {
+    _drafts[manager.rig_identity(rig)] = {
         name: (tuple(value) if hasattr(value, "__len__") and not isinstance(value, str)
                else value)
         for name, value in ((name, getattr(operator, name)) for name in _fields())
@@ -981,7 +995,7 @@ class KINEMA_OT_add_external_axis(Operator):
 
     def invoke(self, context, event):
         rig = active_rig(context)
-        draft = _drafts.get(rig.name) if rig is not None else None
+        draft = _drafts.get(manager.rig_identity(rig)) if rig is not None else None
         if draft:
             _restore(self, draft)
         else:

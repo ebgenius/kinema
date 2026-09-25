@@ -952,6 +952,47 @@ class TestTheDialogRemembers:
         assert tuple(second.base_location) == pytest.approx((0.1, -0.2, 0.0))
         assert tuple(second.offset_location) == pytest.approx((0.0, 0.0, 0.25))
 
+    def test_another_robot_under_the_same_name_starts_fresh(
+        self, arm6, builder, fixture_dir, ops, addon, ext
+    ):
+        """Delete a rig and import another that takes its name: the draft was the first's."""
+        import bpy
+
+        preview = importlib.import_module(f"{addon.__name__}.ui.axis_preview")
+        ops._drafts.clear()
+        dialog_class = ops.KINEMA_OT_add_external_axis
+        first = _Dialog(dialog_class)
+        dialog_class.invoke(first, _NoDialogContext(bpy.context), None)
+        first.axis_name = "gantry"
+        first.layout = _AnyLayout()
+        dialog_class.draw(first, bpy.context)
+        dialog_class.cancel(None, bpy.context)
+
+        name = arm6.name
+        bpy.data.objects.remove(arm6, do_unlink=True)
+        again = _import(fixture_dir, builder, "arm6.urdf")
+        assert again.name == name, "the new robot takes the old one's name"
+        second = _Dialog(dialog_class)
+        dialog_class.invoke(second, _NoDialogContext(bpy.context), None)
+        preview.stop()
+        assert second.axis_name == ext.PRESETS["LINEAR_TRACK"].values["name"]
+
+    def test_opening_a_file_forgets_drafts_and_pending_compiles(
+        self, arm6, handlers, manager, ops
+    ):
+        import bpy
+
+        arm6.kinema_solver_mode = "NUMPY"
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
+        ops._remember(_Dialog(ops.KINEMA_OT_add_external_axis), arm6)
+        assert ops._drafts and ops._waiting and manager.deferred(arm6.name)
+        assert bpy.app.timers.is_registered(ops._compile_when_settled)
+
+        handlers.on_load_post()
+        assert not ops._drafts and not ops._waiting
+        assert not manager.deferred(arm6.name)
+        assert not bpy.app.timers.is_registered(ops._compile_when_settled)
+
     def test_a_rig_without_a_draft_starts_from_the_preset(self, arm6, ops, addon, ext):
         import bpy
 
