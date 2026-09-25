@@ -261,13 +261,14 @@ def on_pose_settled(scene: bpy.types.Scene, depsgraph=None) -> None:
 @persistent
 def on_load_post(_dummy=None) -> None:
     """A freshly opened file shares nothing with the previous one."""
-    from .ops import velocity
+    from .ops import external_axes, velocity
 
     _last_target.clear()
     _last_duration.clear()
     _skipped.clear()
     manager.invalidate()
     velocity.forget()
+    external_axes.forget()
 
 
 @contextmanager
