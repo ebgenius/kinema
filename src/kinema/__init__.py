@@ -15,15 +15,26 @@ from __future__ import annotations
 import bpy
 
 from . import handlers, prefs, runtime
-from .ops import attach, ik, import_dae, import_robot, pose, velocity, waypoints
-from .ui import overlay, panel
+from .ops import (
+    attach,
+    external_axes,
+    ik,
+    import_dae,
+    import_robot,
+    pose,
+    velocity,
+    waypoints,
+)
+from .ui import axis_preview, overlay, panel
 
 # panel first: ops/pose imports helpers from it, and registration order
 # decides which classes exist when Blender resolves parent panels. waypoints
 # after ik, which it borrows key_joint_value and own_fcurve_containers from;
-# velocity after ik for the same reason.
+# velocity after ik for the same reason. external_axes last: it builds on all of
+# them.
 _MODULES = (
     prefs, panel, import_dae, import_robot, pose, ik, attach, waypoints, velocity,
+    external_axes,
 )
 
 
@@ -41,6 +52,8 @@ def register() -> None:
 
 
 def unregister() -> None:
+    axis_preview.stop()
+    external_axes.forget()
     overlay.unregister_draw()
     handlers.unregister_handlers()
 

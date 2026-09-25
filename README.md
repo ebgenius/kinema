@@ -247,6 +247,89 @@ only approximate, and not yet measured, on an arm whose links are offset, like t
 with its rail held has no elbow to spare. The swivel also needs the PyRoki solver: the NumPy
 fallback has no notion of a second goal, and the panel says so.
 
+## External axes the description doesn't have
+
+A robot often arrives as the arm alone, while the cell it works in has more: a track it
+rides, a turntable under it, a positioner holding the part, a spindle on its flange.
+**External Axes → Add External Axis…** adds one to the rig. The dialog asks for:
+
+- **Preset:** Linear Track, Rotary Base, Positioner, Tool Spindle or Tool Slide. Each one
+  just fills in the fields below, and any of them can still be changed.
+- **Mount:**
+  - *Under the Robot*: the robot rides it.
+  - *On the Tool*: it rides the flange and carries the TCP.
+  - *Standalone*: it stands beside the robot and carries nothing until you attach a part to
+    it in the **Bones** panel.
+- **Motion and direction:** linear or rotary, along or about ±X, ±Y or ±Z of the axis's base
+  placement. A rotary axis can be continuous.
+- **Limits and top speed.** The speed feeds the **Velocity Limits** check like any other
+  joint's.
+- **External axis base:** where the axis sits, calculated from the current robot base, or
+  from the current tool frame for an axis on the tool. Location, plus roll, pitch and yaw
+  about fixed X, Y and Z, as in URDF.
+- **External axis offset:** where what the axis carries sits on its moving part. That is the
+  current robot base for an axis under the robot, and the TCP for one on the tool.
+
+**The current robot base** includes any axes already under the robot. A new axis under the
+robot goes in at the bottom of that stack, and its base is measured from just under the
+lowest one's rail or turntable. Add an X track, then a Y track, and the Y track goes under
+the X track's rail and carries it, as if the X track were already part of the robot.
+
+The axis is an ordinary joint bone, built by the same code as an imported joint. It gets a
+slider in **Joints (FK)**, keys, bake and a velocity check, and it starts **held**, since it
+is positioned by hand and the arm reaches from wherever it stands. Release the pin to let IK
+move it too.
+
+**See it before you add it.** While the dialog is open, the viewport shows the result and
+follows every field you change:
+
+- the rail and carriage, or base and plate, when **Placeholder** is ticked;
+- the travel: the carriage outlined at both end stops, or an arc from stop to stop, with the
+  limits written beside them;
+- for an axis under the robot that moves it, a ghost of the robot and the axes it already
+  rides, where they will stand.
+
+The ghost is a coarse copy of the meshes, moved as one block. Nothing is solved, and nothing
+is added to the scene until you press OK. Cancel leaves no trace. Clicking in the viewport
+to look closer closes the dialog, but opening it again brings back everything you typed.
+
+**No compile while you adjust it.** After OK, the **Adjust Last Operation** panel re-runs
+the add on every change. A PyRoki compile is tens of seconds, so none happens there: the rig
+solves on NumPy, and the panel says so, until you move on to something else or leave the
+axis alone for ten seconds. Then PyRoki is compiled once, behind a wait cursor.
+
+**Moving the robot, and putting it back.** With base and offset at zero nothing moves: the
+axis slides in under the robot and its axes, or behind the TCP, exactly where they are. Give
+them values and the robot ends up at base-then-offset on the carriage. Everything riding the
+robot moves with it by one rigid transform, so the pose you had is still the pose you have:
+
+- the robot's bones and its TCP;
+- the axes already under it, and their placeholders;
+- the IK target and the swivel;
+- the base link's meshes;
+- the waypoints.
+
+**Remove** undoes all of it, stacked axes in any order included. Something you parented to
+the axis bone by hand stays where it stands. An axis on the tool moves the TCP to its offset,
+and removing the axis puts the TCP back with the offset it had.
+
+**Joint indices follow names.** Blender orders bones by hierarchy, so an axis under the robot
+becomes joint 0. Waypoints' joint vectors and the IK tip, keyframes included, are remapped
+by name when an axis comes or goes.
+
+**Placeholders are generated, not shipped.** A rail with a carriage, or a base with a
+turning plate and a pointer tab, built from a few dozen vertices at the size the dialog
+suggests from the robot's reach. They ride their bones, use one material you can restyle,
+and leave with their axis. Turn **Placeholder** off if you have a model of the real thing;
+attach it to the axis bone in the **Bones** panel.
+
+**The solver sees the axis.** The rig is no longer the robot in its description, so PyRoki
+is handed a model written from the rig's own bones instead of the file. Each joint bone
+already records its type, limits, link and link frame, so the model is exact. It matches
+the description to 1e-5 on the fixtures, and arm6 with a track added is joint-for-joint the
+hand-written `rail6.urdf`. Mimic joints get no bone, so they are left out. They never move
+the tool.
+
 ## Where the tool frame sits
 
 The **Tool Centre Point** panel places the TCP on a joint bone and offsets it from there.

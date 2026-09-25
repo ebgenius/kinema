@@ -71,7 +71,7 @@ class RigSolver:
         price of that bound, and with a limit of four it does not come up for
         the case this cache exists for.
         """
-        if self._pyroki_failed:
+        if self._pyroki_failed or self.rig_name in _deferred:
             return None
         cached = _pyroki_cache_get(self.identity, self.link_target)
         # Length check, not trust: the cached mapping was derived from whatever
@@ -153,6 +153,27 @@ class RigSolver:
         self.last_result = result
         self.solve_count += 1
         return result
+
+    def compile(self, rig) -> bool:
+        """Build PyRoki and pay its compile, without touching the pose.
+
+        One solve for where the tool already stands, with the elbow goal a live
+        solve would use, so the kernel compiled is the one the next drag needs. The
+        result is thrown away: a warm-up nobody asked for must not move a robot --
+        its IK goal may be stale, left behind while the arm was posed by hand.
+        """
+        solver = self.pyroki(rig)
+        if solver is None:
+            return False
+        tool = _np4(rig.pose.bones[self.tip_bone].matrix)
+        seed = chain_mod.read_configuration(rig, self.chain)
+        held = held_mask(rig, self.chain)
+        if held.any():
+            seed = chain_mod.displayed_configuration(rig, self.chain, seed, only=held)
+        result = self._solve_pyroki(
+            solver, seed, tool, elbow=self.elbow_goal(rig, solver), held=held
+        )
+        return result is not None
 
     def elbow_goal(self, rig, solver) -> tuple[int, np.ndarray, float] | None:
         """The swivel's elbow goal as PyRoki wants it, or None if there is none.
@@ -371,7 +392,20 @@ def _load_source_urdf(rig):
 
     Raises SolverError with a readable reason; the panel shows it. Returns None
     only when the rig records no source at all.
+
+    A rig with an external axis is no longer the robot in its description, so it
+    is described from its own bones instead -- see ``solver/rig_model.py``.
     """
+    from . import rig_model
+
+    if rig_model.has_external_axes(rig):
+        from .urdf_bridge import urdf_from_model
+
+        try:
+            return urdf_from_model(rig_model.model_from_rig(rig))
+        except Exception as exc:  # noqa: BLE001
+            raise SolverError(f"could not describe this rig for the solver: {exc}") from exc
+
     kind = rig.get(builder.PROP_SOURCE_KIND)
     source = rig.get(builder.PROP_SOURCE)
     if not kind or not source:
@@ -588,6 +622,26 @@ def find_solutions(rig, solver: RigSolver, seeds: int = 0, seed_value: int = 0):
     return branches.collect(chain, goal, candidates)
 
 
+#: Rigs whose PyRoki build is put off: their model is still being edited, and each
+#: edit would pay a fresh JAX compile. They solve on NumPy meanwhile -- no compile,
+#: and good enough to keep the arm on its target while the edit goes on.
+_deferred: set[str] = set()
+
+
+def defer(rig_name: str) -> None:
+    """Put off building PyRoki for ``rig_name`` until :func:`release`."""
+    _deferred.add(rig_name)
+
+
+def release(rig_name: str) -> None:
+    """Let ``rig_name`` build PyRoki again, on its next solve."""
+    _deferred.discard(rig_name)
+
+
+def deferred(rig_name: str) -> bool:
+    return rig_name in _deferred
+
+
 def invalidate(rig_name: str | None = None) -> None:
     """Drop cached solvers -- after a rig rebuild, or on unregister.
 
@@ -598,6 +652,7 @@ def invalidate(rig_name: str | None = None) -> None:
     if rig_name is None:
         _cache.clear()
         _pyroki_cache.clear()
+        _deferred.clear()
     else:
         _cache.pop(rig_name, None)
         # Matched on the stored name rather than the key, which is now an

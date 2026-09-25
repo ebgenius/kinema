@@ -567,6 +567,43 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
             layout.label(text="Linear moves need an IK target", icon="ERROR")
 
 
+class KINEMA_PT_external_axes(KinemaPanelBase, Panel):
+    """Rails, turntables, positioners and spindles the description does not have."""
+
+    bl_idname = "KINEMA_PT_external_axes"
+    bl_parent_id = "KINEMA_PT_main"
+    bl_label = "External Axes"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from ..ops.external_axes import MOUNT_ICONS, MOUNT_LABELS, axis_bones
+
+        layout = self.layout
+        rig = active_rig(context)
+        axes = axis_bones(rig)
+        if axes:
+            column = layout.column(align=True)
+            for pose_bone in axes:
+                mount = pose_bone.bone.get(builder.PROP_EXTERNAL, "")
+                row = column.row(align=True)
+                row.label(text=pose_bone.name, icon=MOUNT_ICONS.get(mount, "BLANK1"))
+                sub = row.row(align=True)
+                sub.alignment = "RIGHT"
+                sub.label(text=MOUNT_LABELS.get(mount, mount))
+                row.operator(
+                    "kinema.remove_external_axis", text="", icon="X", emboss=False
+                ).bone = pose_bone.name
+            # Their sliders and hold pins are with the other joints.
+            layout.label(text="Move them in Joints (FK)", icon="INFO")
+        else:
+            layout.label(text="A track, turntable, positioner or spindle", icon="INFO")
+        layout.operator("kinema.add_external_axis", text="Add External Axis…", icon="ADD")
+
+
 class KINEMA_PT_tcp(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_tcp"
     bl_parent_id = "KINEMA_PT_main"
@@ -805,6 +842,11 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         if solver is not None and solver.pyroki_error:
             info.label(text="PyRoki unavailable for this rig:", icon="INFO")
             info.label(text=solver.pyroki_error[:46], icon="BLANK1")
+        from ..solver import manager
+
+        if manager.deferred(rig.name):
+            info.label(text="PyRoki waits until the axis is placed", icon="SORTTIME")
+            info.label(text="Solving on NumPy meanwhile", icon="BLANK1")
 
 
 def manager_state(rig):
@@ -911,6 +953,7 @@ classes = (
     KINEMA_PT_velocity,
     KINEMA_PT_bones,
     KINEMA_PT_waypoints,
+    KINEMA_PT_external_axes,
     KINEMA_PT_tcp,
     KINEMA_PT_ik,
     KINEMA_PT_status,
