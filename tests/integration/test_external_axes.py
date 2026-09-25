@@ -1166,7 +1166,7 @@ class TestTheCompileWaits:
 
 
 class TestTheLivePreview:
-    def test_a_slider_drag_redraws_it_on_every_step(self, arm6, ops, ext, addon):
+    def test_a_slider_drag_redraws_it_on_every_step(self, arm6, manager, ops, ext, addon):
         """As for Edit TCP: an update callback per field, fed only the fields."""
         import bpy
 
@@ -1186,6 +1186,10 @@ class TestTheLivePreview:
             ops._refresh_preview(fields, bpy.context)
             np.testing.assert_allclose(
                 preview._state["shapes"]["shift"][:3, 3], [0.0, 0.0, 0.35], atol=1e-9
+            )
+            draft = ops._drafts[manager.rig_identity(arm6)]
+            assert draft["offset_location"] == pytest.approx((0.0, 0.0, 0.35)), (
+                "kept with no draw()"
             )
         finally:
             preview.stop()

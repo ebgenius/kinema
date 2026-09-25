@@ -138,6 +138,9 @@ def _refresh_preview(operator, context) -> None:
     rig = active_rig(context)
     if dialog is None or rig is None:
         return
+    # Kept here too, not only in draw(): a change the popup is not rebuilt after
+    # would otherwise be missing from the draft if the dialog closed next.
+    _remember(operator, rig)
     link, offset, rotation, problem = KINEMA_OT_edit_tcp.placement(operator, context, rig)
     tcp_preview.show(dialog, None if problem else tool_frame(link, offset, rotation), link)
 

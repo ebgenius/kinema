@@ -425,7 +425,7 @@ class TestTheTcpPreview:
         handlers.on_load_post()
         assert not tcp._drafts
 
-    def test_a_slider_drag_redraws_it_on_every_step(self, arm6, tcp, preview):
+    def test_a_slider_drag_redraws_it_on_every_step(self, arm6, manager, tcp, preview):
         """Update callbacks, not draw(): Blender does not rebuild a popup mid-drag.
 
         Called with a different object than the dialog's operator -- only its fields --
@@ -448,6 +448,8 @@ class TestTheTcpPreview:
         fields.offset = (0.0, 0.0, 0.4)
         tcp._refresh_preview(fields, bpy.context)
         assert not np.allclose(preview._state["drawn"][0][6], points[6]), "it moved again"
+        draft = tcp._drafts[manager.rig_identity(arm6)]
+        assert draft["offset"] == pytest.approx((0.0, 0.0, 0.4)), "kept with no draw()"
 
         tcp.KINEMA_OT_edit_tcp.cancel(None, bpy.context)
         tcp._refresh_preview(fields, bpy.context)  # no dialog: nothing to redraw

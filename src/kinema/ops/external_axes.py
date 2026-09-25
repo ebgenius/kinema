@@ -803,6 +803,10 @@ def _refresh_preview(operator, context) -> None:
     if dialog is None:
         return
     rig = active_rig(context)
+    # Kept here too, not only in draw(): a change the popup is not rebuilt after
+    # would otherwise be missing from the draft if the dialog closed next.
+    if rig is not None:
+        _remember(operator, rig)
     spec = KINEMA_OT_add_external_axis.spec(operator)
     try:
         placed = placement(rig, spec) if rig is not None and not spec.problems() else None
