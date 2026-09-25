@@ -33,6 +33,7 @@ What adding one has to keep right:
 from __future__ import annotations
 
 import math
+import time
 
 import bpy
 import numpy as np
@@ -751,8 +752,12 @@ def _apply_preset(operator, context) -> None:
 _ADJUSTING = ("KINEMA_OT_add_external_axis", "KINEMA_OT_remove_external_axis")
 #: Seconds between looks at whether the axis is in place yet.
 _SETTLE_POLL = 0.5
+#: Seconds without a further change after which the axis counts as placed anyway.
+_SETTLE_QUIET = 10.0
 #: Rigs whose compile is waiting for the axis to be in place.
 _waiting: set[str] = set()
+#: time.monotonic() of the last add or remove, redo-panel re-runs included.
+_last_change = 0.0
 
 
 def _defer_compile(rig) -> None:
@@ -765,8 +770,10 @@ def _defer_compile(rig) -> None:
     panel is gone: then the axis is where the user wants it, and the compile is paid
     once, behind a wait cursor.
     """
+    global _last_change
     manager.defer(rig.name)
     _waiting.add(rig.name)
+    _last_change = time.monotonic()
     if not bpy.app.timers.is_registered(_compile_when_settled):
         bpy.app.timers.register(_compile_when_settled, first_interval=_SETTLE_POLL)
 
@@ -781,9 +788,29 @@ def still_adjusting(window_manager) -> bool:
     return bool(operators) and operators[-1].bl_idname in _ADJUSTING
 
 
+def _interface_locked() -> bool:
+    return bool(getattr(bpy.context.window_manager, "is_interface_locked", False))
+
+
+def _settled() -> bool:
+    """Whether the axis is in place: its panel has given way, or it has sat unchanged.
+
+    The panel is the better signal but not a sufficient one. Only a registered
+    operation replaces it, and editing properties afterwards registers none -- so
+    without the quiet period a user who only touched sliders would stay on NumPy.
+    """
+    if not still_adjusting(bpy.context.window_manager):
+        return True
+    return time.monotonic() - _last_change >= _SETTLE_QUIET
+
+
 def _compile_when_settled() -> float | None:
-    """Timer: release the waiting rigs once the axis is in place, and compile them."""
-    if still_adjusting(bpy.context.window_manager):
+    """Timer: release the waiting rigs once the axis is in place, and compile them.
+
+    Not while a job has the interface locked -- a render with Lock Interface on: the
+    warm-up solve writes the pose, and Blender forbids timers touching data then.
+    """
+    if _interface_locked() or not _settled():
         return _SETTLE_POLL
     for name in list(_waiting):
         _waiting.discard(name)

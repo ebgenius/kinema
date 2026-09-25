@@ -965,6 +965,23 @@ class TestTheCompileWaits:
         assert ops._compile_when_settled() == ops._SETTLE_POLL
         assert manager.deferred(arm6.name)
         monkeypatch.setattr(ops, "still_adjusting", lambda _wm: False)
+        monkeypatch.setattr(ops, "_interface_locked", lambda: True)
+        assert ops._compile_when_settled() == ops._SETTLE_POLL, "not while a job locks it"
+        assert manager.deferred(arm6.name)
+        monkeypatch.setattr(ops, "_interface_locked", lambda: False)
         assert ops._compile_when_settled() is None
         assert not manager.deferred(arm6.name)
         assert not ops._waiting
+
+    def test_an_axis_left_alone_counts_as_placed(self, arm6, manager, ops, monkeypatch):
+        """Editing properties afterwards registers no operation, so the panel can stay
+        the last one; a quiet spell releases the rig anyway."""
+        import bpy
+
+        arm6.kinema_solver_mode = "NUMPY"
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
+        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: True)
+        assert ops._compile_when_settled() == ops._SETTLE_POLL
+        monkeypatch.setattr(ops, "_last_change", ops._last_change - ops._SETTLE_QUIET)
+        assert ops._compile_when_settled() is None
+        assert not manager.deferred(arm6.name)
