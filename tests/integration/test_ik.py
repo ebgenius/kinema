@@ -178,6 +178,141 @@ class TestLiveSolving:
         assert solver.last_result.backend == "PyRoki"
 
 
+class TestAPosedRoot:
+    """Root carries the whole robot, and the IK target with it. Posing it must not
+    throw the tool off its target: the solvers work with Root at rest, so the goal
+    they are given has Root's pose taken out."""
+
+    ROOT_POSES = {
+        "moved": ((0.0, 0.2, 0.0), (1.0, 0.0, 0.0, 0.0)),
+        "tilted 30 about X": ((0.0, 0.0, 0.0), (0.9659258, 0.2588190, 0.0, 0.0)),
+        "upside down about X": ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0)),
+        "upside down about Y": ((0.1, 0.0, 0.3), (0.0, 0.0, 1.0, 0.0)),
+    }
+
+    def _miss_after_a_nudge(
+        self, rig, builder, handlers, location, rotation, snap: bool = False
+    ) -> float:
+        """Pose Root, nudge the target, solve: how far the tool ends from it.
+
+        ``snap`` first puts the target back on the tool, for a control that did not
+        move with Root and would otherwise be left out of the arm's reach.
+        """
+        import bpy
+        from mathutils import Matrix
+
+        root = rig.pose.bones[builder.ROOT_BONE]
+        ik = rig.pose.bones[rig[builder.PROP_IK_BONE]]
+        with handlers.suspended():
+            root.location = location
+            root.rotation_quaternion = rotation
+            bpy.context.view_layer.update()
+            if snap:
+                ik.matrix = rig.pose.bones[builder.TCP_BONE].matrix.copy()
+                bpy.context.view_layer.update()
+        goal = _np4(ik.matrix)
+        goal[:3, 3] += (0.03, -0.02, 0.02)
+        ik.matrix = Matrix(goal.tolist())
+        bpy.context.view_layer.update()
+        for _ in range(4):
+            handlers.solve_rig(rig, force=True)
+            bpy.context.view_layer.update()
+        return float(np.linalg.norm(_tcp(rig, builder)[:3, 3] - _np4(ik.matrix)[:3, 3]))
+
+    @pytest.mark.parametrize("pose", list(ROOT_POSES))
+    def test_numpy_follows_the_target(self, rig, builder, handlers, pose):
+        import bpy
+
+        rig.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        miss = self._miss_after_a_nudge(rig, builder, handlers, *self.ROOT_POSES[pose])
+        assert miss < 1e-3, f"{miss * 1000:.1f} mm off with Root {pose}"
+
+    def test_pyroki_follows_the_target_upside_down(self, rig, builder, handlers, manager):
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        location, rotation = self.ROOT_POSES["upside down about Y"]
+        miss = self._miss_after_a_nudge(rig, builder, handlers, location, rotation)
+        solver = manager.get_solver(rig)
+        assert solver.pyroki_error is None, solver.pyroki_error
+        assert miss < 1e-3, f"{miss * 1000:.1f} mm off with Root upside down"
+
+    @pytest.mark.parametrize("pose", ["moved", "upside down about Y"])
+    def test_a_control_off_root_follows_too(self, rig, builder, handlers, pose):
+        """Root's pose comes out whatever the control hangs from.
+
+        The tool is shown under Root, so it stands at Root's pose times the chain.
+        For it to land on the control's matrix -- armature space either way -- the
+        chain has to reach that matrix with Root's pose taken out. The control's
+        parent only decides whether it moves along when Root does.
+        """
+        import bpy
+
+        rig.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        ik_name = rig[builder.PROP_IK_BONE]
+        bpy.ops.object.mode_set(mode="EDIT")
+        rig.data.edit_bones[ik_name].parent = None
+        bpy.ops.object.mode_set(mode="OBJECT")
+        assert rig.data.bones[ik_name].parent is None
+
+        miss = self._miss_after_a_nudge(
+            rig, builder, handlers, *self.ROOT_POSES[pose], snap=True
+        )
+        assert miss < 1e-3, f"{miss * 1000:.1f} mm off with Root {pose}, control unparented"
+
+    def test_a_robot_on_a_track_follows_with_root_upside_down(
+        self, addon, rig, builder, handlers
+    ):
+        """The same with an external axis under the robot, the arm free to use it."""
+        import bpy
+
+        axes = importlib.import_module(f"{addon.__name__}.ops.external_axes")
+        spec = importlib.import_module(f"{addon.__name__}.rig.external_axes")
+        rig.kinema_solver_mode = "NUMPY"
+        axes.add_axis(rig, spec.AxisSpec("track", lower=-1.5, upper=1.5, hold=False))
+        bpy.ops.kinema.add_ik()
+        miss = self._miss_after_a_nudge(
+            rig, builder, handlers, *self.ROOT_POSES["upside down about Y"]
+        )
+        assert miss < 1e-3, f"{miss * 1000:.1f} mm off on a track with Root upside down"
+
+    def test_the_warm_up_compiles_for_where_the_tool_stands(
+        self, rig, builder, handlers, manager, monkeypatch
+    ):
+        """RigSolver.compile solves for the tool in the solvers' frame, Root at rest.
+
+        Its result is thrown away, so a goal left in the posed frame would show only
+        as a wasted solve from a bad start -- checked here against the chain's own
+        forward kinematics, with nothing compiled.
+        """
+        import bpy
+        from mathutils import Quaternion
+
+        chain_mod = importlib.import_module(f"{manager.__package__}.chain")
+        rig.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        root = rig.pose.bones[builder.ROOT_BONE]
+        with handlers.suspended():
+            root.location = (0.1, 0.0, 0.3)
+            root.rotation_quaternion = Quaternion((0.0, 1.0, 0.0), np.pi)
+            bpy.context.view_layer.update()
+
+        solver = manager.get_solver(rig)
+        asked = []
+        monkeypatch.setattr(solver, "pyroki", lambda _rig: object())
+        monkeypatch.setattr(
+            solver, "_solve_pyroki", lambda _s, seed, goal, **_: asked.append(goal) or seed
+        )
+        assert solver.compile(rig)
+        q = chain_mod.read_configuration(rig, solver.chain)
+        np.testing.assert_allclose(asked[0], solver.chain.forward(q), atol=1e-5)
+
+    def test_root_at_rest_takes_nothing_out(self, rig, builder, manager):
+        np.testing.assert_allclose(manager.root_pose(rig), np.eye(4), atol=1e-9)
+
+
 class TestSolveBudget:
     def test_first_solve_is_not_timed(self, rig, builder, handlers, manager):
         """Regression: the first PyRoki solve includes JAX's JIT compile -- tens

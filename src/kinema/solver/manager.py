@@ -31,6 +31,26 @@ def _np4(matrix) -> np.ndarray:
     return np.array([[matrix[r][c] for c in range(4)] for r in range(4)])
 
 
+def root_pose(rig) -> np.ndarray:
+    """How far the Root bone is posed from its rest, as a transform in armature space.
+
+    Both backends solve with Root at rest: the chain is read off the bones' rest
+    matrices, and PyRoki's model is rooted at the armature origin. Everything under
+    Root is then displayed moved by this, the IK target and swivel included, since
+    they hang off Root too. So a goal read off a posed bone has to have it taken out
+    before it is solved for, or the arm lands off by exactly Root's own pose.
+    """
+    root = rig.pose.bones.get(builder.ROOT_BONE)
+    if root is None:
+        return np.eye(4)
+    return _np4(root.matrix) @ np.linalg.inv(_np4(root.bone.matrix_local))
+
+
+def solver_goal(rig, bone_name: str) -> np.ndarray:
+    """``bone_name``'s posed matrix, in the frame the solvers work in: Root at rest."""
+    return np.linalg.inv(root_pose(rig)) @ _np4(rig.pose.bones[bone_name].matrix)
+
+
 @dataclass
 class RigSolver:
     """Everything needed to run IK on one rig."""
@@ -127,7 +147,7 @@ class RigSolver:
         if self.ik_bone not in pose.bones:
             return None
 
-        goal = _np4(pose.bones[self.ik_bone].matrix)
+        goal = solver_goal(rig, self.ik_bone)
         seed = chain_mod.read_configuration(rig, self.chain)
         held = held_mask(rig, self.chain)
         if held.any():
@@ -165,7 +185,7 @@ class RigSolver:
         solver = self.pyroki(rig)
         if solver is None:
             return False
-        tool = _np4(rig.pose.bones[self.tip_bone].matrix)
+        tool = solver_goal(rig, self.tip_bone)
         seed = chain_mod.read_configuration(rig, self.chain)
         held = held_mask(rig, self.chain)
         if held.any():
@@ -242,6 +262,8 @@ class RigSolver:
             np.array(handle.matrix.col[2][:3], dtype=float),
             np.array(elbow.matrix.translation, dtype=float),
         )
+        # Built from posed bones, so in the posed frame; the solver's has Root at rest.
+        point = (np.linalg.inv(root_pose(rig)) @ np.append(point, 1.0))[:3]
         return (index, point, weight)
 
     def _solve_pyroki(
@@ -574,7 +596,7 @@ def find_solutions(rig, solver: RigSolver, seeds: int = 0, seed_value: int = 0):
     pose = rig.pose
     if solver.ik_bone not in pose.bones:
         return []
-    goal = _np4(pose.bones[solver.ik_bone].matrix)
+    goal = solver_goal(rig, solver.ik_bone)
     chain = solver.chain
 
     mode = getattr(rig, "kinema_solver_mode", MODE_PYROKI)
