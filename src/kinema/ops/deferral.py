@@ -45,18 +45,22 @@ def adjustable(*idnames: str) -> None:
     ADJUSTING.update(idnames)
 
 
-def defer(rig) -> None:
+def defer(rig) -> bool:
     """Solve ``rig`` live on NumPy until the edit settles, then compile PyRoki once.
 
     Call it before the edit, not after: an edit ends on a depsgraph update, and live
-    IK would compile on it.
+    IK would compile on it. Returns whether this started the wait -- False if an
+    earlier edit's is still running -- so an edit that is then refused can
+    :func:`withdraw` its own and leave the earlier one alone.
     """
     global _last_change
+    started = not manager.deferred(rig.name)
     manager.defer(rig.name)
     _waiting.add(rig.name)
     _last_change = time.monotonic()
     if not bpy.app.timers.is_registered(compile_when_settled):
         bpy.app.timers.register(compile_when_settled, first_interval=SETTLE_POLL)
+    return started
 
 
 def withdraw(rig) -> None:

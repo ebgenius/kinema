@@ -1062,6 +1062,39 @@ class TestTheCompileWaits:
         assert not manager.deferred(arm6.name)
         assert not deferral._waiting
 
+    @pytest.mark.parametrize(
+        ("refused", "complaint"),
+        [
+            (lambda bpy: bpy.ops.kinema.add_external_axis(
+                axis_name="track", lower_distance=1.0, upper_distance=-1.0), "lower limit"),
+            (lambda bpy: bpy.ops.kinema.remove_external_axis(bone="joint3"),
+             "not an external axis"),
+        ],
+        ids=["add", "remove"],
+    )
+    def test_a_refused_edit_leaves_no_wait(
+        self, deferral, arm6, manager, refused, complaint
+    ):
+        """Refused before anything changed: live IK stays on PyRoki, no compile queued."""
+        import bpy
+
+        with pytest.raises(RuntimeError, match=complaint):
+            refused(bpy)
+        assert not manager.deferred(arm6.name)
+        assert arm6.name not in deferral._waiting
+
+    def test_a_refused_edit_keeps_a_wait_an_earlier_one_started(
+        self, deferral, arm6, manager
+    ):
+        import bpy
+
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
+        assert manager.deferred(arm6.name)
+        with pytest.raises(RuntimeError, match="not an external axis"):
+            bpy.ops.kinema.remove_external_axis(bone="joint3")
+        assert manager.deferred(arm6.name), "the add's wait is the add's"
+        assert arm6.name in deferral._waiting
+
     @staticmethod
     def _channels(builder, rig) -> list[float]:
         values = [

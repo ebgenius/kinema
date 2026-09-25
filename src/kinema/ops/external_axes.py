@@ -1007,10 +1007,13 @@ class KINEMA_OT_add_external_axis(Operator):
         spec = self.spec()
         # Before the edit: add_axis ends on a depsgraph update, and live IK would
         # compile on it.
-        deferral.defer(rig)
+        started = deferral.defer(rig)
         try:
             name = add_axis(rig, spec)
         except ValueError as exc:
+            # Refused before anything changed, so nothing to wait for.
+            if started:
+                deferral.withdraw(rig)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         message = f"Added '{name}' {MOUNT_LABELS[spec.mount].lower()}"
@@ -1040,10 +1043,13 @@ class KINEMA_OT_remove_external_axis(Operator):
 
     def execute(self, context):
         rig = active_rig(context)
-        deferral.defer(rig)
+        started = deferral.defer(rig)
         try:
             remove_axis(rig, self.bone)
         except ValueError as exc:
+            # Refused before anything changed, so nothing to wait for.
+            if started:
+                deferral.withdraw(rig)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         self.report({"INFO"}, f"Removed '{self.bone}'")
