@@ -98,7 +98,10 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
 
         held = hold_external_axes(rig)
 
-        manager.invalidate(rig.name)
+        # The chain, not the compiled solver: the model has not changed, so one
+        # compiled before -- say before Remove IK Target -- is still right, and the
+        # warm-up below then costs nothing.
+        manager.forget_chain(rig.name)
         handlers.reset(rig.name)
         handlers.register_handlers()
 
@@ -164,7 +167,8 @@ class KINEMA_OT_remove_ik(KinemaRigOperator):
         if builder.PROP_IK_BONE in rig:
             del rig[builder.PROP_IK_BONE]
         rig.kinema_ik_enabled = False
-        manager.invalidate(rig.name)
+        # Kept compiled: adding the target back is the likeliest next step.
+        manager.forget_chain(rig.name)
         handlers.reset(rig.name)
         self.report({"INFO"}, "IK target removed")
         return {"FINISHED"}
@@ -557,7 +561,9 @@ class KINEMA_OT_add_swivel(KinemaRigOperator):
         rig[builder.PROP_SWIVEL_SHOULDER] = shoulder
         rig[builder.PROP_ELBOW_JOINT] = elbow
         rig[builder.PROP_SWIVEL_WRIST] = wrist
-        manager.invalidate(rig.name)
+        # Control bones, not joints: the model is unchanged, so the compiled
+        # solver stays and only the elbow kernel below is new.
+        manager.forget_chain(rig.name)
         handlers.reset(rig.name)
         context.view_layer.update()
 
@@ -607,7 +613,8 @@ class KINEMA_OT_remove_swivel(KinemaRigOperator):
         ):
             if key in rig:
                 del rig[key]
-        manager.invalidate(rig.name)
+        # The compiled solver, elbow kernel and all, is still right without it.
+        manager.forget_chain(rig.name)
         handlers.reset(rig.name)
         self.report({"INFO"}, "Swivel removed")
         return {"FINISHED"}

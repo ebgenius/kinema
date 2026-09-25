@@ -58,6 +58,11 @@ def ext(addon):
 
 
 @pytest.fixture
+def deferral(addon):
+    return importlib.import_module(f"{addon.__name__}.ops.deferral")
+
+
+@pytest.fixture
 def rig_model(addon):
     return importlib.import_module(f"{addon.__name__}.solver.rig_model")
 
@@ -978,20 +983,20 @@ class TestTheDialogRemembers:
         assert second.axis_name == ext.PRESETS["LINEAR_TRACK"].values["name"]
 
     def test_opening_a_file_forgets_drafts_and_pending_compiles(
-        self, arm6, handlers, manager, ops
+        self, deferral, arm6, handlers, manager, ops
     ):
         import bpy
 
         arm6.kinema_solver_mode = "NUMPY"
         assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
         ops._remember(_Dialog(ops.KINEMA_OT_add_external_axis), arm6)
-        assert ops._drafts and ops._waiting and manager.deferred(arm6.name)
-        assert bpy.app.timers.is_registered(ops._compile_when_settled)
+        assert ops._drafts and deferral._waiting and manager.deferred(arm6.name)
+        assert bpy.app.timers.is_registered(deferral.compile_when_settled)
 
         handlers.on_load_post()
-        assert not ops._drafts and not ops._waiting
+        assert not ops._drafts and not deferral._waiting
         assert not manager.deferred(arm6.name)
-        assert not bpy.app.timers.is_registered(ops._compile_when_settled)
+        assert not bpy.app.timers.is_registered(deferral.compile_when_settled)
 
     def test_a_rig_without_a_draft_starts_from_the_preset(self, arm6, ops, addon, ext):
         import bpy
@@ -1010,7 +1015,7 @@ class TestTheCompileWaits:
     """Adjusting an axis in its redo panel re-runs the operator; none of that compiles."""
 
     def test_pyroki_is_not_built_until_the_axis_is_in_place(
-        self, arm6, builder, manager, ops, monkeypatch
+        self, deferral, arm6, builder, manager, ops, monkeypatch
     ):
         import types
 
@@ -1023,7 +1028,7 @@ class TestTheCompileWaits:
         assert manager.deferred(arm6.name)
 
         solver = manager.get_solver(arm6)
-        assert solver.pyroki(arm6) is None, "nothing is compiled while it is deferred"
+        assert solver.pyroki(arm6, build=False) is None, "nothing compiled to reuse"
         assert solver.pyroki_error is None, "and it is not an error"
         assert not any(entry[2] == arm6.name for entry in manager._pyroki_cache.values())
         ik = arm6.pose.bones[arm6[builder.PROP_IK_BONE]]
@@ -1039,23 +1044,23 @@ class TestTheCompileWaits:
             operators=[*adjusting.operators,
                        types.SimpleNamespace(bl_idname="TRANSFORM_OT_translate")]
         )
-        assert ops.still_adjusting(adjusting)
-        assert not ops.still_adjusting(moved_on)
-        assert not ops.still_adjusting(types.SimpleNamespace(operators=[]))
+        assert deferral.still_adjusting(adjusting)
+        assert not deferral.still_adjusting(moved_on)
+        assert not deferral.still_adjusting(types.SimpleNamespace(operators=[]))
 
         # Released once the panel is gone. Compiling is not what this checks.
         arm6.kinema_solver_mode = "NUMPY"
-        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: True)
-        assert ops._compile_when_settled() == ops._SETTLE_POLL
+        monkeypatch.setattr(deferral, "still_adjusting", lambda _wm: True)
+        assert deferral.compile_when_settled() == deferral.SETTLE_POLL
         assert manager.deferred(arm6.name)
-        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: False)
-        monkeypatch.setattr(ops, "_interface_locked", lambda: True)
-        assert ops._compile_when_settled() == ops._SETTLE_POLL, "not while a job locks it"
+        monkeypatch.setattr(deferral, "still_adjusting", lambda _wm: False)
+        monkeypatch.setattr(deferral, "interface_locked", lambda: True)
+        assert deferral.compile_when_settled() == deferral.SETTLE_POLL, "not while a job locks it"
         assert manager.deferred(arm6.name)
-        monkeypatch.setattr(ops, "_interface_locked", lambda: False)
-        assert ops._compile_when_settled() is None
+        monkeypatch.setattr(deferral, "interface_locked", lambda: False)
+        assert deferral.compile_when_settled() is None
         assert not manager.deferred(arm6.name)
-        assert not ops._waiting
+        assert not deferral._waiting
 
     @staticmethod
     def _channels(builder, rig) -> list[float]:
@@ -1068,7 +1073,7 @@ class TestTheCompileWaits:
         return values
 
     def test_with_live_ik_off_the_release_moves_nothing_and_compiles_nothing(
-        self, arm6, builder, manager, ops, monkeypatch
+        self, deferral, arm6, builder, manager, ops, monkeypatch
     ):
         """The goal is stale after posing by hand; a timer must not drag the arm to it."""
         import bpy
@@ -1082,14 +1087,14 @@ class TestTheCompileWaits:
         bpy.context.view_layer.update()
         posed = self._channels(builder, arm6)
 
-        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: False)
-        assert ops._compile_when_settled() is None
+        monkeypatch.setattr(deferral, "still_adjusting", lambda _wm: False)
+        assert deferral.compile_when_settled() is None
         bpy.context.view_layer.update()
         assert self._channels(builder, arm6) == pytest.approx(posed, abs=1e-9)
         assert not any(entry[2] == arm6.name for entry in manager._pyroki_cache.values())
 
     def test_with_live_ik_on_it_compiles_without_moving_the_arm(
-        self, arm6, builder, handlers, manager, ops, monkeypatch
+        self, deferral, arm6, builder, handlers, manager, ops, monkeypatch
     ):
         """The one compile, paid for where the tool stands, not for a stale goal."""
         import bpy
@@ -1104,24 +1109,24 @@ class TestTheCompileWaits:
             bpy.context.view_layer.update()
         posed = self._channels(builder, arm6)
 
-        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: False)
+        monkeypatch.setattr(deferral, "still_adjusting", lambda _wm: False)
         with handlers.suspended():
-            assert ops._compile_when_settled() is None
+            assert deferral.compile_when_settled() is None
             bpy.context.view_layer.update()
         assert self._channels(builder, arm6) == pytest.approx(posed, abs=1e-9)
         assert any(entry[2] == arm6.name for entry in manager._pyroki_cache.values()), (
             "PyRoki was compiled"
         )
 
-    def test_an_axis_left_alone_counts_as_placed(self, arm6, manager, ops, monkeypatch):
+    def test_an_axis_left_alone_counts_as_placed(self, deferral, arm6, manager, ops, monkeypatch):
         """Editing properties afterwards registers no operation, so the panel can stay
         the last one; a quiet spell releases the rig anyway."""
         import bpy
 
         arm6.kinema_solver_mode = "NUMPY"
         assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
-        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: True)
-        assert ops._compile_when_settled() == ops._SETTLE_POLL
-        monkeypatch.setattr(ops, "_last_change", ops._last_change - ops._SETTLE_QUIET)
-        assert ops._compile_when_settled() is None
+        monkeypatch.setattr(deferral, "still_adjusting", lambda _wm: True)
+        assert deferral.compile_when_settled() == deferral.SETTLE_POLL
+        monkeypatch.setattr(deferral, "_last_change", deferral._last_change - deferral.SETTLE_QUIET)
+        assert deferral.compile_when_settled() is None
         assert not manager.deferred(arm6.name)

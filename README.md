@@ -333,7 +333,31 @@ the tool.
 ## Where the tool frame sits
 
 The **Tool Centre Point** panel places the TCP on a joint bone and offsets it from there.
-Pick the parent bone, type the offset, press *Update TCP*.
+**Edit TCP…** opens a dialog for it that previews before anything moves:
+
+- **Offset:** type a location and rotation, as the panel's fields take them.
+- **3D Cursor:** the TCP goes where the cursor is. Snap the cursor to a vertex of the tool
+  mesh first (Shift+S), and the TCP lands on that vertex.
+- **Object Origin:** the TCP goes on an empty, or on the origin of the tool mesh itself.
+
+The cursor and the object can give the orientation too, or leave it at the typed one. Either
+way the dialog shows the offset it will store, measured from the link where it stands now,
+so a TCP can be picked off a tool on a posed robot. While it is open, the viewport draws the
+new TCP next to the current one. Clicking away closes the dialog, and opening it again brings
+back what you had. The panel's fields and *Update TCP* still work as before.
+
+**Changing the TCP doesn't move the robot.** Redefining the tool, as on a real controller,
+leaves the joints where they are, and the IK target comes to the new TCP. A keyed IK target
+goes back to its keys on the next frame, because an animated path is the tool's path, and
+the new tool follows it.
+
+**Changing the TCP doesn't recompile the solver.** PyRoki's compiled solver depends on the
+robot and on the joint the TCP rides, not on the tool offset. Re-offsetting the TCP, or
+removing and re-adding the IK target, reuses it. A TCP moved onto another joint needs a new
+one, and it waits until you're done: live IK solves on NumPy meanwhile, and the panel says
+so. It then compiles once, when you move on to something else or leave it for ten seconds.
+A bake, Find Solutions, playback and rendering never wait. They use PyRoki, compiling it if
+they must.
 
 The offset is measured in that joint's own **link frame** — the flange, with its Z out of the
 face — and the angles are roll, pitch and yaw about fixed X, Y and Z, which is the convention

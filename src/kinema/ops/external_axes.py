@@ -33,7 +33,6 @@ What adding one has to keep right:
 from __future__ import annotations
 
 import math
-import time
 
 import bpy
 import numpy as np
@@ -47,7 +46,7 @@ from ..rig import external_axes as ext
 from ..solver import manager
 from ..ui import axis_preview
 from ..ui.panel import active_rig
-from . import attach, ik
+from . import attach, deferral, ik, pose
 from .waypoints import MAX_STORED_DOF
 
 #: One material for every placeholder, so they read as stand-ins at a glance.
@@ -353,20 +352,6 @@ def _move_waypoints(rig, shift: np.ndarray) -> None:
             marker.matrix_basis = moved @ marker.matrix_basis
 
 
-def _snap_ik_to_tcp(rig) -> None:
-    """Put the IK target on the TCP, which has just moved, if IK aims at it.
-
-    Otherwise live IK would drag the arm to put the moved TCP back on the old goal.
-    """
-    ik_name = rig.get(builder.PROP_IK_BONE)
-    tip = manager.tip_bone(rig)
-    tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
-    if not ik_name or ik_name not in rig.pose.bones or tip != tcp or tip not in rig.pose.bones:
-        return
-    bpy.context.view_layer.update()
-    rig.pose.bones[ik_name].matrix = rig.pose.bones[tip].matrix.copy()
-
-
 def _tcp_offset(rig, tcp) -> list[float]:
     """The TCP's offset from its parent's link frame, as it actually stands.
 
@@ -567,7 +552,7 @@ def add_axis(rig, spec: ext.AxisSpec) -> str:
             pose_bone.bone[builder.PROP_EXTERNAL_TCP_PARENT] = previous_tcp[0]
             pose_bone.bone[builder.PROP_EXTERNAL_TCP_OFFSET] = previous_tcp[1]
             _place_tcp(rig, name, spec.offset_location, spec.offset_rotation)
-            _snap_ik_to_tcp(rig)
+            pose.snap_goal_to_tcp(rig)
 
     if previous_active is not None:
         bpy.context.view_layer.objects.active = previous_active
@@ -683,7 +668,7 @@ def remove_axis(rig, name: str) -> None:
         if tcp_rides:
             target = stored_parent if stored_parent in rig.pose.bones else parent_name
             _place_tcp(rig, target, stored_offset[:3], stored_offset[3:])
-            _snap_ik_to_tcp(rig)
+            pose.snap_goal_to_tcp(rig)
 
     if previous_active is not None and previous_active.name in bpy.data.objects:
         bpy.context.view_layer.objects.active = previous_active
@@ -745,119 +730,13 @@ def _apply_preset(operator, context) -> None:
     _apply_size(operator, context)
 
 
-# --------------------------------------------------------------------------
-# the solver compile, put off until the axis is in place
-# --------------------------------------------------------------------------
-#: The operators whose Adjust Last Operation panel is still editing an axis.
-_ADJUSTING = ("KINEMA_OT_add_external_axis", "KINEMA_OT_remove_external_axis")
-#: Seconds between looks at whether the axis is in place yet.
-_SETTLE_POLL = 0.5
-#: Seconds without a further change after which the axis counts as placed anyway.
-_SETTLE_QUIET = 10.0
-#: Rigs whose compile is waiting for the axis to be in place.
-_waiting: set[str] = set()
-#: time.monotonic() of the last add or remove, redo-panel re-runs included.
-_last_change = 0.0
-
-
-def _defer_compile(rig) -> None:
-    """Solve ``rig`` on NumPy until the axis is in place, then compile PyRoki once.
-
-    Adding or removing an axis changes the model PyRoki solves on, and a compile is
-    tens of seconds. Every change in the Adjust Last Operation panel runs the operator
-    again, so paying it there -- as Add IK Target does -- paid it on every nudge of
-    an offset. Instead the rig solves on NumPy, which needs no compile, until the
-    panel is gone: then the axis is where the user wants it, and the compile is paid
-    once, behind a wait cursor.
-    """
-    global _last_change
-    manager.defer(rig.name)
-    _waiting.add(rig.name)
-    _last_change = time.monotonic()
-    if not bpy.app.timers.is_registered(_compile_when_settled):
-        bpy.app.timers.register(_compile_when_settled, first_interval=_SETTLE_POLL)
-
-
-def still_adjusting(window_manager) -> bool:
-    """Whether the last operation is still an axis add or remove the user can adjust.
-
-    Its panel stays open until another operation is registered; after that, a change
-    to it would have to be an undo, and the axis is as good as placed.
-    """
-    operators = getattr(window_manager, "operators", None)
-    return bool(operators) and operators[-1].bl_idname in _ADJUSTING
+# Their redo panels are an edit in progress: see ops/deferral.py.
+deferral.adjustable("KINEMA_OT_add_external_axis", "KINEMA_OT_remove_external_axis")
 
 
 def forget() -> None:
-    """Drop every draft and pending compile: a new file shares no rig with the old one.
-
-    A rig waiting for its compile is looked up by name, and the next file may well
-    hold a different robot under it.
-    """
+    """Drop every draft: a new file shares no rig with the old one."""
     _drafts.clear()
-    _waiting.clear()
-    if bpy.app.timers.is_registered(_compile_when_settled):
-        bpy.app.timers.unregister(_compile_when_settled)
-
-
-def _interface_locked() -> bool:
-    return bool(getattr(bpy.context.window_manager, "is_interface_locked", False))
-
-
-def _settled() -> bool:
-    """Whether the axis is in place: its panel has given way, or it has sat unchanged.
-
-    The panel is the better signal but not a sufficient one. Only a registered
-    operation replaces it, and editing properties afterwards registers none -- so
-    without the quiet period a user who only touched sliders would stay on NumPy.
-    """
-    if not still_adjusting(bpy.context.window_manager):
-        return True
-    return time.monotonic() - _last_change >= _SETTLE_QUIET
-
-
-def _compile_when_settled() -> float | None:
-    """Timer: release the waiting rigs once the axis is in place, and compile them.
-
-    Not while a job has the interface locked -- a render with Lock Interface on: the
-    warm-up solve writes the pose, and Blender forbids timers touching data then.
-    """
-    if _interface_locked() or not _settled():
-        return _SETTLE_POLL
-    for name in list(_waiting):
-        _waiting.discard(name)
-        manager.release(name)
-        rig = bpy.data.objects.get(name)
-        if rig is not None and builder.is_kinema_rig(rig):
-            _compile(rig)
-    return None
-
-
-def _compile(rig) -> None:
-    """Pay PyRoki's compile for ``rig`` now, if live IK will want it, moving nothing.
-
-    Not a solve of the IK goal, as Add IK Target's warm-up is: that one has just
-    put the goal on the tool, while here the goal may be anywhere -- left behind
-    while the arm was posed by hand with live IK off -- and a timer that fires ten
-    seconds after the user stopped must not drag the robot to it. With live IK off,
-    nothing: the first solve pays, if one ever comes.
-    """
-    ik_name = rig.get(builder.PROP_IK_BONE)
-    if not ik_name or ik_name not in rig.pose.bones or not rig.kinema_ik_enabled:
-        return
-    if getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI) != manager.MODE_PYROKI:
-        return
-    solver = manager.get_solver(rig, ik_name)
-    if solver is None:
-        return
-    window = next(iter(bpy.context.window_manager.windows), None)
-    if window is not None:
-        window.cursor_set("WAIT")
-    try:
-        solver.compile(rig)
-    finally:
-        if window is not None:
-            window.cursor_set("DEFAULT")
 
 
 #: rig -> the dialog's fields as it last drew them. A click in the viewport to
@@ -1097,7 +976,7 @@ class KINEMA_OT_add_external_axis(Operator):
         spec = self.spec()
         # Before the edit: add_axis ends on a depsgraph update, and live IK would
         # compile on it.
-        _defer_compile(rig)
+        deferral.defer(rig)
         try:
             name = add_axis(rig, spec)
         except ValueError as exc:
@@ -1130,7 +1009,7 @@ class KINEMA_OT_remove_external_axis(Operator):
 
     def execute(self, context):
         rig = active_rig(context)
-        _defer_compile(rig)
+        deferral.defer(rig)
         try:
             remove_axis(rig, self.bone)
         except ValueError as exc:

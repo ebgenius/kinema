@@ -82,7 +82,7 @@ class RigSolver:
     _warned: set = field(default_factory=set)
 
     # ---------------------------------------------------------------- PyRoki
-    def pyroki(self, rig) -> pyroki_backend.PyrokiSolver | None:
+    def pyroki(self, rig, build: bool = True) -> pyroki_backend.PyrokiSolver | None:
         """Fetch the PyRoki solver from the cache, building it on a miss.
 
         Looked up every time rather than held on the instance, so the cache is
@@ -90,8 +90,11 @@ class RigSolver:
         bounds memory. The lookup is a dict hit; the rebuild it risks is the
         price of that bound, and with a limit of four it does not come up for
         the case this cache exists for.
+
+        ``build=False`` takes a cached solver but never builds one: a build is a
+        JAX compile, and a deferred rig's live solves must not pay it.
         """
-        if self._pyroki_failed or self.rig_name in _deferred:
+        if self._pyroki_failed:
             return None
         cached = _pyroki_cache_get(self.identity, self.link_target)
         # Length check, not trust: the cached mapping was derived from whatever
@@ -102,6 +105,8 @@ class RigSolver:
         if cached is not None and len(cached[1]) == self.chain.dof:
             self._chain_to_full = cached[1]
             return cached[0]
+        if not build:
+            return None
         try:
             solver = self._build_pyroki(rig)
         except Exception as exc:  # noqa: BLE001 - always falls back to NumPy
@@ -111,6 +116,8 @@ class RigSolver:
             self.identity, self.rig_name, self.link_target,
             solver, self._chain_to_full,
         )
+        # Built, so there is nothing left to put off.
+        _deferred.discard(self.rig_name)
         return solver
 
     def _build_pyroki(self, rig) -> pyroki_backend.PyrokiSolver:
@@ -136,8 +143,12 @@ class RigSolver:
         return self._pyroki_failed
 
     # ----------------------------------------------------------------- solve
-    def solve(self, rig, mode: str = MODE_PYROKI) -> SolveResult | None:
+    def solve(self, rig, mode: str = MODE_PYROKI, live: bool = False) -> SolveResult | None:
         """Solve for the current IK target pose and write the result to the rig.
+
+        ``live`` is a viewport update. Only those honour :func:`defer`: a bake, a
+        render or playback builds PyRoki when it needs it, since solving those on
+        NumPy would quietly give a different answer than the user asked for.
 
         Returns None when there is nothing to do (no IK bone, or mode OFF).
         """
@@ -157,7 +168,7 @@ class RigSolver:
 
         result = None
         if mode == MODE_PYROKI:
-            solver = self.pyroki(rig)
+            solver = self.pyroki(rig, build=not (live and self.rig_name in _deferred))
             if solver is not None:
                 result = self._solve_pyroki(
                     solver, seed, goal, elbow=self.elbow_goal(rig, solver), held=held
@@ -651,7 +662,10 @@ _deferred: set[str] = set()
 
 
 def defer(rig_name: str) -> None:
-    """Put off building PyRoki for ``rig_name`` until :func:`release`."""
+    """Put off building PyRoki for ``rig_name``'s live solves until :func:`release`.
+
+    A solver already compiled for it is still used: only the build is put off.
+    """
     _deferred.add(rig_name)
 
 
@@ -662,6 +676,24 @@ def release(rig_name: str) -> None:
 
 def deferred(rig_name: str) -> bool:
     return rig_name in _deferred
+
+
+def has_compiled(rig, link: str | None) -> bool:
+    """Whether a compiled PyRoki solver aimed at ``link`` is cached for ``rig``."""
+    return link is not None and (rig_identity(rig), str(link)) in _pyroki_cache
+
+
+def forget_chain(rig_name: str) -> None:
+    """Drop ``rig_name``'s solver state but keep its compiled PyRoki solvers.
+
+    For an edit that changes the chain or the tool but not the model -- a TCP moved
+    or re-offset, an IK target removed. The compiled solver depends only on the
+    model and the link it aims at, and the tool offset reaches it outside the kernel
+    (``RigSolver.link_target``), so it is still right. A TCP on the same link
+    rebuilds the cheap part and finds its compiled solver waiting; on another link
+    it is a different cache key, so nothing wrong is reused.
+    """
+    _cache.pop(rig_name, None)
 
 
 def invalidate(rig_name: str | None = None) -> None:

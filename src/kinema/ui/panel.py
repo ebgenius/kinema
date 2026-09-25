@@ -650,6 +650,14 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
 
     @staticmethod
     def _draw_placement(layout, rig, *, exists: bool) -> None:
+        # The dialog is the easy way: offsets, the 3D cursor or an object's origin,
+        # previewed before anything moves. The fields below stay for typing.
+        row = layout.row()
+        row.scale_y = 1.2
+        row.operator(
+            "kinema.edit_tcp", text="Edit TCP…" if exists else "Place TCP…",
+            icon="EMPTY_ARROWS",
+        )
         column = layout.column(align=True)
         column.use_property_split = True
         column.prop_search(
@@ -845,7 +853,7 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         from ..solver import manager
 
         if manager.deferred(rig.name):
-            info.label(text="PyRoki waits until the axis is placed", icon="SORTTIME")
+            info.label(text="PyRoki waits until the edit is done", icon="SORTTIME")
             info.label(text="Solving on NumPy meanwhile", icon="BLANK1")
 
 
