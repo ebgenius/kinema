@@ -190,15 +190,26 @@ class TestAPosedRoot:
         "upside down about Y": ((0.1, 0.0, 0.3), (0.0, 0.0, 1.0, 0.0)),
     }
 
-    def _miss_after_a_nudge(self, rig, builder, handlers, location, rotation) -> float:
+    def _miss_after_a_nudge(
+        self, rig, builder, handlers, location, rotation, snap: bool = False
+    ) -> float:
+        """Pose Root, nudge the target, solve: how far the tool ends from it.
+
+        ``snap`` first puts the target back on the tool, for a control that did not
+        move with Root and would otherwise be left out of the arm's reach.
+        """
         import bpy
         from mathutils import Matrix
 
         root = rig.pose.bones[builder.ROOT_BONE]
-        root.location = location
-        root.rotation_quaternion = rotation
-        bpy.context.view_layer.update()
         ik = rig.pose.bones[rig[builder.PROP_IK_BONE]]
+        with handlers.suspended():
+            root.location = location
+            root.rotation_quaternion = rotation
+            bpy.context.view_layer.update()
+            if snap:
+                ik.matrix = rig.pose.bones[builder.TCP_BONE].matrix.copy()
+                bpy.context.view_layer.update()
         goal = _np4(ik.matrix)
         goal[:3, 3] += (0.03, -0.02, 0.02)
         ik.matrix = Matrix(goal.tolist())
@@ -226,6 +237,30 @@ class TestAPosedRoot:
         solver = manager.get_solver(rig)
         assert solver.pyroki_error is None, solver.pyroki_error
         assert miss < 1e-3, f"{miss * 1000:.1f} mm off with Root upside down"
+
+    @pytest.mark.parametrize("pose", ["moved", "upside down about Y"])
+    def test_a_control_off_root_follows_too(self, rig, builder, handlers, pose):
+        """Root's pose comes out whatever the control hangs from.
+
+        The tool is shown under Root, so it stands at Root's pose times the chain.
+        For it to land on the control's matrix -- armature space either way -- the
+        chain has to reach that matrix with Root's pose taken out. The control's
+        parent only decides whether it moves along when Root does.
+        """
+        import bpy
+
+        rig.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        ik_name = rig[builder.PROP_IK_BONE]
+        bpy.ops.object.mode_set(mode="EDIT")
+        rig.data.edit_bones[ik_name].parent = None
+        bpy.ops.object.mode_set(mode="OBJECT")
+        assert rig.data.bones[ik_name].parent is None
+
+        miss = self._miss_after_a_nudge(
+            rig, builder, handlers, *self.ROOT_POSES[pose], snap=True
+        )
+        assert miss < 1e-3, f"{miss * 1000:.1f} mm off with Root {pose}, control unparented"
 
     def test_root_at_rest_takes_nothing_out(self, rig, builder, manager):
         np.testing.assert_allclose(manager.root_pose(rig), np.eye(4), atol=1e-9)
