@@ -244,6 +244,49 @@ class TestTrackUnderTheRobot:
         assert _joint_names(builder, arm6) == before["joints"]
         np.testing.assert_allclose(ops.robot_base(arm6), np.eye(4), atol=1e-9)
 
+    def test_a_keyed_goal_is_carried_on_every_frame(self, arm6, builder, ops, ext):
+        """An animated IK goal moves with the robot at every key, not just the current one.
+
+        Its keys are its location and rotation channels -- what Generate Motion writes --
+        and those are relative to the bone's rest. The rest rides the robot, so every
+        keyed pose is carried by the same shift, with no key rewritten.
+        """
+        import bpy
+        from mathutils import Matrix
+
+        arm6.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        ik_name = arm6[builder.PROP_IK_BONE]
+        goal = arm6.pose.bones[ik_name]
+        scene = bpy.context.scene
+        keyed = {1: (0.0, 0.0, 0.0), 20: (0.05, -0.04, 0.03)}
+        start = _np4(goal.matrix)
+        for frame, nudge in keyed.items():
+            scene.frame_set(frame)
+            moved = start.copy()
+            moved[:3, 3] += nudge
+            goal.matrix = Matrix(moved.tolist())
+            bpy.context.view_layer.update()
+            goal.keyframe_insert(data_path="location", frame=frame)
+            goal.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+        def goal_at(frame):
+            scene.frame_set(frame)
+            return _np4(goal.matrix)
+
+        before = {frame: goal_at(frame) for frame in (*keyed, 10)}
+        _add(ops, ext, arm6, **{**TRACK, "offset_location": (0.1, 0.0, 0.2),
+                                "offset_rotation": (0.0, 0.0, 0.3)})
+        shift = np.array(arm6.data.bones["track"][builder.PROP_EXTERNAL_SHIFT]).reshape(4, 4)
+        assert not np.allclose(shift[:3, :3], np.eye(3), atol=1e-3), "a turn, not only a lift"
+        for frame, pose in before.items():
+            np.testing.assert_allclose(goal_at(frame), shift @ pose, atol=1e-5,
+                                       err_msg=f"frame {frame}")
+
+        _remove(ops, arm6, "track")
+        for frame, pose in before.items():
+            np.testing.assert_allclose(goal_at(frame), pose, atol=1e-5, err_msg=f"frame {frame}")
+
     def test_the_base_link_rides_it_and_stays_resettable(
         self, fixture_dir, clean_scene, builder, ops, ext
     ):
@@ -972,6 +1015,62 @@ class TestTheCompileWaits:
         assert ops._compile_when_settled() is None
         assert not manager.deferred(arm6.name)
         assert not ops._waiting
+
+    @staticmethod
+    def _channels(builder, rig) -> list[float]:
+        values = [
+            pb.location[1] if pb.bone.get(builder.PROP_JOINT_TYPE) == "prismatic"
+            else pb.rotation_euler[1]
+            for pb in builder.joint_bones(rig)
+        ]
+        assert len(values) == 7, "arm6's six joints and the track"
+        return values
+
+    def test_with_live_ik_off_the_release_moves_nothing_and_compiles_nothing(
+        self, arm6, builder, manager, ops, monkeypatch
+    ):
+        """The goal is stale after posing by hand; a timer must not drag the arm to it."""
+        import bpy
+
+        arm6.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = False
+        arm6.kinema_solver_mode = "PYROKI"
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
+        arm6.pose.bones["joint2"].rotation_euler[1] += 0.4
+        bpy.context.view_layer.update()
+        posed = self._channels(builder, arm6)
+
+        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: False)
+        assert ops._compile_when_settled() is None
+        bpy.context.view_layer.update()
+        assert self._channels(builder, arm6) == pytest.approx(posed, abs=1e-9)
+        assert not any(entry[2] == arm6.name for entry in manager._pyroki_cache.values())
+
+    def test_with_live_ik_on_it_compiles_without_moving_the_arm(
+        self, arm6, builder, handlers, manager, ops, monkeypatch
+    ):
+        """The one compile, paid for where the tool stands, not for a stale goal."""
+        import bpy
+
+        arm6.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        arm6.kinema_solver_mode = "PYROKI"
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
+        ik = arm6.pose.bones[arm6[builder.PROP_IK_BONE]]
+        with handlers.suspended():
+            ik.location[0] += 0.08
+            bpy.context.view_layer.update()
+        posed = self._channels(builder, arm6)
+
+        monkeypatch.setattr(ops, "still_adjusting", lambda _wm: False)
+        with handlers.suspended():
+            assert ops._compile_when_settled() is None
+            bpy.context.view_layer.update()
+        assert self._channels(builder, arm6) == pytest.approx(posed, abs=1e-9)
+        assert any(entry[2] == arm6.name for entry in manager._pyroki_cache.values()), (
+            "PyRoki was compiled"
+        )
 
     def test_an_axis_left_alone_counts_as_placed(self, arm6, manager, ops, monkeypatch):
         """Editing properties afterwards registers no operation, so the panel can stay

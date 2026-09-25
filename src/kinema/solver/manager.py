@@ -154,6 +154,27 @@ class RigSolver:
         self.solve_count += 1
         return result
 
+    def compile(self, rig) -> bool:
+        """Build PyRoki and pay its compile, without touching the pose.
+
+        One solve for where the tool already stands, with the elbow goal a live
+        solve would use, so the kernel compiled is the one the next drag needs. The
+        result is thrown away: a warm-up nobody asked for must not move a robot --
+        its IK goal may be stale, left behind while the arm was posed by hand.
+        """
+        solver = self.pyroki(rig)
+        if solver is None:
+            return False
+        tool = _np4(rig.pose.bones[self.tip_bone].matrix)
+        seed = chain_mod.read_configuration(rig, self.chain)
+        held = held_mask(rig, self.chain)
+        if held.any():
+            seed = chain_mod.displayed_configuration(rig, self.chain, seed, only=held)
+        result = self._solve_pyroki(
+            solver, seed, tool, elbow=self.elbow_goal(rig, solver), held=held
+        )
+        return result is not None
+
     def elbow_goal(self, rig, solver) -> tuple[int, np.ndarray, float] | None:
         """The swivel's elbow goal as PyRoki wants it, or None if there is none.
 

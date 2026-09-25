@@ -816,13 +816,36 @@ def _compile_when_settled() -> float | None:
         _waiting.discard(name)
         manager.release(name)
         rig = bpy.data.objects.get(name)
-        if rig is None or not builder.is_kinema_rig(rig):
-            continue
-        ik_name = rig.get(builder.PROP_IK_BONE)
-        if ik_name and ik_name in rig.pose.bones:
-            with handlers.suspended():
-                ik.KINEMA_OT_add_ik._warm_up(bpy.context, rig, ik_name)
+        if rig is not None and builder.is_kinema_rig(rig):
+            _compile(rig)
     return None
+
+
+def _compile(rig) -> None:
+    """Pay PyRoki's compile for ``rig`` now, if live IK will want it, moving nothing.
+
+    Not a solve of the IK goal, as Add IK Target's warm-up is: that one has just
+    put the goal on the tool, while here the goal may be anywhere -- left behind
+    while the arm was posed by hand with live IK off -- and a timer that fires ten
+    seconds after the user stopped must not drag the robot to it. With live IK off,
+    nothing: the first solve pays, if one ever comes.
+    """
+    ik_name = rig.get(builder.PROP_IK_BONE)
+    if not ik_name or ik_name not in rig.pose.bones or not rig.kinema_ik_enabled:
+        return
+    if getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI) != manager.MODE_PYROKI:
+        return
+    solver = manager.get_solver(rig, ik_name)
+    if solver is None:
+        return
+    window = next(iter(bpy.context.window_manager.windows), None)
+    if window is not None:
+        window.cursor_set("WAIT")
+    try:
+        solver.compile(rig)
+    finally:
+        if window is not None:
+            window.cursor_set("DEFAULT")
 
 
 #: rig name -> the dialog's fields as it last drew them. A click in the viewport to

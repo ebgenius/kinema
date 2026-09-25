@@ -126,12 +126,7 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
         if solver is None:
             return 0.0
         started = time.perf_counter()
-        # A timer has no window of its own; any will do for the cursor.
-        window = getattr(context, "window", None) or next(
-            iter(getattr(context.window_manager, "windows", ())), None
-        )
-        if window is not None:
-            window.cursor_set("WAIT")
+        context.window.cursor_set("WAIT")
         try:
             # Solving for where the tool already is: compiles the kernel without
             # moving the robot.
@@ -139,8 +134,7 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
         except Exception:  # noqa: BLE001 - warmup is best-effort
             pass
         finally:
-            if window is not None:
-                window.cursor_set("DEFAULT")
+            context.window.cursor_set("DEFAULT")
         return time.perf_counter() - started
 
 
