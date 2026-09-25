@@ -788,6 +788,27 @@ def _ghost_sources(rig) -> list:
 def _apply_size(operator, context) -> None:
     rig = active_rig(context)
     operator.size = ext.default_size(operator.mount, robot_reach(rig) if rig else 1.0)
+    _refresh_preview(operator, context)
+
+
+def _refresh_preview(operator, context) -> None:
+    """Redraw the preview from the fields as they change, a slider drag included.
+
+    The dialog's draw() only runs when Blender rebuilds the popup, which it does not
+    do mid-drag; a property's update callback does run on every step. Reads the
+    fields and nothing else, and hands the preview the dialog it is tracking, in
+    case ``operator`` here is not the same Python object as the dialog's.
+    """
+    dialog = axis_preview._state.get("operator")
+    if dialog is None:
+        return
+    rig = active_rig(context)
+    spec = KINEMA_OT_add_external_axis.spec(operator)
+    try:
+        placed = placement(rig, spec) if rig is not None and not spec.problems() else None
+    except ValueError:
+        placed = None
+    axis_preview.show(dialog, spec, placed)
 
 
 class KINEMA_OT_add_external_axis(Operator):
@@ -809,19 +830,29 @@ class KINEMA_OT_add_external_axis(Operator):
         name="Mount", items=MOUNT_ITEMS, default="BEFORE", update=_apply_size,
         description="What the axis carries, and what it is placed from",
     )
-    kind: EnumProperty(name="Motion", items=KIND_ITEMS, default="LINEAR")
+    kind: EnumProperty(
+        name="Motion", items=KIND_ITEMS, default="LINEAR", update=_refresh_preview,
+    )
     direction: EnumProperty(
-        name="Direction", items=DIRECTION_ITEMS, default="X",
+        name="Direction", items=DIRECTION_ITEMS, default="X", update=_refresh_preview,
         description="The axis it moves along or turns about, in its base placement",
     )
     continuous: BoolProperty(
-        name="Continuous", default=False,
+        name="Continuous", default=False, update=_refresh_preview,
         description="No end stops: it can turn any number of times",
     )
-    lower_distance: FloatProperty(name="Lower", default=-1.5, unit="LENGTH")
-    upper_distance: FloatProperty(name="Upper", default=1.5, unit="LENGTH")
-    lower_angle: FloatProperty(name="Lower", default=-math.pi, subtype="ANGLE")
-    upper_angle: FloatProperty(name="Upper", default=math.pi, subtype="ANGLE")
+    lower_distance: FloatProperty(
+        name="Lower", default=-1.5, unit="LENGTH", update=_refresh_preview,
+    )
+    upper_distance: FloatProperty(
+        name="Upper", default=1.5, unit="LENGTH", update=_refresh_preview,
+    )
+    lower_angle: FloatProperty(
+        name="Lower", default=-math.pi, subtype="ANGLE", update=_refresh_preview,
+    )
+    upper_angle: FloatProperty(
+        name="Upper", default=math.pi, subtype="ANGLE", update=_refresh_preview,
+    )
     speed_distance: FloatProperty(
         name="Top Speed", default=1.0, min=0.0, unit="VELOCITY",
         description="Fastest it may move; the Velocity Limits check warns past it. Zero for none",
@@ -834,25 +865,25 @@ class KINEMA_OT_add_external_axis(Operator):
         ),
     )
     base_location: FloatVectorProperty(
-        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH",
+        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH", update=_refresh_preview,
         description=(
             "Where the axis sits, from the current robot base -- under any axis already "
             "beneath the robot -- or from the tool frame, on the tool"
         ),
     )
     base_rotation: FloatVectorProperty(
-        name="Rotation", size=3, subtype="EULER",
+        name="Rotation", size=3, subtype="EULER", update=_refresh_preview,
         description="Its orientation there, as roll, pitch and yaw about fixed X, Y and Z",
     )
     offset_location: FloatVectorProperty(
-        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH",
+        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH", update=_refresh_preview,
         description=(
             "Where what it carries sits on its moving part: the current robot base, "
             "or the TCP. Anything but zero moves it there"
         ),
     )
     offset_rotation: FloatVectorProperty(
-        name="Rotation", size=3, subtype="EULER",
+        name="Rotation", size=3, subtype="EULER", update=_refresh_preview,
         description="That orientation, as roll, pitch and yaw about fixed X, Y and Z",
     )
     hold: BoolProperty(
@@ -860,11 +891,11 @@ class KINEMA_OT_add_external_axis(Operator):
         description="Position it by hand and let IK solve the arm from where it stands",
     )
     placeholder: BoolProperty(
-        name="Placeholder", default=True,
+        name="Placeholder", default=True, update=_refresh_preview,
         description="Generate simple geometry for it, for when there is no model of the real one",
     )
     size: FloatProperty(
-        name="Size", default=0.3, min=0.001, unit="LENGTH",
+        name="Size", default=0.3, min=0.001, unit="LENGTH", update=_refresh_preview,
         description="The placeholder's width: a rail's, or a turntable's diameter",
     )
 

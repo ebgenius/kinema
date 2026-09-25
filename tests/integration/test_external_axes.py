@@ -1130,3 +1130,42 @@ class TestTheCompileWaits:
         monkeypatch.setattr(deferral, "_last_change", deferral._last_change - deferral.SETTLE_QUIET)
         assert deferral.compile_when_settled() is None
         assert not manager.deferred(arm6.name)
+
+
+class TestTheLivePreview:
+    def test_a_slider_drag_redraws_it_on_every_step(self, arm6, ops, ext, addon):
+        """As for Edit TCP: an update callback per field, fed only the fields."""
+        import bpy
+
+        preview = importlib.import_module(f"{addon.__name__}.ui.axis_preview")
+        ops._drafts.clear()
+        dialog = _Dialog(ops.KINEMA_OT_add_external_axis)
+        ops.KINEMA_OT_add_external_axis.invoke(dialog, _NoDialogContext(bpy.context), None)
+        try:
+            fields = _Dialog(ops.KINEMA_OT_add_external_axis)
+            fields.base_location = (0.0, 0.0, 0.0)
+            fields.offset_location = (0.0, 0.0, 0.2)
+            ops._refresh_preview(fields, bpy.context)
+            np.testing.assert_allclose(
+                preview._state["shapes"]["shift"][:3, 3], [0.0, 0.0, 0.2], atol=1e-9
+            )
+            fields.offset_location = (0.0, 0.0, 0.35)
+            ops._refresh_preview(fields, bpy.context)
+            np.testing.assert_allclose(
+                preview._state["shapes"]["shift"][:3, 3], [0.0, 0.0, 0.35], atol=1e-9
+            )
+        finally:
+            preview.stop()
+        ops._refresh_preview(fields, bpy.context)  # no dialog: nothing to redraw
+        assert not preview.active()
+
+    def test_every_field_that_moves_it_redraws_it(self, ops):
+        fields = ops.KINEMA_OT_add_external_axis.__annotations__
+        for name in (
+            "kind", "direction", "continuous", "lower_distance", "upper_distance",
+            "lower_angle", "upper_angle", "base_location", "base_rotation",
+            "offset_location", "offset_rotation", "placeholder", "size",
+        ):
+            # Strings under `from __future__ import annotations`: evaluated where written.
+            declared = eval(fields[name], vars(ops))  # noqa: S307
+            assert declared.keywords.get("update") is ops._refresh_preview, name

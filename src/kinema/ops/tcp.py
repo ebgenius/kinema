@@ -126,6 +126,22 @@ def forget() -> None:
     _drafts.clear()
 
 
+def _refresh_preview(operator, context) -> None:
+    """Redraw the preview from the fields as they change, a slider drag included.
+
+    The dialog's draw() only runs when Blender rebuilds the popup, which it does not
+    do mid-drag; a property's update callback does run on every step. Reads the
+    fields and nothing else, and hands the preview the dialog it is tracking, in
+    case ``operator`` here is not the same Python object as the dialog's.
+    """
+    dialog = tcp_preview._state.get("operator")
+    rig = active_rig(context)
+    if dialog is None or rig is None:
+        return
+    link, offset, rotation, problem = KINEMA_OT_edit_tcp.placement(operator, context, rig)
+    tcp_preview.show(dialog, None if problem else tool_frame(link, offset, rotation), link)
+
+
 # --------------------------------------------------------------------------
 # the operator
 # --------------------------------------------------------------------------
@@ -137,23 +153,26 @@ class KINEMA_OT_edit_tcp(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     parent: StringProperty(
-        name="Parent Joint",
+        name="Parent Joint", update=_refresh_preview,
         description="The joint bone the TCP rides; its link frame is what offsets are from",
     )
-    source: EnumProperty(name="Place By", items=SOURCE_ITEMS, default="OFFSET")
+    source: EnumProperty(
+        name="Place By", items=SOURCE_ITEMS, default="OFFSET", update=_refresh_preview,
+    )
     offset: FloatVectorProperty(
-        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH",
+        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH", update=_refresh_preview,
         description="From the parent joint's link frame",
     )
     rotation: FloatVectorProperty(
-        name="Rotation", size=3, subtype="EULER",
+        name="Rotation", size=3, subtype="EULER", update=_refresh_preview,
         description="Roll, pitch and yaw about the link frame's fixed X, Y and Z",
     )
     object_name: StringProperty(
         name="Object", description="The object whose origin the TCP goes on",
+        update=_refresh_preview,
     )
     use_rotation: BoolProperty(
-        name="Use Its Rotation", default=True,
+        name="Use Its Rotation", default=True, update=_refresh_preview,
         description="Take the orientation from the cursor or object too, not only the location",
     )
 

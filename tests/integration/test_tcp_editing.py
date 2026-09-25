@@ -425,6 +425,41 @@ class TestTheTcpPreview:
         handlers.on_load_post()
         assert not tcp._drafts
 
+    def test_a_slider_drag_redraws_it_on_every_step(self, arm6, tcp, preview):
+        """Update callbacks, not draw(): Blender does not rebuild a popup mid-drag.
+
+        Called with a different object than the dialog's operator -- only its fields --
+        as an update callback's self may be, and still redraws that dialog's preview.
+        """
+        import bpy
+
+        tcp._drafts.clear()
+        dialog = _Dialog(tcp.KINEMA_OT_edit_tcp)
+        tcp.KINEMA_OT_edit_tcp.invoke(dialog, _NoDialogContext(bpy.context), None)
+        fields = _Dialog(tcp.KINEMA_OT_edit_tcp)
+        fields.parent, fields.offset = dialog.parent, (0.0, 0.0, 0.25)
+
+        tcp._refresh_preview(fields, bpy.context)
+        points, _ = preview._state["drawn"]
+        link = tcp.posed_link(arm6, dialog.parent)
+        expected = _np4(tcp.tool_frame(link, fields.offset, fields.rotation))
+        np.testing.assert_allclose(points[6], expected[:3, 3], atol=1e-6)
+
+        fields.offset = (0.0, 0.0, 0.4)
+        tcp._refresh_preview(fields, bpy.context)
+        assert not np.allclose(preview._state["drawn"][0][6], points[6]), "it moved again"
+
+        tcp.KINEMA_OT_edit_tcp.cancel(None, bpy.context)
+        tcp._refresh_preview(fields, bpy.context)  # no dialog: nothing to redraw
+        assert not preview.active()
+
+    def test_every_field_that_moves_it_redraws_it(self, tcp):
+        fields = tcp.KINEMA_OT_edit_tcp.__annotations__
+        for name in ("parent", "source", "offset", "rotation", "object_name", "use_rotation"):
+            # Strings under `from __future__ import annotations`: evaluated where written.
+            declared = eval(fields[name], vars(tcp))  # noqa: S307
+            assert declared.keywords.get("update") is tcp._refresh_preview, name
+
 
 class _AnyLayout:
     """A layout that accepts any drawing call, for running a draw function headless."""
