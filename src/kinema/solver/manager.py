@@ -185,7 +185,7 @@ class RigSolver:
         solver = self.pyroki(rig)
         if solver is None:
             return False
-        tool = _np4(rig.pose.bones[self.tip_bone].matrix)
+        tool = solver_goal(rig, self.tip_bone)
         seed = chain_mod.read_configuration(rig, self.chain)
         held = held_mask(rig, self.chain)
         if held.any():

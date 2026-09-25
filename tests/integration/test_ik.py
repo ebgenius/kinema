@@ -262,6 +262,53 @@ class TestAPosedRoot:
         )
         assert miss < 1e-3, f"{miss * 1000:.1f} mm off with Root {pose}, control unparented"
 
+    def test_a_robot_on_a_track_follows_with_root_upside_down(
+        self, addon, rig, builder, handlers
+    ):
+        """The same with an external axis under the robot, the arm free to use it."""
+        import bpy
+
+        axes = importlib.import_module(f"{addon.__name__}.ops.external_axes")
+        spec = importlib.import_module(f"{addon.__name__}.rig.external_axes")
+        rig.kinema_solver_mode = "NUMPY"
+        axes.add_axis(rig, spec.AxisSpec("track", lower=-1.5, upper=1.5, hold=False))
+        bpy.ops.kinema.add_ik()
+        miss = self._miss_after_a_nudge(
+            rig, builder, handlers, *self.ROOT_POSES["upside down about Y"]
+        )
+        assert miss < 1e-3, f"{miss * 1000:.1f} mm off on a track with Root upside down"
+
+    def test_the_warm_up_compiles_for_where_the_tool_stands(
+        self, rig, builder, handlers, manager, monkeypatch
+    ):
+        """RigSolver.compile solves for the tool in the solvers' frame, Root at rest.
+
+        Its result is thrown away, so a goal left in the posed frame would show only
+        as a wasted solve from a bad start -- checked here against the chain's own
+        forward kinematics, with nothing compiled.
+        """
+        import bpy
+        from mathutils import Quaternion
+
+        chain_mod = importlib.import_module(f"{manager.__package__}.chain")
+        rig.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        root = rig.pose.bones[builder.ROOT_BONE]
+        with handlers.suspended():
+            root.location = (0.1, 0.0, 0.3)
+            root.rotation_quaternion = Quaternion((0.0, 1.0, 0.0), np.pi)
+            bpy.context.view_layer.update()
+
+        solver = manager.get_solver(rig)
+        asked = []
+        monkeypatch.setattr(solver, "pyroki", lambda _rig: object())
+        monkeypatch.setattr(
+            solver, "_solve_pyroki", lambda _s, seed, goal, **_: asked.append(goal) or seed
+        )
+        assert solver.compile(rig)
+        q = chain_mod.read_configuration(rig, solver.chain)
+        np.testing.assert_allclose(asked[0], solver.chain.forward(q), atol=1e-5)
+
     def test_root_at_rest_takes_nothing_out(self, rig, builder, manager):
         np.testing.assert_allclose(manager.root_pose(rig), np.eye(4), atol=1e-9)
 
