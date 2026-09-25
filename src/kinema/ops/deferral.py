@@ -59,6 +59,12 @@ def defer(rig) -> None:
         bpy.app.timers.register(compile_when_settled, first_interval=SETTLE_POLL)
 
 
+def withdraw(rig) -> None:
+    """Undo :func:`defer` for an edit that did not happen after all."""
+    manager.release(rig.name)
+    _waiting.discard(rig.name)
+
+
 def still_adjusting(window_manager) -> bool:
     """Whether the last registered operation is an edit whose panel is still open."""
     operators = getattr(window_manager, "operators", None)

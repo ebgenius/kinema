@@ -313,7 +313,9 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         # IK solves on NumPy until the edit settles. On the same link, nothing:
         # the compiled solver does not depend on the tool offset.
         link = source.bone.get(builder.PROP_CHILD_LINK)
-        if aims_at_tcp(rig) and not manager.has_compiled(rig, link):
+        needs_compile = aims_at_tcp(rig) and not manager.has_compiled(rig, link)
+        deferred_here = needs_compile and not manager.deferred(rig.name)
+        if needs_compile:
             deferral.defer(rig)
 
         # Everything past this point runs with the rig made active and forced
@@ -324,10 +326,16 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         #
         # Suspended: the mode switches update the depsgraph, and live IK would
         # solve half-way, dragging the arm to put the moved TCP on the old goal.
+        result = {"CANCELLED"}
         try:
             with handlers.suspended():
-                return self._place(context, rig, source)
+                result = self._place(context, rig, source)
+            return result
         finally:
+            # A placement that did not happen has nothing to wait for. Only the
+            # defer made here: one an earlier edit made is still that edit's.
+            if deferred_here and "FINISHED" not in result:
+                deferral.withdraw(rig)
             if previous_active is not None:
                 context.view_layer.objects.active = previous_active
             if previous_mode != "OBJECT" and context.object is not None:

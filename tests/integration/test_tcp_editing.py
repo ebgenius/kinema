@@ -218,6 +218,40 @@ class TestChangingTheTcp:
         np.testing.assert_allclose(_np4(goal.matrix), keyed, atol=1e-6)
 
 
+    @staticmethod
+    def _without_a_link_frame(builder, rig, bone: str) -> None:
+        """A joint bone Set TCP accepts, whose placement then cancels."""
+        del rig.data.bones[bone][builder.PROP_LINK_CORRECTION]
+
+    def test_a_placement_that_cancels_leaves_no_wait(self, arm6, builder, manager, addon):
+        """Deferred before the edit, so a cancelled edit takes its deferral back."""
+        import bpy
+
+        deferral = importlib.import_module(f"{addon.__name__}.ops.deferral")
+        arm6.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        self._without_a_link_frame(builder, arm6, "joint5")
+        with pytest.raises(RuntimeError, match="records no link frame"):
+            bpy.ops.kinema.set_tcp(bone="joint5")
+        assert not manager.deferred(arm6.name)
+        assert arm6.name not in deferral._waiting
+
+    def test_a_cancel_keeps_a_wait_an_earlier_edit_started(
+        self, arm6, builder, manager, addon
+    ):
+        import bpy
+
+        deferral = importlib.import_module(f"{addon.__name__}.ops.deferral")
+        arm6.kinema_solver_mode = "NUMPY"
+        bpy.ops.kinema.add_ik()
+        deferral.defer(arm6)  # an edit before this one, still settling
+        self._without_a_link_frame(builder, arm6, "joint5")
+        with pytest.raises(RuntimeError, match="records no link frame"):
+            bpy.ops.kinema.set_tcp(bone="joint5")
+        assert manager.deferred(arm6.name)
+        assert arm6.name in deferral._waiting
+
+
 class TestEditTcp:
     def _posed_root(self, builder, rig) -> None:
         import bpy
@@ -315,17 +349,21 @@ class TestEditTcp:
         with pytest.raises(RuntimeError, match=complaint):
             bpy.ops.kinema.edit_tcp(**fields)
 
-    def test_the_arm_stays_and_nothing_is_deferred_on_the_same_link(
-        self, arm6, builder, manager
-    ):
+    def test_the_arm_stays_and_an_uncompiled_link_waits(self, arm6, builder, manager):
+        """Through the dialog as through Set TCP. Nothing is compiled yet for this link
+        -- the rig solved on NumPy so far -- so its compile waits for the edit to settle.
+        A link that has one waits for nothing: see the first test in TestChangingTheTcp.
+        """
         import bpy
 
         arm6.kinema_solver_mode = "NUMPY"
         bpy.ops.kinema.add_ik()
         joints = _joints(builder, arm6)
+        assert not manager.deferred(arm6.name)
         assert "FINISHED" in bpy.ops.kinema.edit_tcp(
             parent=arm6.kinema_tcp_parent, source="OFFSET", offset=(0.0, 0.0, 0.2),
         )
+        assert manager.deferred(arm6.name)
         np.testing.assert_allclose(_joints(builder, arm6), joints, atol=1e-6)
         assert _goal_on_tool(builder, arm6) < 1e-6
 
