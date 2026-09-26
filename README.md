@@ -538,6 +538,12 @@ entry named there is marked a duplicate, broken or partial and hidden from the p
 - **MuJoCo's OBJ meshes print MTL errors** on import. MJCF carries its own colours, so
   the missing .mtl files are harmless console noise from Blender's OBJ importer.
 
+## Contributing
+
+Bug reports, suggestions and pull requests from forks are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to report a bug and how pull requests are
+reviewed.
+
 ## License
 
 GPL-3.0-or-later (the add-on links `bpy`). Vendored PyRoki and jaxls remain MIT.
