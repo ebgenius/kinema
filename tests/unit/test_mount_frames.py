@@ -1,8 +1,9 @@
 """Finding the mounting flange a TCP offset is measured from. Pure NumPy.
 
 The claims: ``tool0`` wins over ``flange`` whatever the file order; a ``flange``
-alone is turned Z out of the face; prefixed names count; only links fixed to the
-joint's own link are searched; a joint with neither gets nothing.
+alone is turned Z out of the face; a name counts bare or behind the description's
+own prefix, not behind any other; only links fixed to the joint's own link are
+searched; a joint with neither gets nothing.
 """
 
 from __future__ import annotations
@@ -28,18 +29,19 @@ def _joint(name, parent, child, xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0), kind="
     )
 
 
-def _model(*extra, wrist_rpy=(0.3, -0.2, 0.5)) -> kin.RobotModel:
+def _model(*extra, wrist_rpy=(0.3, -0.2, 0.5), prefix="") -> kin.RobotModel:
     """base -> shoulder -> wrist (turned, so a transform that ignores it shows),
-    plus ``extra`` joints hanging off the wrist."""
+    plus ``extra`` joints hanging off the wrist. ``prefix`` goes on every link, as a
+    xacro macro's does; ``extra`` is expected to carry it already."""
     joints = [
-        _joint("j1", "base", "shoulder", xyz=(0.0, 0.0, 0.4)),
-        _joint("j2", "shoulder", "wrist", xyz=(0.5, 0.0, 0.0), rpy=wrist_rpy),
+        _joint("j1", prefix + "base", prefix + "shoulder", xyz=(0.0, 0.0, 0.4)),
+        _joint("j2", prefix + "shoulder", prefix + "wrist", xyz=(0.5, 0.0, 0.0), rpy=wrist_rpy),
         *extra,
     ]
-    links = {"base": kin.LinkSpec("base")}
+    links = {prefix + "base": kin.LinkSpec(prefix + "base")}
     for joint in joints:
         links[joint.child_link] = kin.LinkSpec(joint.child_link)
-    return kin.RobotModel(name="probe", links=links, joints=joints, root_link="base")
+    return kin.RobotModel(name="probe", links=links, joints=joints, root_link=prefix + "base")
 
 
 def _fixed(name, parent, child, placement):
@@ -69,13 +71,21 @@ class TestWhichFrame:
         assert (alone.link, alone.kind) == ("flange", "flange")
         np.testing.assert_allclose(alone.transform, kin.make_transform(*TOOL0), atol=1e-12)
 
-    def test_prefixed_names_count(self):
-        model = _model(_fixed("to_tool0", "wrist", "kr10_tool0", TOOL0))
+    def test_the_descriptions_own_prefix_counts(self):
+        """A xacro macro prefixes every link: kr10_tool0 on a robot that is all kr10_."""
+        model = _model(_fixed("to_tool0", "kr10_wrist", "kr10_tool0", TOOL0), prefix="kr10_")
         assert kin.mount_frames(model)["j2"].link == "kr10_tool0"
 
-    @pytest.mark.parametrize("name", ["tool0_holder", "mytool0x", "flanged", "tool"])
+    @pytest.mark.parametrize(
+        "name", ["wrist_flange", "base_tool0", "tool0_holder", "mytool0x", "flanged", "tool"]
+    )
     def test_other_names_do_not(self, name):
+        """A structural wrist_flange on an unprefixed robot is a bracket, not the mount."""
         assert kin.mount_frames(_model(_fixed("to_it", "wrist", name, TOOL0))) == {}
+
+    def test_another_prefix_does_not_either(self):
+        model = _model(_fixed("to_it", "kr10_wrist", "kr10_arm_flange", TOOL0), prefix="kr10_")
+        assert kin.mount_frames(model) == {}
 
     def test_it_is_found_through_a_chain_of_fixed_joints(self):
         model = _model(
@@ -106,3 +116,22 @@ class TestWhichFrame:
             _model(_fixed("t", "wrist", "tool0", TOOL0), wrist_rpy=(-1.0, 0.7, 2.0))
         )["j2"].transform
         np.testing.assert_allclose(a, b, atol=1e-12)
+
+
+class TestTheDescriptionsPrefix:
+    @pytest.mark.parametrize(
+        ("names", "prefix"),
+        [
+            (["kr10_base_link", "kr10_link_1", "kr10_tool0"], "kr10_"),
+            (["ur/base", "ur/wrist_3", "ur/tool0"], "ur/"),
+            (["base_link", "link_1", "tool0"], ""),
+            (["link_1", "link_2", "link_3"], "link_"),
+            (["robot", "rtool0"], ""),
+        ],
+    )
+    def test_it_is_what_every_link_starts_with_up_to_a_separator(self, names, prefix):
+        model = kin.RobotModel(
+            name="probe", links={n: kin.LinkSpec(n) for n in names}, joints=[],
+            root_link=names[0],
+        )
+        assert kin.description_prefix(model) == prefix

@@ -155,6 +155,22 @@ class TestATcpFromCad:
         assert tuple(flange6.kinema_tcp_rpy) == pytest.approx((0.0, 0.0, 0.0), abs=1e-6)
 
 
+    def test_update_tcp_keeps_the_flange_as_its_link(
+        self, addon, fixture_dir, flange6, builder
+    ):
+        """The panel's "Link:" is what offsets are from: tool0 after Update TCP as after
+        the import, and the joint's own link on a robot without a flange."""
+        import bpy
+
+        flange6.kinema_tcp_offset = (0.0, 0.0, 0.1)
+        assert "FINISHED" in bpy.ops.kinema.set_tcp(bone="joint6")
+        assert flange6[builder.PROP_TCP_LINK] == "tool0"
+
+        arm6 = _import(fixture_dir, builder, "arm6.urdf")
+        assert "FINISHED" in bpy.ops.kinema.set_tcp(bone="joint6")
+        assert arm6[builder.PROP_TCP_LINK] == "wrist_3"
+
+
 class TestOldRigs:
     def test_an_old_rig_keeps_the_meaning_of_its_offsets(self, flange6, builder):
         """No flange recorded: zero is the link, and the old importer's offset -- the

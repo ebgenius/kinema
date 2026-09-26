@@ -212,10 +212,26 @@ class MountFrame:
     transform: np.ndarray
 
 
-def _named(link: str, kind: str) -> bool:
-    """``tool0``, or a prefixed ``ur5e_tool0`` -- xacro macros prefix every link."""
-    name = link.lower()
-    return name == kind or name.endswith(("_" + kind, "/" + kind))
+def _named(link: str, kind: str, prefix: str) -> bool:
+    """``tool0``, or ``tool0`` behind the description's own prefix: ``kr10_tool0``.
+
+    Only that prefix. A xacro macro prefixes *every* link, so the robot's prefix is
+    the one all its links share; a structural ``wrist_flange`` on an unprefixed
+    robot is some bracket, not where the tool mounts.
+    """
+    return link.lower() in (kind, prefix + kind)
+
+
+def description_prefix(model: RobotModel) -> str:
+    """What every link name of ``model`` starts with, up to a ``_`` or ``/``: its xacro
+    prefix, ``kr10_``, or nothing."""
+    names = [name.lower() for name in model.links]
+    common = names[0] if names else ""
+    for name in names[1:]:
+        while not name.startswith(common):
+            common = common[:-1]
+    cut = max(common.rfind("_"), common.rfind("/"))
+    return common[: cut + 1] if cut >= 0 else ""
 
 
 def flange_to_tool0() -> np.ndarray:
@@ -239,6 +255,7 @@ def mount_frames(model: RobotModel) -> dict[str, MountFrame]:
     """
     frames = model.link_frames()
     by_parent = model.joints_by_parent()
+    prefix = description_prefix(model)
     found: dict[str, MountFrame] = {}
     for joint in model.actuated_joints:
         fixed_to_it: list[str] = []
@@ -249,7 +266,7 @@ def mount_frames(model: RobotModel) -> dict[str, MountFrame]:
                     fixed_to_it.append(child.child_link)
                     stack.append(child.child_link)
         for kind in MOUNT_NAMES:
-            matches = sorted(link for link in fixed_to_it if _named(link, kind))
+            matches = sorted(link for link in fixed_to_it if _named(link, kind, prefix))
             if not matches:
                 continue
             transform = np.linalg.inv(frames[joint.child_link]) @ frames[matches[0]]

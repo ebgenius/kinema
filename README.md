@@ -341,8 +341,8 @@ The **Tool Centre Point** panel places the TCP on a joint bone and offsets it fr
 - **Object Origin:** the TCP goes on an empty, or on the origin of the tool mesh itself.
 
 The cursor and the object can give the orientation too, or leave it at the typed one. Either
-way the dialog shows the offset it will store, measured from the link where it stands now,
-so a TCP can be picked off a tool on a posed robot. While it is open, the viewport draws the
+way the dialog shows the offset it will store, measured from the mounting flange (see below)
+where it stands now, so a TCP can be picked off a tool on a posed robot. While it is open, the viewport draws the
 new TCP next to the current one. Clicking away closes the dialog, and opening it again brings
 back what you had. The panel's fields and *Update TCP* still work as before.
 
