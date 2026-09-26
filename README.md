@@ -4,14 +4,14 @@
 armature you can actually animate — with IK that understands singularities, joint limits and
 multi-turn joints. A built-in catalogue of 186 real robots says where to find one.
 
-> Status: released as [v0.5.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
+> Status: released as [v0.6.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
 > bake all function, and the built extension installs and runs from a clean Blender
 > profile. Nothing is downloaded, no threads are started, and no environment
 > variables are written — an import blocks Blender while it works.
 >
 > Docs: <https://ebgenius.github.io/kinema/>
 
-[v0.5.0]: https://github.com/ebgenius/kinema/releases/tag/v0.5.0
+[v0.6.0]: https://github.com/ebgenius/kinema/releases/tag/v0.6.0
 
 ## Why this exists
 
@@ -464,17 +464,18 @@ output, all comfortably under the ~200 MB ceiling:
 | Platform | Zip |
 |---|---|
 | `linux-x64` | 136.5 MB |
-| `windows-x64` | 116.5 MB |
+| `windows-x64` | 116.6 MB |
 | `macos-arm64` | 99.8 MB |
 
-For 0.5.0, the Windows zip was installed into a clean Blender 5.2.1 profile
+For 0.6.0, the Windows zip was installed into a clean Blender 5.2.1 profile
 (`BLENDER_USER_RESOURCES` pointed at an empty directory) and checked:
 
-- every bundled dependency loads from the zip's own wheels;
-- a UR5e imports, and PyRoki solves it from a working pose to 0.00 mm in ~2 ms warm;
-- xacro, MJCF and COLLADA files import, and Load Joint Limits reads a yaml;
+- every bundled dependency loads from the zip's own wheels, and IK solves on PyRoki;
+- a KUKA KR10 R1100-2 xacro imports through rospkg, with its TCP on `tool0`, and PyRoki
+  solves it to 0.00 mm;
+- MJCF and COLLADA files import, and Load Joint Limits reads a yaml;
 - Blender reports no extension policy warnings, and no thread is started;
-- a baked .blend still animates in a Blender with no Kinema installed at all.
+- a baked .blend plays exactly as baked in a Blender with no Kinema installed at all.
 
 [uv]: https://docs.astral.sh/uv/
 [debugpy]: https://github.com/microsoft/debugpy
@@ -537,6 +538,12 @@ entry named there is marked a duplicate, broken or partial and hidden from the p
   alive before.
 - **MuJoCo's OBJ meshes print MTL errors** on import. MJCF carries its own colours, so
   the missing .mtl files are harmless console noise from Blender's OBJ importer.
+
+## Contributing
+
+Bug reports, suggestions and pull requests from forks are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to report a bug and how pull requests are
+reviewed.
 
 ## License
 

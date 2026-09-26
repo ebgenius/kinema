@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-26
+
+0.5.0 was about the choices inside a job. This release is about the cell around the robot and
+the tool on it:
+
+- the axes a robot is installed with that its description doesn't have: tracks, turntables,
+  positioners and tool spindles;
+- a TCP measured from the mounting flange, the way a tool's CAD is, and placed in a dialog
+  that previews it;
+- editing either without waiting on the solver to recompile, and without the robot jumping.
+
 ### Added
 
 - **External axes** (#5): a track, rotary base, positioner, tool spindle or tool slide that
@@ -592,7 +603,8 @@ are rejected, the first IK solve compiles for ~14 s, and Windows needs long path
 
 [PyRoki]: https://github.com/chungmin99/pyroki
 
-[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ebgenius/kinema/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ebgenius/kinema/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ebgenius/kinema/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ebgenius/kinema/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/ebgenius/kinema/compare/v0.3.1...v0.3.2
