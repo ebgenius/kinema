@@ -33,7 +33,6 @@ What adding one has to keep right:
 from __future__ import annotations
 
 import math
-import time
 
 import bpy
 import numpy as np
@@ -47,7 +46,7 @@ from ..rig import external_axes as ext
 from ..solver import manager
 from ..ui import axis_preview
 from ..ui.panel import active_rig
-from . import attach, ik
+from . import attach, deferral, ik, pose
 from .waypoints import MAX_STORED_DOF
 
 #: One material for every placeholder, so they read as stand-ins at a glance.
@@ -353,20 +352,6 @@ def _move_waypoints(rig, shift: np.ndarray) -> None:
             marker.matrix_basis = moved @ marker.matrix_basis
 
 
-def _snap_ik_to_tcp(rig) -> None:
-    """Put the IK target on the TCP, which has just moved, if IK aims at it.
-
-    Otherwise live IK would drag the arm to put the moved TCP back on the old goal.
-    """
-    ik_name = rig.get(builder.PROP_IK_BONE)
-    tip = manager.tip_bone(rig)
-    tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
-    if not ik_name or ik_name not in rig.pose.bones or tip != tcp or tip not in rig.pose.bones:
-        return
-    bpy.context.view_layer.update()
-    rig.pose.bones[ik_name].matrix = rig.pose.bones[tip].matrix.copy()
-
-
 def _tcp_offset(rig, tcp) -> list[float]:
     """The TCP's offset from its parent's link frame, as it actually stands.
 
@@ -567,7 +552,7 @@ def add_axis(rig, spec: ext.AxisSpec) -> str:
             pose_bone.bone[builder.PROP_EXTERNAL_TCP_PARENT] = previous_tcp[0]
             pose_bone.bone[builder.PROP_EXTERNAL_TCP_OFFSET] = previous_tcp[1]
             _place_tcp(rig, name, spec.offset_location, spec.offset_rotation)
-            _snap_ik_to_tcp(rig)
+            pose.snap_goal_to_tcp(rig)
 
     if previous_active is not None:
         bpy.context.view_layer.objects.active = previous_active
@@ -683,7 +668,7 @@ def remove_axis(rig, name: str) -> None:
         if tcp_rides:
             target = stored_parent if stored_parent in rig.pose.bones else parent_name
             _place_tcp(rig, target, stored_offset[:3], stored_offset[3:])
-            _snap_ik_to_tcp(rig)
+            pose.snap_goal_to_tcp(rig)
 
     if previous_active is not None and previous_active.name in bpy.data.objects:
         bpy.context.view_layer.objects.active = previous_active
@@ -745,119 +730,13 @@ def _apply_preset(operator, context) -> None:
     _apply_size(operator, context)
 
 
-# --------------------------------------------------------------------------
-# the solver compile, put off until the axis is in place
-# --------------------------------------------------------------------------
-#: The operators whose Adjust Last Operation panel is still editing an axis.
-_ADJUSTING = ("KINEMA_OT_add_external_axis", "KINEMA_OT_remove_external_axis")
-#: Seconds between looks at whether the axis is in place yet.
-_SETTLE_POLL = 0.5
-#: Seconds without a further change after which the axis counts as placed anyway.
-_SETTLE_QUIET = 10.0
-#: Rigs whose compile is waiting for the axis to be in place.
-_waiting: set[str] = set()
-#: time.monotonic() of the last add or remove, redo-panel re-runs included.
-_last_change = 0.0
-
-
-def _defer_compile(rig) -> None:
-    """Solve ``rig`` on NumPy until the axis is in place, then compile PyRoki once.
-
-    Adding or removing an axis changes the model PyRoki solves on, and a compile is
-    tens of seconds. Every change in the Adjust Last Operation panel runs the operator
-    again, so paying it there -- as Add IK Target does -- paid it on every nudge of
-    an offset. Instead the rig solves on NumPy, which needs no compile, until the
-    panel is gone: then the axis is where the user wants it, and the compile is paid
-    once, behind a wait cursor.
-    """
-    global _last_change
-    manager.defer(rig.name)
-    _waiting.add(rig.name)
-    _last_change = time.monotonic()
-    if not bpy.app.timers.is_registered(_compile_when_settled):
-        bpy.app.timers.register(_compile_when_settled, first_interval=_SETTLE_POLL)
-
-
-def still_adjusting(window_manager) -> bool:
-    """Whether the last operation is still an axis add or remove the user can adjust.
-
-    Its panel stays open until another operation is registered; after that, a change
-    to it would have to be an undo, and the axis is as good as placed.
-    """
-    operators = getattr(window_manager, "operators", None)
-    return bool(operators) and operators[-1].bl_idname in _ADJUSTING
+# Their redo panels are an edit in progress: see ops/deferral.py.
+deferral.adjustable("KINEMA_OT_add_external_axis", "KINEMA_OT_remove_external_axis")
 
 
 def forget() -> None:
-    """Drop every draft and pending compile: a new file shares no rig with the old one.
-
-    A rig waiting for its compile is looked up by name, and the next file may well
-    hold a different robot under it.
-    """
+    """Drop every draft: a new file shares no rig with the old one."""
     _drafts.clear()
-    _waiting.clear()
-    if bpy.app.timers.is_registered(_compile_when_settled):
-        bpy.app.timers.unregister(_compile_when_settled)
-
-
-def _interface_locked() -> bool:
-    return bool(getattr(bpy.context.window_manager, "is_interface_locked", False))
-
-
-def _settled() -> bool:
-    """Whether the axis is in place: its panel has given way, or it has sat unchanged.
-
-    The panel is the better signal but not a sufficient one. Only a registered
-    operation replaces it, and editing properties afterwards registers none -- so
-    without the quiet period a user who only touched sliders would stay on NumPy.
-    """
-    if not still_adjusting(bpy.context.window_manager):
-        return True
-    return time.monotonic() - _last_change >= _SETTLE_QUIET
-
-
-def _compile_when_settled() -> float | None:
-    """Timer: release the waiting rigs once the axis is in place, and compile them.
-
-    Not while a job has the interface locked -- a render with Lock Interface on: the
-    warm-up solve writes the pose, and Blender forbids timers touching data then.
-    """
-    if _interface_locked() or not _settled():
-        return _SETTLE_POLL
-    for name in list(_waiting):
-        _waiting.discard(name)
-        manager.release(name)
-        rig = bpy.data.objects.get(name)
-        if rig is not None and builder.is_kinema_rig(rig):
-            _compile(rig)
-    return None
-
-
-def _compile(rig) -> None:
-    """Pay PyRoki's compile for ``rig`` now, if live IK will want it, moving nothing.
-
-    Not a solve of the IK goal, as Add IK Target's warm-up is: that one has just
-    put the goal on the tool, while here the goal may be anywhere -- left behind
-    while the arm was posed by hand with live IK off -- and a timer that fires ten
-    seconds after the user stopped must not drag the robot to it. With live IK off,
-    nothing: the first solve pays, if one ever comes.
-    """
-    ik_name = rig.get(builder.PROP_IK_BONE)
-    if not ik_name or ik_name not in rig.pose.bones or not rig.kinema_ik_enabled:
-        return
-    if getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI) != manager.MODE_PYROKI:
-        return
-    solver = manager.get_solver(rig, ik_name)
-    if solver is None:
-        return
-    window = next(iter(bpy.context.window_manager.windows), None)
-    if window is not None:
-        window.cursor_set("WAIT")
-    try:
-        solver.compile(rig)
-    finally:
-        if window is not None:
-            window.cursor_set("DEFAULT")
 
 
 #: rig -> the dialog's fields as it last drew them. A click in the viewport to
@@ -909,6 +788,31 @@ def _ghost_sources(rig) -> list:
 def _apply_size(operator, context) -> None:
     rig = active_rig(context)
     operator.size = ext.default_size(operator.mount, robot_reach(rig) if rig else 1.0)
+    _refresh_preview(operator, context)
+
+
+def _refresh_preview(operator, context) -> None:
+    """Redraw the preview from the fields as they change, a slider drag included.
+
+    The dialog's draw() only runs when Blender rebuilds the popup, which it does not
+    do mid-drag; a property's update callback does run on every step. Reads the
+    fields and nothing else, and hands the preview the dialog it is tracking, in
+    case ``operator`` here is not the same Python object as the dialog's.
+    """
+    dialog = axis_preview._state.get("operator")
+    if dialog is None:
+        return
+    rig = active_rig(context)
+    # Kept here too, not only in draw(): a change the popup is not rebuilt after
+    # would otherwise be missing from the draft if the dialog closed next.
+    if rig is not None:
+        _remember(operator, rig)
+    spec = KINEMA_OT_add_external_axis.spec(operator)
+    try:
+        placed = placement(rig, spec) if rig is not None and not spec.problems() else None
+    except ValueError:
+        placed = None
+    axis_preview.show(dialog, spec, placed)
 
 
 class KINEMA_OT_add_external_axis(Operator):
@@ -930,19 +834,29 @@ class KINEMA_OT_add_external_axis(Operator):
         name="Mount", items=MOUNT_ITEMS, default="BEFORE", update=_apply_size,
         description="What the axis carries, and what it is placed from",
     )
-    kind: EnumProperty(name="Motion", items=KIND_ITEMS, default="LINEAR")
+    kind: EnumProperty(
+        name="Motion", items=KIND_ITEMS, default="LINEAR", update=_refresh_preview,
+    )
     direction: EnumProperty(
-        name="Direction", items=DIRECTION_ITEMS, default="X",
+        name="Direction", items=DIRECTION_ITEMS, default="X", update=_refresh_preview,
         description="The axis it moves along or turns about, in its base placement",
     )
     continuous: BoolProperty(
-        name="Continuous", default=False,
+        name="Continuous", default=False, update=_refresh_preview,
         description="No end stops: it can turn any number of times",
     )
-    lower_distance: FloatProperty(name="Lower", default=-1.5, unit="LENGTH")
-    upper_distance: FloatProperty(name="Upper", default=1.5, unit="LENGTH")
-    lower_angle: FloatProperty(name="Lower", default=-math.pi, subtype="ANGLE")
-    upper_angle: FloatProperty(name="Upper", default=math.pi, subtype="ANGLE")
+    lower_distance: FloatProperty(
+        name="Lower", default=-1.5, unit="LENGTH", update=_refresh_preview,
+    )
+    upper_distance: FloatProperty(
+        name="Upper", default=1.5, unit="LENGTH", update=_refresh_preview,
+    )
+    lower_angle: FloatProperty(
+        name="Lower", default=-math.pi, subtype="ANGLE", update=_refresh_preview,
+    )
+    upper_angle: FloatProperty(
+        name="Upper", default=math.pi, subtype="ANGLE", update=_refresh_preview,
+    )
     speed_distance: FloatProperty(
         name="Top Speed", default=1.0, min=0.0, unit="VELOCITY",
         description="Fastest it may move; the Velocity Limits check warns past it. Zero for none",
@@ -955,25 +869,25 @@ class KINEMA_OT_add_external_axis(Operator):
         ),
     )
     base_location: FloatVectorProperty(
-        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH",
+        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH", update=_refresh_preview,
         description=(
             "Where the axis sits, from the current robot base -- under any axis already "
             "beneath the robot -- or from the tool frame, on the tool"
         ),
     )
     base_rotation: FloatVectorProperty(
-        name="Rotation", size=3, subtype="EULER",
+        name="Rotation", size=3, subtype="EULER", update=_refresh_preview,
         description="Its orientation there, as roll, pitch and yaw about fixed X, Y and Z",
     )
     offset_location: FloatVectorProperty(
-        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH",
+        name="Location", size=3, subtype="TRANSLATION", unit="LENGTH", update=_refresh_preview,
         description=(
             "Where what it carries sits on its moving part: the current robot base, "
             "or the TCP. Anything but zero moves it there"
         ),
     )
     offset_rotation: FloatVectorProperty(
-        name="Rotation", size=3, subtype="EULER",
+        name="Rotation", size=3, subtype="EULER", update=_refresh_preview,
         description="That orientation, as roll, pitch and yaw about fixed X, Y and Z",
     )
     hold: BoolProperty(
@@ -981,11 +895,11 @@ class KINEMA_OT_add_external_axis(Operator):
         description="Position it by hand and let IK solve the arm from where it stands",
     )
     placeholder: BoolProperty(
-        name="Placeholder", default=True,
+        name="Placeholder", default=True, update=_refresh_preview,
         description="Generate simple geometry for it, for when there is no model of the real one",
     )
     size: FloatProperty(
-        name="Size", default=0.3, min=0.001, unit="LENGTH",
+        name="Size", default=0.3, min=0.001, unit="LENGTH", update=_refresh_preview,
         description="The placeholder's width: a rail's, or a turntable's diameter",
     )
 
@@ -1097,10 +1011,13 @@ class KINEMA_OT_add_external_axis(Operator):
         spec = self.spec()
         # Before the edit: add_axis ends on a depsgraph update, and live IK would
         # compile on it.
-        _defer_compile(rig)
+        started = deferral.defer(rig)
         try:
             name = add_axis(rig, spec)
         except ValueError as exc:
+            # Refused before anything changed, so nothing to wait for.
+            if started:
+                deferral.withdraw(rig)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         message = f"Added '{name}' {MOUNT_LABELS[spec.mount].lower()}"
@@ -1130,10 +1047,13 @@ class KINEMA_OT_remove_external_axis(Operator):
 
     def execute(self, context):
         rig = active_rig(context)
-        _defer_compile(rig)
+        started = deferral.defer(rig)
         try:
             remove_axis(rig, self.bone)
         except ValueError as exc:
+            # Refused before anything changed, so nothing to wait for.
+            if started:
+                deferral.withdraw(rig)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         self.report({"INFO"}, f"Removed '{self.bone}'")

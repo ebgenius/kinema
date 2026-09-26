@@ -11,6 +11,7 @@ from .. import handlers
 from ..rig import builder
 from ..solver import manager
 from ..ui.panel import active_rig
+from . import deferral
 
 
 class KinemaRigOperator(Operator):
@@ -307,14 +308,34 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         if rig.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
 
+        # Before the edit, not after: it ends on a depsgraph update. A TCP on a
+        # link no compiled solver aims at yet needs one -- a JAX compile -- so live
+        # IK solves on NumPy until the edit settles. On the same link, nothing:
+        # the compiled solver does not depend on the tool offset.
+        link = source.bone.get(builder.PROP_CHILD_LINK)
+        needs_compile = aims_at_tcp(rig) and not manager.has_compiled(rig, link)
+        deferred_here = needs_compile and not manager.deferred(rig.name)
+        if needs_compile:
+            deferral.defer(rig)
+
         # Everything past this point runs with the rig made active and forced
         # into Object mode, so every exit has to put those back -- not just the
         # successful one. Cancelling used to leave the user in a different mode
         # on a different object, which is a worse outcome than the failure it
         # was reporting.
+        #
+        # Suspended: the mode switches update the depsgraph, and live IK would
+        # solve half-way, dragging the arm to put the moved TCP on the old goal.
+        result = {"CANCELLED"}
         try:
-            return self._place(context, rig, source)
+            with handlers.suspended():
+                result = self._place(context, rig, source)
+            return result
         finally:
+            # A placement that did not happen has nothing to wait for. Only the
+            # defer made here: one an earlier edit made is still that edit's.
+            if deferred_here and "FINISHED" not in result:
+                deferral.withdraw(rig)
             if previous_active is not None:
                 context.view_layer.objects.active = previous_active
             if previous_mode != "OBJECT" and context.object is not None:
@@ -442,8 +463,41 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         # name, so get_solver's staleness check sees nothing wrong and would
         # happily go on driving the old chain. The demos only escaped this by
         # calling set_tcp before add_ik.
-        manager.invalidate(rig.name)
+        #
+        # Only the chain, though: the compiled solver depends on the model and the
+        # link, not the tool offset, and throwing it away cost a compile per edit.
+        manager.forget_chain(rig.name)
         handlers.reset(rig.name)
+        # Redefining the tool does not move the robot: the goal comes to the TCP.
+        snap_goal_to_tcp(rig)
+
+
+def aims_at_tcp(rig) -> bool:
+    """Whether ``rig`` has an IK target whose solver aims at the TCP."""
+    ik_name = rig.get(builder.PROP_IK_BONE)
+    tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    return bool(ik_name) and ik_name in rig.pose.bones and manager.tip_bone(rig) == tcp
+
+
+def snap_goal_to_tcp(rig) -> None:
+    """Put the IK target on the TCP, which has just moved, if IK aims at it.
+
+    Otherwise live IK would drag the arm to put the moved TCP back on the old goal.
+    A keyed goal goes back to its keys on the next frame change: an animated path
+    is the tool's path, and a new tool follows it.
+    """
+    if not aims_at_tcp(rig):
+        return
+    tip = manager.tip_bone(rig)
+    if tip not in rig.pose.bones:
+        return
+    bpy.context.view_layer.update()
+    rig.pose.bones[rig[builder.PROP_IK_BONE]].matrix = rig.pose.bones[tip].matrix.copy()
+    bpy.context.view_layer.update()
+
+
+# Its redo panel is an edit in progress: see ops/deferral.py.
+deferral.adjustable("KINEMA_OT_set_tcp")
 
 
 class KINEMA_OT_reset_tcp_offset(KinemaRigOperator):

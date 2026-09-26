@@ -474,7 +474,7 @@ class TestPanelWiring:
     def test_the_operators_the_panel_calls_are_registered(self, addon):
         import bpy
 
-        for name in ("set_tcp", "reset_tcp_offset"):
+        for name in ("set_tcp", "reset_tcp_offset", "edit_tcp"):
             assert hasattr(bpy.ops.kinema, name), f"kinema.{name} is not registered"
 
     def test_the_properties_the_panel_draws_exist(self, rig):

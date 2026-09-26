@@ -17,23 +17,25 @@ import bpy
 from . import handlers, prefs, runtime
 from .ops import (
     attach,
+    deferral,
     external_axes,
     ik,
     import_dae,
     import_robot,
     pose,
+    tcp,
     velocity,
     waypoints,
 )
-from .ui import axis_preview, overlay, panel
+from .ui import axis_preview, overlay, panel, tcp_preview
 
 # panel first: ops/pose imports helpers from it, and registration order
 # decides which classes exist when Blender resolves parent panels. waypoints
 # after ik, which it borrows key_joint_value and own_fcurve_containers from;
-# velocity after ik for the same reason. external_axes last: it builds on all of
-# them.
+# velocity after ik for the same reason. tcp after pose, whose Set TCP it runs.
+# external_axes last: it builds on all of them.
 _MODULES = (
-    prefs, panel, import_dae, import_robot, pose, ik, attach, waypoints, velocity,
+    prefs, panel, import_dae, import_robot, pose, tcp, ik, attach, waypoints, velocity,
     external_axes,
 )
 
@@ -53,7 +55,10 @@ def register() -> None:
 
 def unregister() -> None:
     axis_preview.stop()
+    tcp_preview.stop()
     external_axes.forget()
+    tcp.forget()
+    deferral.forget()
     overlay.unregister_draw()
     handlers.unregister_handlers()
 

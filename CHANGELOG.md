@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Solver.** A rig with an external axis gives PyRoki a model written from its own bones
     rather than reloading the description, so IK solves through the new axis.
 
+- **Edit TCP…** (#63): a dialog that places the TCP by typed offset, on the 3D cursor, or on
+  an object's origin (an empty, or the tool mesh). For the cursor and the object it shows the
+  offset it will store, measured from the link as it stands, so a TCP can be picked off a
+  tool on a posed robot. The viewport previews the new TCP beside the current one, and the
+  dialog remembers its fields when it loses focus.
+
+### Changed
+
+- **Changing the TCP keeps the robot and the solver** (#60).
+  - Set TCP no longer moves the arm: the IK target comes to the new TCP instead.
+  - It no longer recompiles PyRoki when the TCP stays on the same joint: 5.1 s became
+    0.01 s on the development machine. Removing and re-adding the IK target, and adding or
+    removing the swivel, keep the compiled solver too.
+  - Where a new solver is needed, for a TCP on another joint or for an external axis, live
+    IK solves on NumPy until the edit is done, then compiles once. Bakes, Find Solutions,
+    playback and rendering always use PyRoki.
+
 ### Fixed
 
 - **IK with the Root bone posed** (#61). Moving or turning Root, say to hang the robot upside

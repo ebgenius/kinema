@@ -162,8 +162,11 @@ def _same_problem(previous, tip: str, target: np.ndarray, elbow, held) -> bool:
     return previous[3].shape == held.shape and np.allclose(held, previous[3], atol=1e-7)
 
 
-def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
-    """Solve one rig if its goal changed. Returns True if it wrote anything."""
+def solve_rig(rig: bpy.types.Object, *, force: bool = False, live: bool = False) -> bool:
+    """Solve one rig if its goal changed. Returns True if it wrote anything.
+
+    ``live`` for a viewport update: see ``RigSolver.solve``.
+    """
     ik_bone = rig.get(builder.PROP_IK_BONE)
     if not ik_bone or ik_bone not in rig.pose.bones:
         return False
@@ -181,7 +184,9 @@ def solve_rig(rig: bpy.types.Object, *, force: bool = False) -> bool:
 
     first_solve = solver.solve_count == 0
     started = time.perf_counter()
-    result = solver.solve(rig, getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI))
+    result = solver.solve(
+        rig, getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI), live=live
+    )
     elapsed = time.perf_counter() - started
 
     # The first PyRoki solve for a rig pays JAX's JIT compilation -- on the
@@ -216,7 +221,7 @@ def on_depsgraph_update(scene: bpy.types.Scene, depsgraph=None) -> None:
         for rig in rigs:
             if _over_budget(rig.name, budget):
                 continue
-            solve_rig(rig)
+            solve_rig(rig, live=True)
     finally:
         _solving = False
 
@@ -261,7 +266,7 @@ def on_pose_settled(scene: bpy.types.Scene, depsgraph=None) -> None:
 @persistent
 def on_load_post(_dummy=None) -> None:
     """A freshly opened file shares nothing with the previous one."""
-    from .ops import external_axes, velocity
+    from .ops import deferral, external_axes, tcp, velocity
 
     _last_target.clear()
     _last_duration.clear()
@@ -269,6 +274,8 @@ def on_load_post(_dummy=None) -> None:
     manager.invalidate()
     velocity.forget()
     external_axes.forget()
+    tcp.forget()
+    deferral.forget()
 
 
 @contextmanager
