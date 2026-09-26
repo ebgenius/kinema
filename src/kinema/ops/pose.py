@@ -508,7 +508,7 @@ class KINEMA_OT_reset_tcp_offset(KinemaRigOperator):
     bl_label = "Reset Tool Offset"
     bl_description = (
         "Zero the tool offset, putting the TCP exactly on the selected joint's "
-        "own link frame"
+        "mounting flange -- or its link frame where it has none"
     )
 
     apply: BoolProperty(

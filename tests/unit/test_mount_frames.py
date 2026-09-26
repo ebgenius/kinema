@@ -118,7 +118,7 @@ class TestWhichFrame:
         np.testing.assert_allclose(a, b, atol=1e-12)
 
 
-class TestTheDescriptionsPrefix:
+class TestTheRobotsPrefix:
     @pytest.mark.parametrize(
         ("names", "prefix"),
         [
@@ -129,9 +129,48 @@ class TestTheDescriptionsPrefix:
             (["robot", "rtool0"], ""),
         ],
     )
-    def test_it_is_what_every_link_starts_with_up_to_a_separator(self, names, prefix):
-        model = kin.RobotModel(
-            name="probe", links={n: kin.LinkSpec(n) for n in names}, joints=[],
-            root_link=names[0],
+    def test_it_is_what_every_name_starts_with_up_to_a_separator(self, names, prefix):
+        assert kin.common_prefix(names) == prefix
+
+    @staticmethod
+    def _chain(names, *extra, root=None) -> kin.RobotModel:
+        """An arm through ``names``, one revolute joint per step, plus ``extra``."""
+        joints = [
+            _joint(f"j{i}", parent, child, xyz=(0.0, 0.0, 0.2))
+            for i, (parent, child) in enumerate(zip(names, names[1:], strict=False), 1)
+        ]
+        joints += extra
+        links = {n: kin.LinkSpec(n) for n in names}
+        for joint in extra:
+            links.setdefault(joint.parent_link, kin.LinkSpec(joint.parent_link))
+            links[joint.child_link] = kin.LinkSpec(joint.child_link)
+        return kin.RobotModel(
+            name="probe", links=links, joints=joints, root_link=root or names[0]
         )
-        assert kin.description_prefix(model) == prefix
+
+    def test_an_unprefixed_world_does_not_hide_it(self):
+        """world -> kr10_base_link is fixed; the arm's own links are all kr10_."""
+        model = self._chain(
+            ["kr10_base_link", "kr10_link_1", "kr10_link_2"],
+            _fixed("world_joint", "world", "kr10_base_link", ((0, 0, 0), (0, 0, 0))),
+            _fixed("to_tool0", "kr10_link_2", "kr10_tool0", TOOL0),
+            root="world",
+        )
+        assert kin.mount_frames(model)["j2"].link == "kr10_tool0"
+
+    def test_a_prefix_its_links_run_on_past_counts(self):
+        """An LBR's links are all iiwa_link_N; its prefix is still iiwa_."""
+        model = self._chain(
+            ["iiwa_link_0", "iiwa_link_1", "iiwa_link_2"],
+            _fixed("to_tool0", "iiwa_link_2", "iiwa_tool0", TOOL0),
+        )
+        assert kin.mount_frames(model)["j2"].link == "iiwa_tool0"
+
+    def test_a_gripper_with_its_own_prefix_does_not_hide_it(self):
+        """The arm's flange is found from the arm's chain, not the gripper's."""
+        model = self._chain(
+            ["kr10_base_link", "kr10_link_1", "kr10_link_2"],
+            _fixed("to_tool0", "kr10_link_2", "kr10_tool0", TOOL0),
+            _joint("finger", "kr10_tool0", "gripper_finger", kind="prismatic"),
+        )
+        assert kin.mount_frames(model)["j2"].link == "kr10_tool0"
