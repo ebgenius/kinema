@@ -669,7 +669,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         header.label(text="Tool Offset")
         if body is not None:
             body.use_property_split = True
-            body.label(text="From the flange link frame", icon="INFO")
+            body.label(text=_offset_zero(rig), icon="INFO")
             body.prop(rig, "kinema_tcp_offset", text="Location")
             body.prop(rig, "kinema_tcp_rpy", text="Rotation")
             body.operator("kinema.reset_tcp_offset", text="Reset", icon="LOOP_BACK")
@@ -855,6 +855,15 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         if manager.deferred(rig.name):
             info.label(text="PyRoki waits until the edit is done", icon="SORTTIME")
             info.label(text="Solving on NumPy meanwhile", icon="BLANK1")
+
+
+def _offset_zero(rig) -> str:
+    """What the TCP offset is measured from, for the chosen parent joint."""
+    chosen = rig.pose.bones.get(rig.kinema_tcp_parent or "")
+    mount = chosen.bone.get(builder.PROP_MOUNT_LINK) if chosen is not None else None
+    if mount:
+        return f"From the mounting flange ({mount})"
+    return "From the joint's link frame"
 
 
 def manager_state(rig):
@@ -1139,13 +1148,17 @@ def register_props() -> None:
         description="Joint bone the tool centre point rides",
         default="",
     )
-    # Expressed in the flange's *link* frame, so the numbers match a URDF
-    # <origin rpy="..."> for the same tool. Zero is the flange itself, which is
-    # not usually where the importer leaves the marker -- it uses the deepest
-    # link, past any fixed joints, and seeds that distance here.
+    # Expressed from the mounting flange the description defines -- tool0, Z out
+    # of the face -- so a TCP from a tool's CAD goes in unchanged, and the numbers
+    # match a URDF <origin rpy="..."> for the same tool. On a joint with no flange,
+    # or a rig built before it was recorded, from the joint's link frame instead:
+    # see builder.tool_zero_frame.
     bpy.types.Object.kinema_tcp_offset = FloatVectorProperty(
         name="Tool Offset",
-        description="Tool position relative to the flange link frame",
+        description=(
+            "Tool position from the mounting flange (tool0), or from the joint's "
+            "link frame where it has none"
+        ),
         size=3,
         default=(0.0, 0.0, 0.0),
         subtype="TRANSLATION",
@@ -1154,7 +1167,7 @@ def register_props() -> None:
     bpy.types.Object.kinema_tcp_rpy = FloatVectorProperty(
         name="Tool Rotation",
         description=(
-            "Tool orientation relative to the flange link frame, as roll, pitch "
+            "Tool orientation from the same frame, as roll, pitch "
             "and yaw about fixed X, Y and Z -- the convention URDF uses"
         ),
         size=3,

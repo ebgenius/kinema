@@ -192,6 +192,118 @@ class RobotModel:
 
 
 # --------------------------------------------------------------------------
+# The mounting flange
+# --------------------------------------------------------------------------
+#: What descriptions call the frame a tool mounts on, most preferred first. By the
+#: ROS-Industrial convention (REP-199) both sit on the flange face: ``tool0`` with Z
+#: out of it, the frame tools are modelled from, and ``flange`` with X out of it.
+MOUNT_NAMES = ("tool0", "flange")
+
+
+@dataclass(frozen=True)
+class MountFrame:
+    """Where a tool mounts on a joint's link: the zero a TCP offset is measured from."""
+
+    #: The fixed link it was found on.
+    link: str
+    #: Which of :data:`MOUNT_NAMES` it matched.
+    kind: str
+    #: From the joint's child link frame to the mount, Z out of the flange face.
+    transform: np.ndarray
+
+
+def _named(link: str, kind: str, prefix: str) -> bool:
+    """``tool0``, or ``tool0`` behind the robot's own prefix: ``kr10_tool0``.
+
+    Only that prefix. A xacro macro prefixes every link of the robot, so its prefix
+    is one the robot's links all start with -- ``prefix`` is what they share, which
+    may run on past it (``iiwa_link_`` for ``iiwa_``). A structural ``wrist_flange``
+    on an unprefixed robot is some bracket, not where the tool mounts.
+    """
+    name = link.lower()
+    if name == kind:
+        return True
+    if not name.endswith(kind):
+        return False
+    before = name[: -len(kind)]
+    return before.endswith(("_", "/")) and prefix.startswith(before)
+
+
+def common_prefix(names) -> str:
+    """What every name starts with, up to a ``_`` or ``/``: ``kr10_``, or nothing."""
+    names = [name.lower() for name in names]
+    common = names[0] if names else ""
+    for name in names[1:]:
+        while not name.startswith(common):
+            common = common[:-1]
+    cut = max(common.rfind("_"), common.rfind("/"))
+    return common[: cut + 1] if cut >= 0 else ""
+
+
+def chain_prefix(model: RobotModel, joint: JointSpec) -> str:
+    """The robot's own prefix, as the links ``joint``'s arm moves share it.
+
+    The links its actuated joints connect, from the root down to ``joint`` -- not
+    every link in the file. A description wrapped as ``world -> kr10_base_link``
+    keeps an unprefixed ``world`` behind a fixed joint, and a gripper on the flange
+    may carry its own prefix; neither is on the arm's chain, so neither hides
+    ``kr10_``.
+    """
+    parent_of = {j.child_link: j for j in model.joints}
+    links = [joint.child_link]
+    link = joint.child_link
+    while link in parent_of:
+        above = parent_of[link]
+        if above.is_actuated:
+            links += [above.parent_link, above.child_link]
+        link = above.parent_link
+    return common_prefix(links)
+
+
+def flange_to_tool0() -> np.ndarray:
+    """REP-199's ``flange`` (X out of the face) turned to Z out of it, as ``tool0`` is.
+
+    A quarter turn about Y carries Z onto X. On a KUKA KR10 R1100-2, whose
+    description has both, ``flange`` turned by this is exactly its ``tool0``.
+    """
+    return make_transform((0.0, 0.0, 0.0), (0.0, np.pi / 2.0, 0.0))
+
+
+def mount_frames(model: RobotModel) -> dict[str, MountFrame]:
+    """Actuated joint name -> the mounting flange its link carries, where it has one.
+
+    Searched among the links fixed to the joint's own link -- through fixed joints
+    only, so a gripper's flange behind a finger joint belongs to the finger, not the
+    wrist. ``tool0`` wins over ``flange``; they often both exist, at the same depth,
+    with different axes. A ``flange`` alone is turned so its Z, too, points out of
+    the face. Joints with neither are left out: their offsets stay measured from the
+    link frame, as before.
+    """
+    frames = model.link_frames()
+    by_parent = model.joints_by_parent()
+    found: dict[str, MountFrame] = {}
+    for joint in model.actuated_joints:
+        prefix = chain_prefix(model, joint)
+        fixed_to_it: list[str] = []
+        stack = [joint.child_link]
+        while stack:
+            for child in by_parent.get(stack.pop(), ()):
+                if child.joint_type == "fixed":
+                    fixed_to_it.append(child.child_link)
+                    stack.append(child.child_link)
+        for kind in MOUNT_NAMES:
+            matches = sorted(link for link in fixed_to_it if _named(link, kind, prefix))
+            if not matches:
+                continue
+            transform = np.linalg.inv(frames[joint.child_link]) @ frames[matches[0]]
+            if kind == "flange":
+                transform = transform @ flange_to_tool0()
+            found[joint.name] = MountFrame(matches[0], kind, transform)
+            break
+    return found
+
+
+# --------------------------------------------------------------------------
 # Matrix helpers
 # --------------------------------------------------------------------------
 def rpy_to_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:

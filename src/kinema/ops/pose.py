@@ -272,8 +272,8 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
     bl_idname = "kinema.set_tcp"
     bl_label = "Set TCP"
     bl_description = (
-        "Place the tool-centre-point marker on a joint bone, offset from that "
-        "joint's link frame by the rig's tool offset"
+        "Place the tool-centre-point marker on a joint bone, offset by the rig's tool "
+        "offset from that joint's mounting flange -- or its link frame where it has none"
     )
 
     bone: StringProperty(
@@ -386,13 +386,13 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         The offset is read in the *link* frame rather than the bone's, so the
         numbers match a URDF ``<origin rpy="...">`` for the same tool.
 
-        Zero means the flange's own link frame -- **not** where the importer
-        puts the marker, which is normally the deepest link, one or more fixed
-        joints further out. That distance is what the importer seeds into the
-        offset, so reproducing an import means applying the seeded value rather
-        than clearing it.
+        Zero means the mounting flange the description defines -- ``tool0``, Z
+        out of the face -- so a TCP from a tool's CAD goes in as it is. On a joint
+        with none, or on a rig built before it was recorded, zero is the joint's
+        own link frame, and the importer seeds the distance to the deepest link
+        into the offset instead. See ``builder.tool_zero_frame``.
         """
-        link = builder.link_frame_of(source.bone)
+        link = builder.tool_zero_frame(source.bone)
         if link is None:
             return None
         offset = Matrix.Translation(
@@ -432,9 +432,12 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         rig[builder.PROP_TCP_BONE] = builder.TCP_BONE
         # The URDF link, not the bone name -- the panel labels this "Link:", and
         # the importer writes a link here, so writing a bone name made the two
-        # disagree depending on how the TCP had last been placed.
-        rig[builder.PROP_TCP_LINK] = source.bone.get(
-            builder.PROP_CHILD_LINK, source.name
+        # disagree depending on how the TCP had last been placed. The mounting
+        # flange where the joint has one, as the importer records it: the offset
+        # is measured from there, not from the joint's own link.
+        bone = source.bone
+        rig[builder.PROP_TCP_LINK] = (
+            bone.get(builder.PROP_MOUNT_LINK) or bone.get(builder.PROP_CHILD_LINK, source.name)
         )
         rig.kinema_tcp_parent = source.name
 
@@ -505,7 +508,7 @@ class KINEMA_OT_reset_tcp_offset(KinemaRigOperator):
     bl_label = "Reset Tool Offset"
     bl_description = (
         "Zero the tool offset, putting the TCP exactly on the selected joint's "
-        "own link frame"
+        "mounting flange -- or its link frame where it has none"
     )
 
     apply: BoolProperty(

@@ -57,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A TCP offset of zero is the mounting flange** (#65). Offsets were measured from the last
+  joint's link frame: on a KUKA, `link_6`, 28.5 mm inside the wrist. And with both `flange`
+  and `tool0` in the description, the importer's default TCP landed on whichever came first.
+  On the KR10 R1100-2 that was `flange`, whose approach axis lies in the flange face.
+  - Kinema now records the mounting flange at import (`tool0`, else a `flange` turned Z out)
+    and measures offsets from it, so a TCP from a tool's CAD goes in unchanged.
+  - A fresh import puts the TCP on it with zero offsets.
+  - Robots without one, and rigs built before, measure from the link frame as they did.
 - **IK with the Root bone posed** (#61). Moving or turning Root, say to hang the robot upside
   down, left the tool off its target by Root's own pose: 0.2 m off for a 0.2 m move, up to
   1.6 m off upside down. The solvers work with Root at rest, and the goal now has Root's pose

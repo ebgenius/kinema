@@ -2,8 +2,8 @@
 
 Three ways to say where:
 
-* **Offset** -- a location and roll/pitch/yaw from the parent joint's link frame,
-  the numbers Set TCP has always taken.
+* **Offset** -- a location and roll/pitch/yaw from the parent joint's mounting
+  flange (``tool0``), or its link frame where it has none: Set TCP's numbers.
 * **3D Cursor** -- wherever the cursor is. Snap it to a vertex of the tool mesh first
   (Shift+S), and the TCP lands on that vertex.
 * **Object Origin** -- an empty or the tool mesh itself, say one attached to the
@@ -38,7 +38,7 @@ from ..ui.panel import active_rig
 from . import deferral
 
 SOURCE_ITEMS = [
-    ("OFFSET", "Offset", "Type a location and rotation from the parent joint's link frame"),
+    ("OFFSET", "Offset", "Type a location and rotation from the parent joint's TCP zero"),
     ("CURSOR", "3D Cursor", "Put the TCP where the 3D cursor is. Snap the cursor to a "
      "tool vertex first with Shift+S"),
     ("OBJECT", "Object Origin", "Put the TCP on an object's origin: an empty, or the tool mesh"),
@@ -56,11 +56,14 @@ def _rigid(matrix: Matrix) -> Matrix:
 
 
 def posed_link(rig, parent: str) -> Matrix | None:
-    """``parent``'s link frame where it stands now, in armature space, or None."""
+    """``parent``'s TCP zero where it stands now, in armature space, or None.
+
+    Its mounting flange, or its link frame where it has none: ``builder.tool_zero_frame``.
+    """
     pose_bone = rig.pose.bones.get(parent)
     if pose_bone is None or builder.PROP_JOINT_NAME not in pose_bone.bone:
         return None
-    rest_link = builder.link_frame_of(pose_bone.bone)
+    rest_link = builder.tool_zero_frame(pose_bone.bone)
     if rest_link is None:
         return None
     correction = pose_bone.bone.matrix_local.inverted_safe() @ rest_link
@@ -157,18 +160,18 @@ class KINEMA_OT_edit_tcp(Operator):
 
     parent: StringProperty(
         name="Parent Joint", update=_refresh_preview,
-        description="The joint bone the TCP rides; its link frame is what offsets are from",
+        description="The joint bone the TCP rides; offsets are from its mounting flange",
     )
     source: EnumProperty(
         name="Place By", items=SOURCE_ITEMS, default="OFFSET", update=_refresh_preview,
     )
     offset: FloatVectorProperty(
         name="Location", size=3, subtype="TRANSLATION", unit="LENGTH", update=_refresh_preview,
-        description="From the parent joint's link frame",
+        description="From the parent joint's mounting flange, or its link frame where it has none",
     )
     rotation: FloatVectorProperty(
         name="Rotation", size=3, subtype="EULER", update=_refresh_preview,
-        description="Roll, pitch and yaw about the link frame's fixed X, Y and Z",
+        description="Roll, pitch and yaw about that frame's fixed X, Y and Z",
     )
     object_name: StringProperty(
         name="Object", description="The object whose origin the TCP goes on",
@@ -243,7 +246,7 @@ class KINEMA_OT_edit_tcp(Operator):
             return
         if self.source != "OFFSET":
             box = layout.box().column(align=True)
-            box.label(text="Stored as an offset from the link frame:", icon="EMPTY_AXIS")
+            box.label(text="Stored as an offset from the TCP zero:", icon="EMPTY_AXIS")
             box.label(text="Location  " + "  ".join(f"{v:+.4f}" for v in offset))
             box.label(
                 text="Rotation  " + "  ".join(f"{np.degrees(v):+.2f}°" for v in rotation)

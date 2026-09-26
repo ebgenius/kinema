@@ -36,7 +36,7 @@ from mathutils import Matrix, Vector
 
 from ..io import meshes as mesh_io
 from . import widgets
-from .kinematics import JointSpec, RobotModel
+from .kinematics import JointSpec, RobotModel, mount_frames
 
 #: Bone collection names, nested under a single "Kinema" parent.
 COLLECTION_ROOT = "Kinema"
@@ -89,6 +89,12 @@ PROP_AXIS = "kinema_axis"
 #: somewhere the original URDF is not available.
 PROP_CHILD_LINK = "kinema_child_link"
 PROP_LINK_CORRECTION = "kinema_link_correction"
+#: On a joint bone whose link carries a mounting flange (``tool0``, or ``flange``):
+#: the 4x4 from the link frame to it, Z out of the face, and the link it is. A TCP
+#: offset of zero is this frame -- see :func:`tool_zero_frame`. Rigs built before
+#: it was recorded have neither, and keep measuring from the link frame.
+PROP_MOUNT_FRAME = "kinema_mount_frame"
+PROP_MOUNT_LINK = "kinema_mount_link"
 
 #: Marks the armature object itself as a Kinema rig.
 PROP_IS_RIG = "kinema_rig"
@@ -195,6 +201,8 @@ class RigBuildResult:
     visual_collection: bpy.types.Collection | None = None
     collision_collection: bpy.types.Collection | None = None
     tcp_link: str | None = None
+    #: joint name -> its mounting flange, from kinematics.mount_frames.
+    mounts: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -261,6 +269,7 @@ def _create_bones(
     joint_frames = model.joint_frames()
     link_frames = model.link_frames()
     owner_of_link = model.nearest_actuated_ancestor()
+    joint_by_name = {j.name: j for j in model.joints}
     length = options.bone_length or _auto_bone_length(model)
 
     _activate(armature_object)
@@ -300,10 +309,21 @@ def _create_bones(
         # tail, which would drag every joint origin to the wrong place.
         bone.use_connect = False
 
-    # TCP marker at the tool frame.
+    # TCP marker at the tool frame: on the mounting flange of the joint that
+    # carries the deepest link, where it has one -- zero offset, Z out of the face
+    # -- and otherwise on the deepest link itself. Not the deepest link by default
+    # alone: a flange and a tool0 both hang off the last joint, at the same depth,
+    # and whichever came first in the file won, axes and all.
+    result.mounts = mount_frames(model)
     tcp_link = options.tcp_link or _deepest_link(model)
+    mount = None if options.tcp_link else result.mounts.get(owner_of_link.get(tcp_link))
+    if mount is not None:
+        tcp_link = mount.link
     if options.create_tcp and tcp_link in link_frames:
         frame = link_frames[tcp_link]
+        if mount is not None:
+            carrier = joint_by_name[owner_of_link[tcp_link]].child_link
+            frame = link_frames[carrier] @ mount.transform
         tcp = edit_bones.new(TCP_BONE)
         tcp.head = Vector(frame[:3, 3])
         # Tool frames point along their own +Z by ROS convention.
@@ -369,6 +389,10 @@ def _setup_pose_bones(
             child_link=joint.child_link,
             link_frame=link_frames[joint.child_link],
         )
+        mount = result.mounts.get(joint.name)
+        if mount is not None:
+            pose_bone.bone[PROP_MOUNT_FRAME] = [float(v) for v in mount.transform.flatten()]
+            pose_bone.bone[PROP_MOUNT_LINK] = mount.link
 
     if ROOT_BONE in pose.bones:
         root = pose.bones[ROOT_BONE]
@@ -848,7 +872,7 @@ def build_rig_iter(
         tcp_bone = armature.bones.get(TCP_BONE)
         if tcp_bone is not None and tcp_bone.parent is not None:
             armature_object.kinema_tcp_parent = tcp_bone.parent.name
-            flange = link_frame_of(tcp_bone.parent)
+            flange = tool_zero_frame(tcp_bone.parent)
             if flange is not None:
                 offset = flange.inverted_safe() @ tcp_bone.matrix_local @ BONE_TO_TOOL
                 armature_object.kinema_tcp_offset = offset.translation
@@ -934,6 +958,27 @@ def link_frame_of(bone) -> Matrix | None:
         return None
     correction = Matrix([[float(stored[row * 4 + col]) for col in range(4)] for row in range(4)])
     return bone.matrix_local @ correction
+
+
+def tool_zero_frame(bone) -> Matrix | None:
+    """Where a TCP offset of zero puts the tool, at rest, in armature space.
+
+    The mounting flange the description defines for this joint's link -- ``tool0``,
+    or ``flange`` turned Z out -- so a TCP taken from a tool's CAD, measured from the
+    flange it mounts on, goes in unchanged. The link frame itself where there is
+    none, or on a rig built before the flange was recorded, so such a rig's offsets
+    keep the meaning they were typed with.
+
+    None for a bone that drives no link, as :func:`link_frame_of`.
+    """
+    link = link_frame_of(bone)
+    if link is None:
+        return None
+    stored = bone.get(PROP_MOUNT_FRAME)
+    if stored is None or len(stored) != 16:
+        return link
+    mount = Matrix([[float(stored[row * 4 + col]) for col in range(4)] for row in range(4)])
+    return link @ mount
 
 
 def bone_attachment(
