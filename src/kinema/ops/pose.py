@@ -386,13 +386,13 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         The offset is read in the *link* frame rather than the bone's, so the
         numbers match a URDF ``<origin rpy="...">`` for the same tool.
 
-        Zero means the flange's own link frame -- **not** where the importer
-        puts the marker, which is normally the deepest link, one or more fixed
-        joints further out. That distance is what the importer seeds into the
-        offset, so reproducing an import means applying the seeded value rather
-        than clearing it.
+        Zero means the mounting flange the description defines -- ``tool0``, Z
+        out of the face -- so a TCP from a tool's CAD goes in as it is. On a joint
+        with none, or on a rig built before it was recorded, zero is the joint's
+        own link frame, and the importer seeds the distance to the deepest link
+        into the offset instead. See ``builder.tool_zero_frame``.
         """
-        link = builder.link_frame_of(source.bone)
+        link = builder.tool_zero_frame(source.bone)
         if link is None:
             return None
         offset = Matrix.Translation(

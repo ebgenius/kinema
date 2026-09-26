@@ -353,12 +353,12 @@ def _move_waypoints(rig, shift: np.ndarray) -> None:
 
 
 def _tcp_offset(rig, tcp) -> list[float]:
-    """The TCP's offset from its parent's link frame, as it actually stands.
+    """The TCP's offset from its parent's zero -- its mounting flange -- as it stands.
 
     Read off the bones rather than the panel's fields, which can have been edited
     without Update TCP being pressed.
     """
-    flange = builder.link_frame_of(tcp.parent)
+    flange = builder.tool_zero_frame(tcp.parent)
     if flange is None:
         return [*rig.kinema_tcp_offset, *rig.kinema_tcp_rpy]
     offset = flange.inverted_safe() @ tcp.matrix_local @ builder.BONE_TO_TOOL

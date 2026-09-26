@@ -359,15 +359,25 @@ so. It then compiles once, when you move on to something else or leave it for te
 A bake, Find Solutions, playback and rendering never wait. They use PyRoki, compiling it if
 they must.
 
-The offset is measured in that joint's own **link frame** — the flange, with its Z out of the
-face — and the angles are roll, pitch and yaw about fixed X, Y and Z, which is the convention
-URDF itself uses in `<origin rpy="...">`. So a tool transform copied out of a description
-goes in unchanged, and `Z = 0.15` means 150 mm out of the flange rather than 150 mm up.
+**Zero is the mounting flange.** The offset is measured from the flange the description
+defines for that joint, the frame a tool's CAD is measured from. So a TCP taken off the tool's
+drawing goes in unchanged, and `Z = 0.15` means 150 mm out of the flange face. The angles are
+roll, pitch and yaw about fixed X, Y and Z, the convention URDF uses in `<origin rpy="...">`.
 
-It usually arrives non-zero. The tool frame is the description's deepest link, which normally
-sits behind one or more *fixed* joints from the last actuated one — and fixed joints get no
-bone, so nothing on the rig shows that distance. The offset field is where it becomes
-visible.
+Industrial descriptions usually define the flange twice, as ROS-Industrial's REP-199 does:
+
+- `tool0`, with Z out of the face;
+- `flange`, with X out of it.
+
+Kinema uses `tool0`. Where there's only a `flange`, it turns it so Z points out of the face,
+as `tool0` would. A fresh import puts the TCP there, with zero offsets and the approach axis
+out of the flange. The panel names the frame, for example *From the mounting flange (tool0)*.
+
+A joint with no flange measures from its own **link frame**. The importer then puts the TCP
+on the description's deepest link and seeds the distance to it into the offset, since fixed
+joints get no bone and nothing else on the rig would show it. Rigs built before Kinema
+recorded the flange keep measuring from the link frame too, so their offsets keep the meaning
+they were typed with. Reimport to measure from the flange.
 
 Bone axes are not tool axes and cannot be: a bone's +Y always runs head to tail. Kinema rides
 the tool frame on the marker permuted — tool Z on the bone's Y — and reports the tool frame,
