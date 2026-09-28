@@ -3,8 +3,8 @@
 Everything Kinema does lives in the 3D viewport sidebar. Press <kbd>N</kbd> and click the
 **Kinema** tab.
 
-There are seven panels. The last six only show anything useful when a Kinema rig is
-selected.
+There are nine panels. The seven between the top panel and **Solver** appear only when a
+Kinema rig is selected.
 
 ![Screenshot: an IK target being dragged, with the "Last solve" readout visible.](../assets/images/kinema_ik_solve.png){ .screenshot }
 
@@ -84,6 +84,14 @@ description file. Each is clamped to that joint's true range of motion.
 | **Reset Meshes** | Put every link mesh back where the importer placed it |
 | **Meshes at File Origin** | Send every link mesh to the coordinates its own file uses, for editing and export — see below |
 
+Each joint's row has three parts:
+
+| Part of the row | What it does |
+|---|---|
+| **Slider** | The joint's value. Turns **red** while the joint moves faster than its [velocity limit](#velocity-limits) at this frame |
+| **Pin** | [Hold the joint by hand](../concepts/ik.md#spare-joints-rails-and-the-elbow) while IK solves the rest of the arm. Keyframable, so a rail can be handed back to the solver mid-shot |
+| **Limit icon** | Lit when the description gives the joint a range |
+
 *Reset Meshes* and *Meshes at File Origin* appear only on rigs that have visual meshes.
 *Reset Meshes* exists because *Rest Pose* returns the **joints**, and a link mesh nudged by
 accident is not a joint — see
@@ -120,10 +128,64 @@ A rig with no movable joints — a fixed sensor mount, say — says so instead.
 
 See [Pose a robot by hand](../tutorials/pose-fk.md).
 
+## Velocity Limits
+
+Closed by default. How fast each joint is moving at the current frame, against the fastest
+it may move. A warning icon on the header says a joint is over its limit even while the
+panel is closed.
+
+![Screenshot: joint2 keyed too fast. Its slider, its row in Velocity Limits and its dial in the viewport are all red.](../assets/images/kinema_velocity_limits.png){ .screenshot }
+
+| Control | What it does |
+|---|---|
+| **Ignore Velocity Limits** | Stop flagging this rig's joints, in the panel and in the viewport. The numbers stay, greyed out. Saved with the file |
+| **⟨joint⟩  ⟨speed⟩ of ⟨limit⟩** | One row per joint that has a limit. Red, with a warning icon, while it is over |
+| **Frame N at F fps** | The frame being measured, and the frame rate the speeds assume |
+| **Load Joint Limits…** | Read limits from a MoveIt or ros2_control `joint_limits.yaml` |
+
+A joint over its limit is also flagged in the viewport. Its dial or arrow is traced in red,
+with its name and its speed as a percentage of the limit beside it.
+
+Rotary speeds are shown in degrees per second, or radians if the scene's rotation unit is
+radians. Slides are in metres per second.
+
+### Where the limits come from
+
+- **The description.** URDF and xacro give each joint a `<limit velocity>`, and the
+  importer keeps it. A value of `0` is taken as "not given". MJCF has no velocity limits.
+- **A `joint_limits.yaml`** from the robot's MoveIt configuration or its ros2_control
+  setup, which often holds the speeds the robot is actually run at. Joints are matched by
+  name:
+    - `has_velocity_limits: true` sets a limit;
+    - `false` turns it off;
+    - a joint the file doesn't mention keeps the description's value.
+
+Rigs imported before 0.5.0 carry no limits. Import them again, or load a `joint_limits.yaml`.
+
+### How a speed is measured
+
+A joint's speed is how far it moved since the frame before, times the frame rate.
+
+| Joint | Measured against | After a jump or a scrub |
+|---|---|---|
+| Keyed, including joint moves from Generate Motion and baked IK | its own curve, one frame back | exact |
+| Driven by live IK, including linear moves | the pose seen one frame earlier | **—** until you play or step a frame |
+| Neither | the pose seen one frame earlier | still |
+
+- **Dropped frames.** When playback drops frames, the speed is averaged over the gap, up to
+  three frames. An average can miss a spike inside the gap, but it never reports one that
+  isn't there.
+- **Range stops.** A joint pressed against its range stop doesn't count as moving, whatever
+  its curve does.
+- **It warns; it doesn't change the motion.** To clear the red, retime the move: spread its
+  keys, or give the waypoint a later frame.
+
 ## Bones
 
 One row per bone, answering the two questions that come up as soon as a robot is imported:
 what does IK aim at, and what is bolted to this link?
+
+![Screenshot: the Bones panel, with something attached to elbow_joint and a gripper on the TCP, and the attachment's offset from the bone open below.](../assets/images/kinema_bones_panel.png){ .screenshot }
 
 | Part of the row | What it does |
 |---|---|
@@ -210,29 +272,43 @@ regeneration writes the stored frames again.
 
 See [Teach a robot a job](../tutorials/teach-a-job.md).
 
+## External Axes
+
+Collapsed by default. [Tracks, turntables, positioners and tool spindles](../tutorials/external-axes.md)
+the robot description doesn't have, added to the rig as joint bones.
+
+Each axis on the rig is listed with its mount (*Under the Robot*, *On the Tool* or
+*Standalone*) and a **✕** that removes it, putting back everything adding it changed. Their
+sliders and hold pins are with the other joints, in **Joints (FK)**.
+
+| Control | What it does |
+|---|---|
+| **Add External Axis…** | Open the dialog: a preset, the mount, the motion and its limits, where the axis sits and what it carries. The viewport previews the result until **OK** |
+
 ## Tool Centre Point
 
 The [TCP](../concepts/tcp.md) is the working point of the robot: the tip of the tool, and
 what IK aims at by default.
 
-With a TCP on the rig, the panel shows which link it rides, its live X/Y/Z position and its
-R/P/Y orientation — reported as the **tool** frame, not the marker bone's.
+With a TCP on the rig, the panel shows which link it is measured from, its live X/Y/Z
+position and its R/P/Y orientation, reported as the **tool** frame, not the marker bone's.
 
 | Control | What it does |
 |---|---|
+| **Edit TCP…** / **Place TCP…** | Open the dialog: place the TCP by offset, on the 3D cursor or on an object's origin, with a preview in the viewport. Reads *Place* when the rig has no TCP yet |
 | **Parent Bone** | The joint bone the TCP rides. Only joint bones can host it |
-| **Tool Offset** | Location and roll/pitch/yaw from that joint's link frame — the flange |
-| **Reset** | Zero the offset, putting the TCP on the flange itself |
+| **Tool Offset** | Location and roll/pitch/yaw from that joint's mounting flange (`tool0`), or its link frame where it has none. The section's first line says which |
+| **Reset** | Zero the offset, putting the TCP on the flange itself, or on the joint's link frame where the offset is measured from there (no flange, or a rig imported before 0.6.0) |
 | **Update TCP** / **Create TCP** | Apply the parent bone and offset. Reads *Create* when the rig has no TCP yet |
 | **Move TCP to Active Bone** | The older route: place it on whichever bone is active in Pose or Edit mode |
 
-The offset is rarely zero on a fresh import, and that is not a mistake: the tool frame is
-the description's deepest link, which usually sits behind one or more *fixed* joints from
-the last actuated one. Fixed joints get no bone, so the offset field is the only place that
-distance is visible.
+A fresh import puts the TCP on the flange with a zero offset, so a TCP from a tool's drawing
+goes in unchanged. On a robot with no flange, and on rigs imported before 0.6.0, the offset
+is measured from the joint's link frame instead. See
+[where zero is](../concepts/tcp.md#where-zero-is-the-mounting-flange).
 
-Angles are roll, pitch and yaw about fixed X, Y and Z — the convention URDF uses in
-`<origin rpy="…">` — so a tool transform copied out of a description goes in unchanged.
+Changing the TCP leaves the robot where it is, and an IK target aimed at the TCP comes along
+to the new one.
 
 ## Inverse Kinematics
 
@@ -240,12 +316,13 @@ Before you add a target, this panel has one button:
 
 | Control | What it does |
 |---|---|
-| **Add IK Target** | Create a keyframable control at the TCP |
+| **Add IK Target** | Create a keyframable control at the TCP. On a chain with more than six joints, it also [holds the slides](../concepts/ik.md#spare-joints-rails-and-the-elbow), base first, while more than six are left |
 
 Adding a target compiles the solver — roughly 15 seconds. It happens once per **bone** you
 aim at, not once per robot, so pointing the target at a bone the solver has not seen before
 pays it again. A handful of recent ones stay compiled, so scrubbing back and forth over a
-hand-off is free after the first pass. It requires a TCP.
+hand-off is free after the first pass, and removing the target and adding it back costs
+nothing. It requires a TCP.
 
 Once a target exists:
 
@@ -266,6 +343,42 @@ than <kbd>I</kbd>: the target is an index, not a quantity, and its keys have to 
 between values. Interpolated, a hand-off from the tool point to joint 3 would pass through
 joints 1 and 2 on the frames in between and solve two chains nobody asked for.
 
+### Configuration
+
+Collapsible. A six-axis arm can put its tool in one place up to eight different ways: elbow
+up or down, wrist flipped, base swung round.
+
+| Control | What it does |
+|---|---|
+| **Find Solutions** | Search for the other configurations that reach the target's pose |
+| **◀ Solution N of M ▶** | Step through what was found. Applying one only writes joint values, so **Key All** keys it |
+
+The search seeds the solver from configurations scattered across the joint limits, and
+keeps the distinct ones that reach the goal. So **M** is what turned up, a lower bound
+rather than a proof that nothing else exists. Solutions belong to one pose. Move the target
+and the section says **The target moved; search again**. Held joints stay put in every
+solution.
+
+### Elbow Swivel
+
+Collapsible. It appears when more than six joints are left to IK, which on a seven-axis arm
+means the elbow can swing round the shoulder-to-wrist line while the tool holds still.
+
+| Control | What it does |
+|---|---|
+| **Add Elbow Swivel** | Put a ring on the shoulder-to-wrist line. Turning the ring swings the elbow |
+| **Swivel** | The ring's one rotation channel, which is the elbow's angle, with its own keyframe dot |
+| **⟨shoulder⟩ - ⟨elbow⟩ - ⟨wrist⟩** | The three joints the line and the swing are measured from |
+| **Elbow Strength** | How firmly the elbow is held at its angle, against the tool's own weight of 50 |
+| **Remove** | Take the swivel off |
+
+Adding the swivel pays one more compile, because an elbow goal makes a different problem.
+It needs the PyRoki solver, and says so under NumPy.
+
+Pin a joint so that six or fewer are left, and the section stays put. The slider greys out,
+the header shows a warning, and it reads **Only N joints left to IK: nothing to swing**.
+Release a held joint and the swivel works again.
+
 Below sits a readout box:
 
 - **Last solve: N ms** — with a tick if within the solve budget, a warning if not
@@ -274,6 +387,10 @@ Below sits a readout box:
 - A one-line summary of how the last solve converged
 - **PyRoki unavailable for this rig** plus the reason, if the good solver could not be
   used for this particular robot
+- **PyRoki waits until the edit is done** / *Solving on NumPy meanwhile*: after an edit
+  that needs the solver compiled again, such as an external axis or a TCP on another joint.
+  It compiles once the edit settles; see
+  [why the first solve is slow](../concepts/ik.md#why-the-first-solve-is-slow)
 
 See [Animate with an IK target](../tutorials/animate-ik.md).
 

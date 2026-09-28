@@ -48,6 +48,8 @@ Blender rig you already know how to build.
 | **Solving to '⟨bone⟩'** | Which bone that resolves to right now |
 | **Snap to Tool** | Jump the target back onto the tool's current position |
 | **✕** | Remove the IK target, returning the rig to plain FK |
+| **Configuration** | Collapsible. **Find Solutions** and the ◀ ▶ arrows: the other ways the arm can reach this pose — see below |
+| **Elbow Swivel** | Collapsible, on arms with a joint to spare. A ring that swings the elbow while the tool holds — see below |
 | **Bake to Keyframes** | [Solve every frame and key the joints](bake.md) |
 
 Underneath sits a readout: **Last solve: N ms**, plus a summary of how well the last
@@ -79,10 +81,10 @@ to. Every joint bone gets a radio button in the [**Bones**
 panel](../reference/sidebar.md#bones), and clicking one re-roots the chain there.
 
 This matters on redundant robots. A Panda imports with its tool frame on a fingertip, which
-leaves both gripper joints inside the chain — **9 degrees of freedom against a 6-DoF task**.
-The solver duly satisfies the goal, by holding the fingertip perfectly still while spinning
-the whole hand around it. Nothing is wrong, and the result is unusable. Aim at the flange
-instead and the chain is the seven arm joints it should be.
+puts the gripper's finger joints inside the chain. They are slides, so **Add IK Target**
+[holds them](../concepts/ik.md#spare-joints-rails-and-the-elbow) the way it holds a rail.
+But the arm is still solving to a finger rather than to its hand. Aim at the flange instead,
+and the chain is the seven arm joints it should be.
 
 Switching snaps the control onto the new target, so the arm does not jump.
 
@@ -99,6 +101,25 @@ menu does not.
 
 [Baking](bake.md) follows a keyed target, and keys every joint that is active anywhere in
 the range.
+
+## When the arm reaches the wrong way
+
+The tool is where you want it, but the elbow is on the wrong side, or the wrist has flipped.
+That's the arm reaching the same pose a different way, and it isn't wrong. Most arms have
+several ways to reach a pose, and the solver picks the one nearest where the arm already
+was.
+
+- **Choose another.** Open **Configuration** and click **Find Solutions**, then step through
+  them with ◀ ▶. Applying one only writes joint values, so key it with **Key All** in the
+  Joints panel.
+- **On a seven-axis arm, swing the elbow.** **Add Elbow Swivel** puts a ring on the
+  shoulder-to-wrist line. Turn it, and the elbow swings round while the tool stays exactly
+  where it is. The ring's angle keys like any rotation.
+- **On an arm on a rail, move the rail yourself.** The rail is held by hand, so drag it and
+  the arm reaches from its new position.
+
+See [several ways to reach one pose](../concepts/ik.md#several-ways-to-reach-one-pose) and
+[spare joints](../concepts/ik.md#spare-joints-rails-and-the-elbow).
 
 ## Snap to Tool
 

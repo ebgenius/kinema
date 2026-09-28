@@ -80,9 +80,18 @@ characters unless long-path support is switched on.
 structure the first time it runs. Kinema pays that cost deliberately at the moment you add
 the target, rather than letting it land on your first drag of the control.
 
-Subsequent solves take milliseconds. Loading a different robot compiles again.
+Subsequent solves take milliseconds. Loading a different robot compiles again. Changing the
+tool offset, or removing the IK target and adding it back, does not.
 
 See [why the first solve is slow](concepts/ik.md#why-the-first-solve-is-slow).
+
+## The IK panel says PyRoki waits until the edit is done
+
+**Not a problem.** You made an edit the solver needs compiling again for: an external axis
+added or removed, or the TCP moved to another joint. Compiling on every adjustment of that
+edit would freeze Blender each time, so live IK uses the simpler NumPy solver until you are
+done. It compiles once, when you move on to something else or leave the edit alone for ten
+seconds. Bakes and renders never wait: they compile first if they must.
 
 ## Over budget; live updates paused
 
@@ -230,6 +239,34 @@ robot closer. If you believe the limits are wrong, you can re-import with **Enfo
 Limits** off — but then you are animating poses the real machine cannot achieve.
 
 See [reach](concepts/ik.md#reach).
+
+!!! note "Starting from a fully stretched arm"
+    There is one known case where a reachable target doesn't converge: an arm that starts
+    straight out, like a UR at its rest pose. A small target move from there can stop a
+    fraction of a millimetre and about half a degree short, and stay there. Bend the arm
+    first, with a few FK sliders, and the same target solves exactly. Tracked in
+    [#56](https://github.com/ebgenius/kinema/issues/56).
+
+## A joint shows — in Velocity Limits
+
+**Cause:** live IK drives that joint, and you jumped to this frame. Kinema measures such a
+joint against where the solver put it one frame earlier. After a jump or a scrub it hasn't
+seen that frame, so it has nothing to compare against. A keyed joint never shows this: its
+own curve says where it was.
+
+**Fix:** step a frame, or play. The speed appears as soon as Kinema has seen the frame
+before. See [how a speed is measured](reference/sidebar.md#how-a-speed-is-measured).
+
+## The tool offset is not zero on the flange
+
+**Cause:** the rig was imported before 0.6.0, or the robot description defines no mounting
+flange (`tool0` or `flange`). Either way the offset is measured from the last joint's link
+frame, which on many robots sits inside the wrist. The Tool Offset section says which frame
+it is measured from.
+
+**Fix:** import the robot again to measure from the flange. Nothing needs fixing on an old
+rig, though: its offsets keep the meaning they were typed with. See
+[where zero is](concepts/tcp.md#where-zero-is-the-mounting-flange).
 
 ## The IK target and the robot disagree
 

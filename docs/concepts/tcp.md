@@ -19,7 +19,7 @@ representing the working point rather than the last mechanical joint.
 In Kinema it is a bone in the `Kinema/TCP` collection, created automatically on import
 unless you turn **Create TCP** off.
 
-![Screenshot: the TCP marker at the end of a robot arm.](../assets/images/kinema_tcp.png){ .screenshot }
+![Screenshot: the Edit TCP dialog beside the Tool Centre Point panel, with the new TCP previewed as a set of axes off the flange.](../assets/images/kinema_tcp.png){ .screenshot }
 
 ## What it is used for
 
@@ -53,57 +53,97 @@ It matters in practice because IK solves for orientation as well as position. Ro
 IK target rotates the tool. If you are animating a gripper approaching an object, the
 approach *direction* is usually as important as the point.
 
+## Where zero is: the mounting flange
+
+A tool is specified from the **mounting flange**, the face on the end of the wrist it bolts
+to. That is where a tool's drawing puts its origin, so it is where Kinema measures the TCP
+from.
+
+Industrial robot descriptions define the flange as a link of its own, usually twice over by
+the ROS-Industrial convention:
+
+- `tool0`, with **Z out of the flange face**;
+- `flange`, with X out of it.
+
+Kinema uses `tool0`. Where a description has only a `flange`, it turns it so Z points out of
+the face, as `tool0` would. A fresh import puts the TCP right there, with a tool offset of
+zero and the approach axis pointing out of the flange. So a TCP from a tool's drawing, say
+`Z = 0.15`, goes in as it is, and means 150 mm out of the face.
+
+The angles are roll, pitch and yaw about fixed X, Y and Z, which is what URDF's
+`<origin rpy="…">` means, so a tool transform copied out of a description goes in unchanged
+too.
+
+!!! info "Robots without a flange, and rigs from before 0.6.0"
+    A description that defines no flange has nowhere better to measure from than the last
+    joint's own **link frame**. The importer then puts the TCP on the description's deepest
+    link and fills the offset with the distance to it, since fixed joints get no bone and
+    nothing else on the rig would show it.
+
+    Rigs imported before 0.6.0 also measure from the link frame, so their offsets keep the
+    meaning they were typed with. Import the robot again to measure from the flange. The
+    Tool Offset section says which it is, for example *From the mounting flange (tool0)*.
+
 ## Moving the TCP
 
-The default TCP sits at the end of the chain, which is right for a bare robot and wrong as
-soon as a real tool is attached — you want the working point of *that tool*.
+The default TCP sits on the flange, which is right for a bare robot. As soon as a real tool is
+attached, you want the working point of *that tool*.
 
-The Tool Centre Point panel takes a **Parent Bone** and a **Tool Offset**: pick the joint the
-tool is bolted to, type where the working point sits relative to it, and press **Update TCP**.
-No mode change, and nothing to move by hand.
+### Edit TCP…
 
-Only joint bones can host the TCP. They are the ones carrying a link frame for the offset to
-be measured in — and it keeps the marker off the IK control, which would otherwise leave it
-riding the goal it is supposed to define.
+**Edit TCP…** in the [Tool Centre Point panel](../reference/sidebar.md#tool-centre-point)
+opens a dialog that shows the result in the viewport before anything changes. The new TCP is
+drawn as a set of axes beside the current one, and it follows the fields as you drag them.
 
-### The offset is measured from the flange
+Pick the **Parent Joint**, the one the tool is bolted to, then place the TCP by one of three
+routes:
 
-Not from the bone. A joint bone's axes are aligned to its **joint axis**, because that is
-what makes it a one-degree-of-freedom control; the *link* frame — the flange face, with its
-Z pointing out of it — is a different frame, and it is the one a tool is specified against.
+| Place by | Use it when |
+|---|---|
+| **Offset** | You have the numbers: a location and rotation from the flange, off the tool's drawing |
+| **3D Cursor** | The working point is a spot on the tool mesh. Snap the 3D cursor to that vertex first (<kbd>Shift</kbd>+<kbd>S</kbd> → *Cursor to Selected*), then open the dialog |
+| **Object Origin** | The working point is an empty you placed, or the origin of the tool mesh itself |
 
-So `Z = 0.15` means 150 mm out of the flange, not 150 mm up. The three angles are roll, pitch
-and yaw about fixed X, Y and Z, which is what URDF's `<origin rpy="…">` means, so a tool
-transform copied out of a description can be typed in unchanged.
+The cursor and the object can give the TCP's orientation as well as its location (**Use Its
+Rotation**), or leave the orientation at the typed one. Either way the dialog shows the offset
+it will store, measured from the flange where it stands now, so this works with the robot
+posed. Clicking away to look at the viewport closes the dialog, but opening it again brings
+back what you had.
 
-!!! info "A fresh import already has an offset, and that is correct"
-    The tool frame is the description's deepest link, which normally sits behind one or more
-    **fixed** joints from the last actuated one. Fixed joints get no bone, so nothing else on
-    the rig shows that distance — the offset field is where it becomes visible. **Reset**
-    clears it to zero, which puts the TCP on the flange itself rather than back where the
-    importer had it.
+### The panel's fields
 
-!!! warning "Place the TCP before adding an IK target"
-    The IK target is created at the TCP's location. Moving the TCP afterwards leaves the
-    target somewhere that is no longer the working point.
+The Tool Centre Point panel also takes a **Parent Bone** and a **Tool Offset** directly: pick
+the joint, type the offset, press **Update TCP**. **Reset** zeroes the offset, putting the TCP
+back on the flange. On a robot without one, or a rig imported before 0.6.0, zero is the
+joint's link frame, so Reset puts the TCP there instead, which may be inside the wrist.
 
-    If you have already added the target, use **Snap to Tool** to bring it back into
-    agreement.
+Only joint bones can host the TCP. They are the ones carrying a flange or link frame for the
+offset to be measured from, and it keeps the marker off the IK control, which would otherwise
+leave it riding the goal it is supposed to define.
 
 **Move TCP to Active Bone** is still there for the older habit: it places the TCP on
 whichever bone is active in Pose or Edit mode. It needs one, and says so if there is none.
+
+### What happens to the robot
+
+**Nothing moves.** Changing the tool, as on a real robot controller, leaves the joints where
+they are. If the IK target aims at the TCP, it comes along to the new one, so live IK has
+nothing to correct. A **keyed** IK target goes back to its keys on the next frame: an animated path is
+the tool's path, and the new tool follows it.
+
+Changing the TCP doesn't make the solver compile again either, unless it moves to a different
+joint. See [why the first solve is slow](ik.md#why-the-first-solve-is-slow).
 
 ## The workflow
 
 For a robot with a tool on the end:
 
-1. Import the robot
+1. Import the robot. The TCP is already on the flange.
 2. Attach the tool in the [**Bones** panel](../reference/sidebar.md#bones), on the bone it
-   is bolted to
-3. Set **Parent Bone** to that same bone
-4. Type the **Tool Offset** — where the working point sits relative to the flange
-5. **Update TCP**
-6. Add an IK target — it appears at the corrected point
-7. Animate
+   is bolted to.
+3. **Edit TCP…**: type the tool's TCP from its drawing, or snap the 3D cursor to the tool's
+   tip and place it there.
+4. Add an IK target, and animate.
 
-Getting this order right saves re-doing step 6.
+The order is forgiving. The TCP can change after the IK target exists, and the target comes
+with it.
