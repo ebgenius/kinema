@@ -21,6 +21,8 @@ PyRoki solves through them.
 
 Open the **External Axes** panel and click **Add External Axis…**.
 
+![Screenshot: the Add External Axis dialog, with its preview in the viewport.](../assets/images/kinema_external_axis.png){ .screenshot }
+
 Start from a **Preset**. Each one only fills in the fields below it, so you can change any of
 them afterwards:
 
