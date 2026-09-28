@@ -114,7 +114,8 @@ back what you had.
 
 The Tool Centre Point panel also takes a **Parent Bone** and a **Tool Offset** directly: pick
 the joint, type the offset, press **Update TCP**. **Reset** zeroes the offset, putting the TCP
-back on the flange.
+back on the flange. On a robot without one, or a rig imported before 0.6.0, zero is the
+joint's link frame, so Reset puts the TCP there instead, which may be inside the wrist.
 
 Only joint bones can host the TCP. They are the ones carrying a flange or link frame for the
 offset to be measured from, and it keeps the marker off the IK control, which would otherwise

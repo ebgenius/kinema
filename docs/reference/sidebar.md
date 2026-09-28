@@ -298,7 +298,7 @@ position and its R/P/Y orientation, reported as the **tool** frame, not the mark
 | **Edit TCP…** / **Place TCP…** | Open the dialog: place the TCP by offset, on the 3D cursor or on an object's origin, with a preview in the viewport. Reads *Place* when the rig has no TCP yet |
 | **Parent Bone** | The joint bone the TCP rides. Only joint bones can host it |
 | **Tool Offset** | Location and roll/pitch/yaw from that joint's mounting flange (`tool0`), or its link frame where it has none. The section's first line says which |
-| **Reset** | Zero the offset, putting the TCP on the flange itself |
+| **Reset** | Zero the offset, putting the TCP on the flange itself, or on the joint's link frame where the offset is measured from there (no flange, or a rig imported before 0.6.0) |
 | **Update TCP** / **Create TCP** | Apply the parent bone and offset. Reads *Create* when the rig has no TCP yet |
 | **Move TCP to Active Bone** | The older route: place it on whichever bone is active in Pose or Edit mode |
 
