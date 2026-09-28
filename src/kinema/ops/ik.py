@@ -801,6 +801,16 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
             if not bones:
                 self.report({"ERROR"}, "No joints to bake on this rig")
                 return {"CANCELLED"}
+            # Read before the curves are cleared, and only where live IK is
+            # itself keyed -- a job from Generate Motion. There the joint curves
+            # carry the joint moves, and they seed IK's solves where it is on.
+            # Solving every frame regardless would replace each joint move
+            # with IK chasing a target that stood still. See _curve_values.
+            played = (
+                self._curve_values(rig, bones, frames)
+                if ik_switch_is_animated(rig)
+                else None
+            )
             if self.clear_existing:
                 self._clear_keys(rig, bones)
 
@@ -808,13 +818,20 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
             try:
                 for index, frame in enumerate(frames):
                     scene.frame_set(frame)
-                    # Per frame, not once: the tip is keyframable, so the chain
-                    # can change mid-bake and a solver captured up front would go
-                    # on driving the joints of a chain that is no longer live.
-                    solver = manager.get_solver(rig, ik_name)
-                    result = solver.solve(rig, mode) if solver is not None else None
-                    if result is None or not result.converged:
-                        failed += 1
+                    if played is not None:
+                        for name, value in played[frame].items():
+                            set_joint_value(rig.pose.bones[name], value)
+                    # A frame with live IK keyed off plays its curves, and
+                    # those have just been put back. Anything else solves.
+                    if played is None or rig.kinema_ik_enabled:
+                        # Per frame, not once: the tip is keyframable, so the
+                        # chain can change mid-bake and a solver captured up
+                        # front would go on driving the joints of a chain that
+                        # is no longer live.
+                        solver = manager.get_solver(rig, ik_name)
+                        result = solver.solve(rig, mode) if solver is not None else None
+                        if result is None or not result.converged:
+                            failed += 1
                     # Every joint active anywhere in the range gets a key on every
                     # frame, not just the ones this frame's chain solved. A joint
                     # that drops out of the chain still has a value, and a channel
@@ -874,6 +891,25 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         return sorted(seen, key=lambda name: order.get(name, len(order)))
 
     @staticmethod
+    def _curve_values(rig, bone_names: list[str], frames) -> dict[int, dict[str, float]]:
+        """Frame -> where the joint curves put each baked joint on that frame.
+
+        This is what playback starts every frame from. The animation system
+        writes the curves into the channels first, and live IK then solves
+        from them wherever it is on. A joint with no curve holds whatever was
+        written last, so it is left out and does the same here.
+        """
+        curves = joint_curves(rig)
+        return {
+            frame: {
+                name: float(curves[name].evaluate(frame))
+                for name in bone_names
+                if name in curves
+            }
+            for frame in frames
+        }
+
+    @staticmethod
     def _clear_keys(rig, bone_names: list[str]) -> None:
         wanted = {f'pose.bones["{name}"]' for name in bone_names}
         # Blender 4.4+ stores curves in slotted layers/strips rather than
@@ -904,6 +940,45 @@ def key_joint_value(pose_bone, frame: int) -> None:
     )
     path, channel = ("location", 1) if is_prismatic else ("rotation_euler", 1)
     pose_bone.keyframe_insert(data_path=path, index=channel, frame=frame)
+
+
+def set_joint_value(pose_bone, value: float) -> None:
+    """Put a joint at ``value`` on that same one channel: the writing half."""
+    if pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic":
+        pose_bone.location[1] = float(value)
+    else:
+        pose_bone.rotation_euler[1] = float(value)
+
+
+def joint_curves(rig) -> dict:
+    """Bone name -> the curve animating its one joint channel, where there is one.
+
+    Muted curves are left out: they animate nothing, and reading one would
+    report a motion that never plays.
+    """
+    wanted = {}
+    for pose_bone in builder.joint_bones(rig):
+        is_prismatic = (
+            pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
+        )
+        channel = "location" if is_prismatic else "rotation_euler"
+        wanted[(pose_bone.path_from_id(channel), 1)] = pose_bone.name
+    found = {}
+    for container in own_fcurve_containers(rig):
+        for curve in container:
+            name = wanted.get((curve.data_path, curve.array_index))
+            if name is not None and not curve.mute:
+                found.setdefault(name, curve)
+    return found
+
+
+def ik_switch_is_animated(rig) -> bool:
+    """True if live IK is keyed on and off over time, as a generated job does."""
+    return any(
+        curve.data_path == builder.PROP_IK_ENABLED and not curve.mute
+        for container in own_fcurve_containers(rig)
+        for curve in container
+    )
 
 
 def _tip_curves(rig) -> list:

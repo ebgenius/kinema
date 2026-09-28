@@ -567,6 +567,52 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
             layout.label(text="Linear moves need an IK target", icon="ERROR")
 
 
+class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
+    """What the last motion check found, one move per row.
+
+    Read from the rig rather than measured here: measuring means playing the job
+    through, which is an operator's work, never a redraw's.
+    """
+
+    bl_idname = "KINEMA_PT_motion_check"
+    bl_parent_id = "KINEMA_PT_waypoints"
+    bl_label = "Motion Check"
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        rig = active_rig(context)
+        return rig is not None and len(rig.kinema_waypoints) > 1
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from ..rig.motion_check import problems
+
+        layout = self.layout
+        rig = active_rig(context)
+        checks = rig.kinema_motion_check
+        layout.operator(
+            "kinema.check_motion",
+            text="Check Again" if len(checks) else "Check Motion",
+            icon="VIEWZOOM",
+        )
+        if not len(checks):
+            layout.label(text="Generate Motion checks the job too", icon="INFO")
+            return
+
+        column = layout.column(align=True)
+        for check in checks:
+            found = problems(check)
+            kind = "Linear" if check.move == MOVE_LINEAR else "Joint"
+            heading = f"{check.name}: {kind}, {check.start_frame}–{check.end_frame}"
+            column.label(
+                text=heading if found else f"{heading}, ok",
+                icon="ERROR" if found else "CHECKMARK",
+            )
+            for problem in found:
+                row = column.row()
+                row.separator(factor=2.0)
+                row.label(text=problem)
+
+
 class KINEMA_PT_external_axes(KinemaPanelBase, Panel):
     """Rails, turntables, positioners and spindles the description does not have."""
 
@@ -970,6 +1016,7 @@ classes = (
     KINEMA_PT_velocity,
     KINEMA_PT_bones,
     KINEMA_PT_waypoints,
+    KINEMA_PT_motion_check,
     KINEMA_PT_external_axes,
     KINEMA_PT_tcp,
     KINEMA_PT_ik,

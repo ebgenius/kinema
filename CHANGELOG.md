@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Motion Check**, under the waypoints. Generate Motion now ends by playing the job through
+  once, solved as playback solves it, and lists each move with what went wrong:
+  - a linear move's worst distance from its line, and how far the tool turned off the
+    shortest turn;
+  - a joint that reached its limit;
+  - the fastest joint against its velocity limit;
+  - a joint that jumped more than a radian (or 25 cm) in one frame, which is how a
+    configuration flip shows.
+
+  **Check Again** re-runs it after the curves have been edited by hand.
+
+### Fixed
+
+- A linear move could turn the tool the long way round (#69). The IK goal's rotation was
+  keyed as each waypoint's pose came, and a pair keyed in opposite quaternion hemispheres
+  interpolated through the far side: a 20° turn went 340° the other way. Each key is now
+  made compatible with the one before. A turn longer than 30° gets extra keys along it, so
+  Blender's per-channel interpolation stays on the shortest turn.
+- A linear move ran in whatever configuration its neighbours were keyed in (#70). Only the
+  IK goal was keyed, so IK seeded every frame of the move from the next joint move's keys.
+  The joints are now keyed at both ends, in the configurations those waypoints were taught
+  in. A linear move whose ends were taught in different configurations is refused, because a
+  straight line can't change configuration.
+- Bake IK threw away the joint moves of a generated job (#72). It solved IK on every frame,
+  including those where the job keys live IK off, so the robot baked to a standstill. Where
+  the live-IK switch is keyed, the bake now keeps the joint curves on the frames where IK is
+  off, and seeds IK from them where it's on: it bakes what the job plays.
+
 ## [0.6.0] - 2026-09-26
 
 0.5.0 was about the choices inside a job. This release is about the cell around the robot and

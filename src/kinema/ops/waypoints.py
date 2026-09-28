@@ -27,23 +27,41 @@ What each move type keys, and why:
 span. Joint-space interpolation is what a MoveJ *is*, and it is the cheapest,
 most reliable way to cross a workspace.
 
-*LINEAR* keys the IK target's transform at both ends with LINEAR
-interpolation and switches live IK on. The solver then tracks the target every
-frame, and the tool travels the straight line between the two taught poses.
-Measured on the 6-DoF fixture, the tool stays on that line to 0.000 mm.
+*LINEAR* keys the IK target's transform with LINEAR interpolation and switches
+live IK on. The solver then tracks the target every frame, and the tool travels
+the straight line between the two taught poses. Measured on the 6-DoF fixture,
+the tool stays on that line to 0.000 mm. The target's rotation turns the short
+way, and a long turn gets keys along the way (see :data:`MAX_KEYED_TURN`).
+
+A linear move also keys the joints at both ends, at the configurations they
+were taught in. IK overrides those on every frame of the move; what they do is
+seed it, so that the arm solves the line in the configuration it was taught in
+and not in whatever a neighbouring key happens to hold. A straight line cannot
+change configuration, so a linear move whose two ends were taught in different
+ones is refused before anything is keyed, as a robot controller would refuse
+it.
 
 Both taught values are stored: the tool pose *and* the joint vector. The pose
 is the portable truth -- it can be replayed on a different robot -- while the
 joint vector pins the configuration, which a pose alone cannot, since a pose
 has up to eight solutions and nothing else records which one was taught.
+
+Generating ends with a check of the job as it plays: each move's distance from
+its line, joint limits, speeds and jumps. It is kept on the rig and shown under
+the waypoints; ``rig/motion_check.py`` has what is measured.
 """
 
 from __future__ import annotations
 
+import math
+
 import bpy
+import numpy as np
 from bpy.props import (
+    BoolProperty,
     CollectionProperty,
     EnumProperty,
+    FloatProperty,
     FloatVectorProperty,
     IntProperty,
     IntVectorProperty,
@@ -53,14 +71,31 @@ from bpy.props import (
 from bpy.types import Operator, PropertyGroup
 from mathutils import Matrix
 
-from ..rig import builder
+from ..rig import builder, motion_check
 from ..rig.waypoints import MOVE_JOINT, MOVE_LINEAR, WaypointError, spans
+from ..solver import branches, manager, numpy_backend
 from ..ui.panel import active_rig
 from .ik import key_joint_value, own_fcurve_containers
+from .velocity import joint_value, limit_of
 
 #: Empty display size, as a fraction of the robot's reach. Waypoints are read
 #: at the scale of the robot, not the scene.
 MARKER_SCALE = 0.08
+
+#: The largest turn keyed as one piece of a linear move, in degrees. Blender
+#: interpolates a quaternion's four channels independently and normalises the
+#: result. That keeps to the shortest turn's path, but not to its pace, and the
+#: pace drifts further the longer the turn. Past this, extra keys go in along
+#: the way. At 30 degrees the drift is under 0.05 degrees.
+MAX_KEYED_TURN = 30.0
+
+#: How finely a linear move is followed when checking that it keeps its
+#: configuration: at most this many degrees of turn, or this many metres of
+#: travel, per step. Stepping by frames alone would take a short, fast move
+#: in strides long enough to jump branches that playback would never jump.
+WALK_TURN_STEP = 2.0
+WALK_DISTANCE_STEP = 0.005
+WALK_MAX_STEPS = 1000
 
 #: Blender caps a FloatVectorProperty at 32, which is the widest joint vector a
 #: waypoint can hold. Every industrial arm is far under it -- a 6-axis robot on
@@ -438,6 +473,17 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 "waypoints to Joint",
             )
             return {"CANCELLED"}
+        if needs_ik:
+            changed = configuration_changes(rig, plan)
+            if changed:
+                names = ", ".join(f"'{name}'" for name in changed)
+                self.report(
+                    {"ERROR"},
+                    f"{names}: taught in a different configuration from the waypoint "
+                    f"before, and a linear move can't change configuration. Make it a "
+                    f"joint move, or re-teach one of the two",
+                )
+                return {"CANCELLED"}
 
         first, last = plan[0].start_frame, plan[-1].end_frame
         # A linear finish leaves a switch-off key one frame past the end, so
@@ -458,11 +504,14 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
         # fight the values being written.
         with _handlers_suspended():
             _clear_generated(rig, ik_name, clear_from, clear_to)
+            # The target's last keyed rotation, so the next is keyed in the same
+            # hemisphere: see _key_linear_span.
+            previous = None
             for span in plan:
                 if span.move == MOVE_JOINT:
                     self._key_joint_span(rig, span)
                 else:
-                    self._key_linear_span(rig, span, ik_name)
+                    previous = self._key_linear_span(rig, span, ik_name, previous)
             if ends_linear:
                 # Leave the switch off past the end. Without this the last
                 # linear span's "on" key is the final one on the channel, so
@@ -475,6 +524,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             _set_linear_interpolation(rig, ik_name)
         rig.kinema_generated_range = owned
         context.scene.frame_set(original)
+        flagged = store_check(rig, check_job(context, rig, plan))
 
         # A joint move replays the joint vector it was taught with, so it
         # cannot follow a marker that has since been dragged somewhere else.
@@ -489,6 +539,8 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             f"Generated {len(plan)} move{'s' if len(plan) != 1 else ''} "
             f"over frames {first}-{last}"
         )
+        if flagged:
+            message += f"; {_flagged_text(flagged)} in the motion check"
         if stranded:
             self.report(
                 {"WARNING"},
@@ -497,7 +549,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 f"or set it to Linear to follow the marker",
             )
             return {"FINISHED"}
-        self.report({"INFO"}, message)
+        self.report({"WARNING"} if flagged else {"INFO"}, message)
         return {"FINISHED"}
 
     @staticmethod
@@ -518,24 +570,317 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 key_joint_value(pose_bone, frame)
 
     @staticmethod
-    def _key_linear_span(rig, span, ik_name: str) -> None:
-        """Key the IK goal at both ends and switch live IK on for the span.
+    def _key_linear_span(rig, span, ik_name: str, previous):
+        """Key the IK goal along the move and switch live IK on for the span.
 
         The solver tracks the goal every frame, so keying the goal's own
         transform LINEAR is what makes the tool travel a straight line: the
         goal moves along it, and the arm follows.
+
+        Each rotation is keyed in the same hemisphere as the one before it
+        (``previous``, returned updated for the next move). A pose converts to
+        either of two opposite quaternions, and Blender interpolates the four
+        channels independently, so a pair keyed from opposite hemispheres turns
+        the tool the long way round -- 190 degrees for a 20 degree move.
+
+        The joints are keyed at both ends as well, at the configurations those
+        waypoints were taught in. IK overrides them on every frame, but it
+        solves *from* them: without these keys it would seed from whatever the
+        neighbouring keys hold, and solve the line in that configuration.
         """
         rig.kinema_ik_enabled = True
         rig.keyframe_insert(data_path="kinema_ik_enabled", frame=span.start_frame)
         goal = rig.pose.bones[ik_name]
         goal.rotation_mode = "QUATERNION"
+        start, end = pose_of(span.start), pose_of(span.end)
+        for frame in _linear_key_frames(span, start, end):
+            goal.matrix = _between(start, end, (frame - span.start_frame) / span.frames)
+            if previous is not None:
+                rotation = goal.rotation_quaternion.copy()
+                rotation.make_compatible(previous)
+                goal.rotation_quaternion = rotation
+            previous = goal.rotation_quaternion.copy()
+            goal.keyframe_insert(data_path="location", frame=frame)
+            goal.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
         for waypoint, frame in (
             (span.start, span.start_frame),
             (span.end, span.end_frame),
         ):
-            goal.matrix = pose_of(waypoint)
-            goal.keyframe_insert(data_path="location", frame=frame)
-            goal.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+            _apply_joint_values(rig, list(waypoint.q)[: waypoint.dof])
+            for pose_bone in builder.joint_bones(rig):
+                key_joint_value(pose_bone, frame)
+        return previous
+
+
+def _turn(start: Matrix, end: Matrix) -> float:
+    """The angle between two poses' orientations, the short way, in degrees."""
+    angle = start.to_quaternion().rotation_difference(end.to_quaternion()).angle
+    return math.degrees(min(angle, 2.0 * math.pi - angle))
+
+
+def _between(start: Matrix, end: Matrix, fraction: float) -> Matrix:
+    """The pose ``fraction`` of the way along a linear move.
+
+    On the straight line between the two positions, turned the short way
+    between the two orientations.
+    """
+    first, last = start.to_quaternion(), end.to_quaternion()
+    last.make_compatible(first)
+    pose = first.slerp(last, fraction).to_matrix().to_4x4()
+    pose.translation = start.translation.lerp(end.translation, fraction)
+    return pose
+
+
+def _linear_key_frames(span, start: Matrix, end: Matrix) -> list[int]:
+    """The frames a linear move keys its target on: both ends, and enough between.
+
+    Enough that no piece turns further than :data:`MAX_KEYED_TURN`, where the
+    move has the frames to spare. Whole frames, spread evenly, so every key
+    sits where the line says it should be at that frame and the pace along the
+    line stays even.
+    """
+    pieces = max(1, math.ceil(_turn(start, end) / MAX_KEYED_TURN))
+    pieces = min(pieces, max(span.frames, 1))
+    return sorted(
+        {span.start_frame + round(k * span.frames / pieces) for k in range(pieces + 1)}
+    )
+
+
+# --------------------------------------------------------------------------
+# a linear move keeps its configuration
+# --------------------------------------------------------------------------
+def configuration_changes(rig, plan) -> list[str]:
+    """The linear moves whose two ends were taught in different configurations.
+
+    Named by the waypoint each arrives at, the way the list shows them.
+    """
+    solver = manager.get_solver(rig, ik_bone_name(rig))
+    # A waypoint's pose is the TCP's. With the tip handed to another bone the
+    # solver is aiming something else at it, and the walk would prove nothing.
+    if solver is None or solver.tip_bone != _tool_bone(rig):
+        return []
+    return [
+        span.end.name
+        for span in plan
+        if span.move == MOVE_LINEAR and _changes_configuration(rig, span, solver.chain)
+    ]
+
+
+def _changes_configuration(rig, span, chain) -> bool:
+    """True if following the line from the start's configuration ends in another.
+
+    The robot is walked along the line from the configuration its start was
+    taught in, each step seeded from the last -- which is all a straight line
+    can do -- and where it arrives is compared with the configuration the end
+    was taught in. Compared as Find Solutions compares branches, since a
+    different branch is what this is looking for.
+
+    Solved with the NumPy backend, which needs no compile and answers the same
+    question: can the arm follow this line without changing configuration?
+
+    Says False whenever it cannot tell:
+    - joints added or removed since teaching;
+    - a redundant arm, where the end of a line is a whole family of
+      configurations and which one the walk lands on says nothing about a
+      branch;
+    - a line the arm cannot follow at all, which the motion check reports in
+      its own terms.
+    """
+    columns = _chain_columns(rig, chain, span)
+    if columns is None:
+        return False
+    held = manager.held_mask(rig, chain)
+    if chain.dof - int(held.sum()) > 6:
+        return False
+
+    q_start = np.array(list(span.start.q), dtype=float)[columns]
+    q_end = np.array(list(span.end.q), dtype=float)[columns]
+    to_solver = np.linalg.inv(manager.root_pose(rig))
+    start, end = pose_of(span.start), pose_of(span.end)
+
+    def solve(seed, pose: Matrix):
+        goal = to_solver @ np.array(pose, dtype=float)
+        return numpy_backend.solve(chain, seed, goal, held=held)
+
+    # The end's configuration re-solved for where its marker is now. The same
+    # thing as the taught one unless the marker was moved, and still the same
+    # branch when it was.
+    reference = solve(q_end, end)
+    if not reference.converged:
+        return False
+
+    q = q_start
+    for fraction in _walk_fractions(span, start, end):
+        seed = q.copy()
+        # Held joints are not solved for; they go where their keys take them.
+        seed[held] = q_start[held] + (q_end[held] - q_start[held]) * fraction
+        result = solve(seed, _between(start, end, fraction))
+        if not result.converged:
+            return False
+        q = result.q
+    return (
+        branches.joint_distance(q, reference.q, chain.is_revolute)
+        >= branches.DISTINCT_TOLERANCE
+    )
+
+
+def _chain_columns(rig, chain, span) -> list[int] | None:
+    """Where each of the chain's joints sits in a waypoint's stored vector.
+
+    None if the waypoints were taught with a different set of joints than the
+    rig has now, since their stored vectors no longer line up with its bones.
+    """
+    names = [pose_bone.name for pose_bone in builder.joint_bones(rig)]
+    if span.start.dof != len(names) or span.end.dof != len(names):
+        return None
+    index = {name: i for i, name in enumerate(names)}
+    if any(name not in index for name in chain.bone_names):
+        return None
+    return [index[name] for name in chain.bone_names]
+
+
+def _walk_fractions(span, start: Matrix, end: Matrix) -> list[float]:
+    """Where along the line the walk solves: every frame, or finer on a fast move."""
+    distance = (end.translation - start.translation).length
+    steps = max(
+        span.frames,
+        math.ceil(_turn(start, end) / WALK_TURN_STEP),
+        math.ceil(distance / WALK_DISTANCE_STEP),
+        1,
+    )
+    steps = min(steps, WALK_MAX_STEPS)
+    return [k / steps for k in range(1, steps + 1)]
+
+
+# --------------------------------------------------------------------------
+# the motion check
+# --------------------------------------------------------------------------
+class KinemaMoveCheck(PropertyGroup):
+    """One move's findings from the last motion check. See rig/motion_check.py."""
+
+    name: StringProperty(name="Waypoint")
+    move: StringProperty(name="Move")
+    start_frame: IntProperty(name="Start")
+    end_frame: IntProperty(name="End")
+    line_error: FloatProperty(name="Off the Line", default=-1.0, unit="LENGTH")
+    twist_error: FloatProperty(name="Turned Off", default=-1.0, subtype="ANGLE")
+    limit_joint: StringProperty(name="At a Limit")
+    speed_joint: StringProperty(name="Fastest Joint")
+    speed_ratio: FloatProperty(name="Speed Against Limit")
+    jump_joint: StringProperty(name="Largest Jump")
+    jump: FloatProperty(name="Jump")
+    jump_prismatic: BoolProperty(name="Jump Is Linear")
+    jump_frame: IntProperty(name="Jump Frame")
+
+
+def check_job(context, rig, plan) -> list[motion_check.MoveCheck]:
+    """Play the job once, the way playback does, and measure every move.
+
+    Each frame is set with the handlers live, so live IK solves it with the
+    rig's own backend, from the rig's own keys -- whatever playback would
+    show, including a compile if the solver needs one.
+    """
+    scene = context.scene
+    bones = builder.joint_bones(rig)
+    joints = [
+        motion_check.Joint(
+            name=pose_bone.name,
+            prismatic=pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute")
+            == "prismatic",
+            lower=_float_or_none(pose_bone.bone.get(builder.PROP_LOWER)),
+            upper=_float_or_none(pose_bone.bone.get(builder.PROP_UPPER)),
+            velocity=limit_of(pose_bone),
+        )
+        for pose_bone in bones
+    ]
+    tool = _tool_bone(rig)
+    if tool not in rig.pose.bones:
+        # Taught with a TCP that has since been deleted: there is nothing to
+        # measure a line against, and no row is better than a wrong one.
+        return []
+    first, last = plan[0].start_frame, plan[-1].end_frame
+
+    samples = []
+    original = scene.frame_current
+    window = context.window_manager
+    window.progress_begin(first, last)
+    try:
+        for frame in range(first, last + 1):
+            scene.frame_set(frame)
+            context.view_layer.update()
+            samples.append(
+                motion_check.Sample(
+                    frame=frame,
+                    q=np.array([joint_value(pose_bone) for pose_bone in bones]),
+                    tool=np.array(rig.pose.bones[tool].matrix, dtype=float),
+                )
+            )
+            window.progress_update(frame)
+    finally:
+        window.progress_end()
+        scene.frame_set(original)
+
+    fps = scene.render.fps / scene.render.fps_base
+    return [
+        motion_check.check_move(
+            span.end.name,
+            span.move,
+            span.start_frame,
+            span.end_frame,
+            np.array(pose_of(span.start), dtype=float),
+            np.array(pose_of(span.end), dtype=float),
+            samples,
+            joints,
+            fps,
+        )
+        for span in plan
+    ]
+
+
+def store_check(rig, checks) -> int:
+    """Keep the findings on the rig. Returns how many moves have a problem."""
+    rig.kinema_motion_check.clear()
+    for check in checks:
+        item = rig.kinema_motion_check.add()
+        for field in motion_check.MoveCheck.__dataclass_fields__:
+            setattr(item, field, getattr(check, field))
+    return sum(1 for check in checks if motion_check.problems(check))
+
+
+def _flagged_text(count: int) -> str:
+    return f"{count} move{'s' if count != 1 else ''} flagged"
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class KINEMA_OT_check_motion(KinemaWaypointOperator):
+    bl_idname = "kinema.check_motion"
+    bl_label = "Check Motion"
+    bl_description = (
+        "Play the job through once, solving as playback does, and report each "
+        "move: distance from its line, joint limits, speeds and jumps"
+    )
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        try:
+            plan = spans(rig.kinema_waypoints)
+        except WaypointError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        flagged = store_check(rig, check_job(context, rig, plan))
+        message = f"Checked {len(plan)} move{'s' if len(plan) != 1 else ''}"
+        if flagged:
+            self.report({"WARNING"}, f"{message}; {_flagged_text(flagged)}")
+        else:
+            self.report({"INFO"}, f"{message}; nothing to report")
+        return {"FINISHED"}
 
 
 def _generated_paths(rig, ik_name: str | None) -> set[str]:
@@ -629,16 +974,21 @@ def _handlers_suspended():
 
 classes = (
     KinemaWaypoint,
+    KinemaMoveCheck,
     KINEMA_OT_add_waypoint,
     KINEMA_OT_update_waypoint,
     KINEMA_OT_goto_waypoint,
     KINEMA_OT_remove_waypoint,
     KINEMA_OT_generate_motion,
+    KINEMA_OT_check_motion,
 )
 
 
 def register_props() -> None:
     bpy.types.Object.kinema_waypoints = CollectionProperty(type=KinemaWaypoint)
+    # The last motion check, one row per move. Kept on the rig so it survives a
+    # save, and replaced whole by the next Generate Motion or Check Motion.
+    bpy.types.Object.kinema_motion_check = CollectionProperty(type=KinemaMoveCheck)
     # What the last generation covered, so the next one can clear its own
     # leavings even where the new job no longer reaches. Empty when last < first.
     bpy.types.Object.kinema_generated_range = IntVectorProperty(
@@ -657,5 +1007,6 @@ def register_props() -> None:
 
 def unregister_props() -> None:
     del bpy.types.Object.kinema_waypoints
+    del bpy.types.Object.kinema_motion_check
     del bpy.types.Object.kinema_generated_range
     del bpy.types.Object.kinema_active_waypoint

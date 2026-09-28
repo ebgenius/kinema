@@ -28,7 +28,7 @@ from ..rig.velocity import History, Reading, clamp, speed
 from ..solver import manager
 from ..solver.chain import chain_bones
 from ..ui.panel import active_rig
-from .ik import own_fcurve_containers
+from .ik import joint_curves
 
 #: The frames each rig was last seen at, for the joints live IK drives.
 _history = History()
@@ -75,23 +75,9 @@ def _clamped(pose_bone, value: float) -> float:
     return value + (clamp(value, lower, upper) - value) * constraint.influence
 
 
-def _value(pose_bone) -> float:
+def joint_value(pose_bone) -> float:
+    """Where this joint stands as the rig shows it: its channel, through its limit."""
     return _clamped(pose_bone, float(getattr(pose_bone, _channel(pose_bone))[1]))
-
-
-def _joint_curves(rig) -> dict[str, bpy.types.FCurve]:
-    """Bone name -> the curve animating its one joint channel, where there is one."""
-    wanted = {
-        (pose_bone.path_from_id(_channel(pose_bone)), 1): pose_bone.name
-        for pose_bone in builder.joint_bones(rig)
-    }
-    found: dict[str, bpy.types.FCurve] = {}
-    for container in own_fcurve_containers(rig):
-        for curve in container:
-            name = wanted.get((curve.data_path, curve.array_index))
-            if name is not None and not curve.mute:
-                found.setdefault(name, curve)
-    return found
 
 
 def _ik_driven(rig) -> set[str]:
@@ -136,13 +122,13 @@ def readings(rig, scene) -> list[Reading]:
 
     fps = scene.render.fps / scene.render.fps_base
     frame = scene.frame_current
-    curves = _joint_curves(rig)
+    curves = joint_curves(rig)
     driven = _ik_driven(rig)
     seen = _history.before(_key(rig), frame)
 
     result = []
     for pose_bone, limit in limited:
-        now = _value(pose_bone)
+        now = joint_value(pose_bone)
         curve = curves.get(pose_bone.name)
         if curve is not None and pose_bone.name not in driven:
             before = _clamped(pose_bone, curve.evaluate(frame - 1))
@@ -174,7 +160,7 @@ def observe(scene) -> None:
         if not builder.is_kinema_rig(obj):
             continue
         values = {
-            pose_bone.name: _value(pose_bone)
+            pose_bone.name: joint_value(pose_bone)
             for pose_bone in builder.joint_bones(obj)
             if limit_of(pose_bone) is not None
         }
