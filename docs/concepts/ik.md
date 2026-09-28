@@ -183,16 +183,31 @@ So the cost is paid once per robot, and Kinema pays it deliberately at the momen
 click **Add IK Target**, behind a wait cursor. The alternative would be a 15-second freeze
 the first time you drag the control, which is worse.
 
-Two things affect when you feel it:
+**What doesn't compile again.** The compiled solver depends only on the robot and on the
+joint the TCP rides, not on the tool offset. So these all reuse it:
 
-- **The first time in a session there is a second cost**, before the compile: importing the
-  solver stack itself, 2–5 seconds. It happens on first use rather than at Blender startup,
-  so a session where you never touch a robot never pays it.
-- Loading a *second* robot of a different structure compiles again. Same robot, same
-  session, no recompile.
+- changing the TCP's offset, through **Edit TCP…** or the panel;
+- removing the IK target and adding it back;
+- removing an elbow swivel;
+- holding or releasing a joint, since that cost is always part of the compiled problem.
+
+**What does, and when.** A few things need a new compiled solver:
+
+- **The first time in a session**, there is a cost before the compile: importing the solver
+  stack itself, 2–5 seconds. It happens on first use rather than at Blender startup, so a
+  session where you never touch a robot never pays it.
+- **A second robot** of a different structure compiles again.
 - **Adding an elbow swivel** compiles once more, because an elbow goal makes a different
-  problem. Holding or releasing a joint costs nothing: that cost is always part of the
-  compiled problem.
+  problem.
+- **The TCP moving to another joint, or adding or removing an
+  [external axis](../tutorials/external-axes.md)**, compiles too, but not straight away.
+  These are edits you tend to adjust, and each adjustment in the *Adjust Last Operation*
+  panel would pay another compile. So live IK solves on the simpler NumPy solver while you
+  adjust, and the IK panel says *PyRoki waits until the edit is done*. It compiles once when
+  you move on to something else, or leave the edit alone for ten seconds.
+
+A bake, **Find Solutions**, playback and rendering never wait. They use PyRoki, and compile
+it first if they must, so their results never quietly come from the simpler solver.
 
 ## The solve budget
 

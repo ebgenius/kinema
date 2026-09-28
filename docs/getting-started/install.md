@@ -14,9 +14,9 @@ at.
 
 | Your machine | File | Size |
 |---|---|---|
-| Windows (Intel/AMD 64-bit) | `kinema-0.5.0-windows_x64.zip` | ~117 MB |
-| Linux (Intel/AMD 64-bit) | `kinema-0.5.0-linux_x64.zip` | ~136 MB |
-| macOS (Apple Silicon) | `kinema-0.5.0-macos_arm64.zip` | ~100 MB |
+| Windows (Intel/AMD 64-bit) | `kinema-0.6.0-windows_x64.zip` | ~117 MB |
+| Linux (Intel/AMD 64-bit) | `kinema-0.6.0-linux_x64.zip` | ~136 MB |
+| macOS (Apple Silicon) | `kinema-0.6.0-macos_arm64.zip` | ~100 MB |
 
 Intel Macs are not currently built. If you need one, open an issue.
 
@@ -36,7 +36,7 @@ Download the zip for your platform from the
 
     1. **Edit → Preferences → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.5.0-windows_x64.zip`
+    3. Select `kinema-0.6.0-windows_x64.zip`
     4. Kinema appears in the add-on list, already enabled
 
     !!! danger "Enable long paths first"
@@ -49,14 +49,14 @@ Download the zip for your platform from the
 
     1. **Blender → Settings → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.5.0-macos_arm64.zip`
+    3. Select `kinema-0.6.0-macos_arm64.zip`
     4. Kinema appears in the add-on list, already enabled
 
 === "Linux"
 
     1. **Edit → Preferences → Get Extensions**
     2. Click the dropdown arrow at the top right → **Install from Disk…**
-    3. Select `kinema-0.5.0-linux_x64.zip`
+    3. Select `kinema-0.6.0-linux_x64.zip`
     4. Kinema appears in the add-on list, already enabled
 
 ## Check it worked
@@ -79,8 +79,10 @@ platform mismatch in the download. See
 
 !!! tip "The first solve pauses. Once."
     The solver compiles itself the first time it runs on a given robot, which takes
-    roughly 15 seconds behind a wait cursor. Every solve after that is a few milliseconds.
-    This is normal and is explained in [Forward and inverse kinematics](../concepts/ik.md).
+    roughly 15 seconds behind a wait cursor. Every solve after that is a few milliseconds,
+    and editing the tool or re-adding the IK target doesn't compile again. This is normal
+    and is explained in
+    [why the first solve is slow](../concepts/ik.md#why-the-first-solve-is-slow).
 
 ## Next
 

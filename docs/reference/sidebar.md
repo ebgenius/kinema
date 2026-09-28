@@ -3,7 +3,7 @@
 Everything Kinema does lives in the 3D viewport sidebar. Press <kbd>N</kbd> and click the
 **Kinema** tab.
 
-There are eight panels. The six between the top panel and **Solver** appear only when a
+There are nine panels. The seven between the top panel and **Solver** appear only when a
 Kinema rig is selected.
 
 ![Screenshot: an IK target being dragged, with the "Last solve" readout visible.](../assets/images/kinema_ik_solve.png){ .screenshot }
@@ -270,29 +270,43 @@ regeneration writes the stored frames again.
 
 See [Teach a robot a job](../tutorials/teach-a-job.md).
 
+## External Axes
+
+Collapsed by default. [Tracks, turntables, positioners and tool spindles](../tutorials/external-axes.md)
+the robot description doesn't have, added to the rig as joint bones.
+
+Each axis on the rig is listed with its mount (*Under the Robot*, *On the Tool* or
+*Standalone*) and a **✕** that removes it, putting back everything adding it changed. Their
+sliders and hold pins are with the other joints, in **Joints (FK)**.
+
+| Control | What it does |
+|---|---|
+| **Add External Axis…** | Open the dialog: a preset, the mount, the motion and its limits, where the axis sits and what it carries. The viewport previews the result until **OK** |
+
 ## Tool Centre Point
 
 The [TCP](../concepts/tcp.md) is the working point of the robot: the tip of the tool, and
 what IK aims at by default.
 
-With a TCP on the rig, the panel shows which link it rides, its live X/Y/Z position and its
-R/P/Y orientation — reported as the **tool** frame, not the marker bone's.
+With a TCP on the rig, the panel shows which link it is measured from, its live X/Y/Z
+position and its R/P/Y orientation, reported as the **tool** frame, not the marker bone's.
 
 | Control | What it does |
 |---|---|
+| **Edit TCP…** / **Place TCP…** | Open the dialog: place the TCP by offset, on the 3D cursor or on an object's origin, with a preview in the viewport. Reads *Place* when the rig has no TCP yet |
 | **Parent Bone** | The joint bone the TCP rides. Only joint bones can host it |
-| **Tool Offset** | Location and roll/pitch/yaw from that joint's link frame — the flange |
+| **Tool Offset** | Location and roll/pitch/yaw from that joint's mounting flange (`tool0`), or its link frame where it has none. The section's first line says which |
 | **Reset** | Zero the offset, putting the TCP on the flange itself |
 | **Update TCP** / **Create TCP** | Apply the parent bone and offset. Reads *Create* when the rig has no TCP yet |
 | **Move TCP to Active Bone** | The older route: place it on whichever bone is active in Pose or Edit mode |
 
-The offset is rarely zero on a fresh import, and that is not a mistake: the tool frame is
-the description's deepest link, which usually sits behind one or more *fixed* joints from
-the last actuated one. Fixed joints get no bone, so the offset field is the only place that
-distance is visible.
+A fresh import puts the TCP on the flange with a zero offset, so a TCP from a tool's drawing
+goes in unchanged. On a robot with no flange, and on rigs imported before 0.6.0, the offset
+is measured from the joint's link frame instead. See
+[where zero is](../concepts/tcp.md#where-zero-is-the-mounting-flange).
 
-Angles are roll, pitch and yaw about fixed X, Y and Z — the convention URDF uses in
-`<origin rpy="…">` — so a tool transform copied out of a description goes in unchanged.
+Changing the TCP leaves the robot where it is, and an IK target aimed at the TCP comes along
+to the new one.
 
 ## Inverse Kinematics
 
@@ -305,7 +319,8 @@ Before you add a target, this panel has one button:
 Adding a target compiles the solver — roughly 15 seconds. It happens once per **bone** you
 aim at, not once per robot, so pointing the target at a bone the solver has not seen before
 pays it again. A handful of recent ones stay compiled, so scrubbing back and forth over a
-hand-off is free after the first pass. It requires a TCP.
+hand-off is free after the first pass, and removing the target and adding it back costs
+nothing. It requires a TCP.
 
 Once a target exists:
 
@@ -370,6 +385,10 @@ Below sits a readout box:
 - A one-line summary of how the last solve converged
 - **PyRoki unavailable for this rig** plus the reason, if the good solver could not be
   used for this particular robot
+- **PyRoki waits until the edit is done** / *Solving on NumPy meanwhile*: after an edit
+  that needs the solver compiled again, such as an external axis or a TCP on another joint.
+  It compiles once the edit settles; see
+  [why the first solve is slow](../concepts/ik.md#why-the-first-solve-is-slow)
 
 See [Animate with an IK target](../tutorials/animate-ik.md).
 
