@@ -91,6 +91,10 @@ class MoveCheck:
     jump: float = 0.0
     jump_prismatic: bool = False
     jump_frame: int = 0
+    #: Set by Generate Motion, not measured here: a linear move whose end was
+    #: taught a whole turn from where the line arrives keeps the turn it
+    #: arrives with, and this says which joint and by how much.
+    turn_note: str = ""
 
 
 def check_move(
@@ -125,6 +129,10 @@ def check_move(
     result.limit_joint = _limit_joint(values, joints)
 
     frames = np.array([s.frame for s in own])
+    # The largest jump is the largest against each joint's own threshold.
+    # Radians and metres do not compare, and picking by raw size let a wrist
+    # stepping 0.9 rad hide a rail jumping 0.3 m.
+    worst = 0.0
     for (a, b), (qa, qb) in zip(
         zip(frames, frames[1:], strict=False),
         zip(values, values[1:], strict=False),
@@ -139,8 +147,11 @@ def check_move(
                 ratio = change * fps / gap / joint.velocity
                 if ratio > result.speed_ratio:
                     result.speed_ratio, result.speed_joint = ratio, joint.name
-            if change / gap > result.jump:
-                result.jump = change / gap
+            step = change / gap
+            relative = step / (JUMP_PRISMATIC if joint.prismatic else JUMP_REVOLUTE)
+            if relative > worst:
+                worst = relative
+                result.jump = step
                 result.jump_joint = joint.name
                 result.jump_prismatic = joint.prismatic
                 result.jump_frame = int(b)
@@ -154,6 +165,9 @@ def problems(check) -> list[str]:
     copy stored on the rig included.
     """
     found = []
+    note = getattr(check, "turn_note", "")
+    if note:
+        found.append(note)
     if check.line_error > LINE_TOLERANCE:
         found.append(f"{check.line_error * 1000:.1f} mm off the line")
     if check.twist_error > TWIST_TOLERANCE:

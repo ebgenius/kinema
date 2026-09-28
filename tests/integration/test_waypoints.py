@@ -55,6 +55,22 @@ def arm6(addon, fixture_dir, clean_scene, builder):
     return rig
 
 
+@pytest.fixture
+def wide6(addon, fixture_dir, clean_scene, builder):
+    """arm6 with a +-350 degree wrist, which can hold one pose a whole turn apart."""
+    import bpy
+
+    assert "FINISHED" in bpy.ops.kinema.build_robot(
+        filepath=str(fixture_dir / "arm6_wide.urdf")
+    )
+    rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
+    bpy.context.view_layer.objects.active = rig
+    rig.select_set(True)
+    bpy.ops.kinema.add_ik()
+    rig.kinema_ik_enabled = False
+    return rig
+
+
 Q0 = [0.0, -0.6, 1.0, 0.0, 0.6, 0.0]
 Q1 = [0.8, -0.9, 1.3, 0.2, 0.5, 0.3]
 
@@ -622,6 +638,40 @@ class TestConfiguration:
             bpy.ops.kinema.generate_motion()
         assert _curves(arm6) == [], "the refused job was keyed anyway"
 
+    def test_an_end_taught_a_whole_turn_away_keeps_the_turn_it_arrives_with(
+        self, wide6, builder, addon
+    ):
+        """The same pose with a wrist joint a whole turn round.
+
+        A line cannot change a joint's turns. Seeded from the taught turn, IK
+        was pulled over to it part-way along the line, a whole turn in one
+        frame. The end takes the turn the line arrives with instead, and the
+        motion check says so, for anyone who meant the other one.
+        """
+        import bpy
+
+        check = importlib.import_module(f"{addon.__name__}.rig.motion_check")
+        _teach(builder, wide6, 1, WRIST + [FLIP - 0.2], "JOINT", "a")
+        end = _teach(builder, wide6, 21, WRIST + [FLIP + 0.2], "LINEAR", "b")
+        arrives = list(end.q)[5]
+        wound = list(end.q)
+        wound[5] -= 2.0 * math.pi
+        end.q = wound
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        assert list(end.q)[5] == pytest.approx(arrives, abs=1e-3)
+        played = _played(builder, wide6, range(1, 22))
+        worst = max(
+            float(np.max(np.abs(played[frame] - played[frame - 1])))
+            for frame in range(2, 22)
+        )
+        assert worst < 0.2, f"a joint jumped {math.degrees(worst):.0f} degrees in a frame"
+        found = check.problems(wide6.kinema_motion_check[0])
+        assert any("joint6" in problem and "taught at" in problem for problem in found), (
+            found
+        )
+
 
 class TestBakingAJob:
     """What Bake IK makes of a generated job is what the job played."""
@@ -656,6 +706,70 @@ class TestBakingAJob:
         baked = _played(builder, arm6, range(1, 42))
         worst = max(float(np.max(np.abs(baked[f] - played[f]))) for f in played)
         assert worst < 1e-4, f"baking moved a joint by {worst:.4f} rad"
+
+    def test_baking_switches_the_keyed_live_ik_off_over_its_range(self, arm6, builder):
+        """Setting the property alone came undone on the next frame change.
+
+        The job keys the switch, so its curve put the job's value back and live
+        IK ran over the baked joints. Past the baked range the job keeps it.
+        """
+        import bpy
+
+        _teach(builder, arm6, 1, REACH_A, "JOINT", "a")
+        _teach(builder, arm6, 21, REACH_B, "LINEAR", "b")
+        _teach(builder, arm6, 41, REACH_C, "JOINT", "c")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        bpy.context.scene.frame_set(15)
+        assert arm6.kinema_ik_enabled, "the job never switched live IK on"
+
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=10)
+
+        for frame in (1, 5, 10):
+            bpy.context.scene.frame_set(frame)
+            assert not arm6.kinema_ik_enabled, f"live IK is back on at frame {frame}"
+        bpy.context.scene.frame_set(15)
+        assert arm6.kinema_ik_enabled, "the bake switched live IK off past its range"
+
+    def test_a_layered_job_bakes_to_what_it_played(self, arm6, builder):
+        """An NLA strip underneath changes what plays.
+
+        A base strip holds joint1 at 0.3 and the job's action is added on top.
+        ``keyframe_insert`` maps a value back through that stack, so the bake
+        has to keep the played value; keeping the action's own took the base
+        layer out again, 0.3 rad on every frame.
+        """
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        anim = arm6.animation_data
+        job, job_slot = anim.action, anim.action_slot
+        base = bpy.data.actions.new("base")
+        anim.action = base
+        first = builder.joint_bones(arm6)[0]
+        first.rotation_euler[1] = 0.3
+        first.keyframe_insert(data_path="rotation_euler", index=1, frame=1)
+        base_slot = anim.action_slot
+        anim.action = job
+        anim.action_slot = job_slot
+        strip = anim.nla_tracks.new().strips.new("base", 1, base)
+        if hasattr(strip, "action_slot"):
+            strip.action_slot = base_slot
+        strip.extrapolation = "HOLD"
+        anim.action_blend_type = "ADD"
+
+        played = _played(builder, arm6, range(1, 22))
+        assert played[1][0] == pytest.approx(Q0[0] + 0.3, abs=1e-5), (
+            "the base layer is not in effect, so this proves nothing"
+        )
+
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=21)
+        arm6.kinema_solver_mode = "OFF"
+        baked = _played(builder, arm6, range(1, 22))
+        worst = max(float(np.max(np.abs(baked[f] - played[f]))) for f in played)
+        assert worst < 1e-5, f"baking moved a joint by {worst:.4f} rad"
 
 
 class TestMotionCheck:
@@ -718,6 +832,30 @@ class TestMotionCheck:
 
         assert "FINISHED" in bpy.ops.kinema.check_motion()
         assert [row.name for row in arm6.kinema_motion_check] == ["pick"]
+
+    def test_a_job_that_cannot_be_measured_is_not_reported_clean(self, arm6, builder):
+        """Without a TCP there is no line to measure; no rows, and it says so."""
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        arm6[builder.PROP_TCP_BONE] = "no such bone"
+
+        assert bpy.ops.kinema.check_motion() == {"CANCELLED"}
+        assert len(arm6.kinema_motion_check) == 0
+
+    def test_the_check_knows_when_the_job_has_changed(self, arm6, builder, wp_ops):
+        """Findings about a job since edited must not pass as current."""
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert arm6.kinema_motion_check_job == wp_ops.job_signature(arm6)
+
+        arm6.kinema_waypoints[1].frame = 30
+        assert arm6.kinema_motion_check_job != wp_ops.job_signature(arm6)
 
 
 def _curves(rig):

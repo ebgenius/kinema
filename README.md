@@ -129,6 +129,13 @@ A straight line can't change configuration, so a linear move whose two ends were
 different ones is refused, the way a robot controller refuses it. Make it a joint move, or
 re-teach one end.
 
+It can't change a joint's turns either. On a wrist that turns ±350°, one pose can be held
+with a joint a whole turn apart: 20° and −340° put the tool in the same place. An end taught
+a whole turn from where the line arrives keeps the turn the line arrives with, the way a KUKA
+LIN ignores its target's Turn. Generate Motion says which joint and both values, and the
+move's row in the Motion Check keeps saying so. Re-teach that waypoint if you meant the
+other turn.
+
 Nothing about the result is special, which is the point, and Blender's own graph editor
 shapes it afterwards. Linear moves come out LINEAR, so the tool's speed changes all at once
 at each waypoint. Easing them is up to you:
@@ -149,7 +156,8 @@ solves it, and each move gets a row listing what went wrong:
 - a joint that jumped more than a radian (or 25 cm) in one frame, which is how a
   configuration flip shows.
 
-**Check Again** plays it through after you've edited the curves by hand.
+**Check Again** plays it through after you've edited the curves by hand. Once the waypoints
+change, the panel says the check is out of date.
 
 When the shot is right, **Bake IK to Keyframes** turns the whole thing into plain joint
 curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves

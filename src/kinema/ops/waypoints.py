@@ -39,7 +39,8 @@ seed it, so that the arm solves the line in the configuration it was taught in
 and not in whatever a neighbouring key happens to hold. A straight line cannot
 change configuration, so a linear move whose two ends were taught in different
 ones is refused before anything is keyed, as a robot controller would refuse
-it.
+it. Nor can it change a joint's turns: an end taught a whole turn from where
+the line arrives is the same pose, and keeps the turn the line arrives with.
 
 Both taught values are stored: the tool pose *and* the joint vector. The pose
 is the portable truth -- it can be replayed on a different robot -- while the
@@ -53,6 +54,7 @@ the waypoints; ``rig/motion_check.py`` has what is measured.
 
 from __future__ import annotations
 
+import hashlib
 import math
 
 import bpy
@@ -473,17 +475,20 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 "waypoints to Joint",
             )
             return {"CANCELLED"}
-        if needs_ik:
-            changed = configuration_changes(rig, plan)
-            if changed:
-                names = ", ".join(f"'{name}'" for name in changed)
-                self.report(
-                    {"ERROR"},
-                    f"{names}: taught in a different configuration from the waypoint "
-                    f"before, and a linear move can't change configuration. Make it a "
-                    f"joint move, or re-teach one of the two",
-                )
-                return {"CANCELLED"}
+        refused, turned = settle_configurations(rig, plan) if needs_ik else ([], [])
+        if refused:
+            names = ", ".join(f"'{name}'" for name in refused)
+            self.report(
+                {"ERROR"},
+                f"{names}: taught in a different configuration from the waypoint "
+                f"before, and a linear move can't change configuration. Make it a "
+                f"joint move, or re-teach one of the two",
+            )
+            return {"CANCELLED"}
+        # Only now, with nothing refused: a cancelled operator leaves no undo
+        # step, so a change made before a refusal could not be taken back.
+        for waypoint, values, _ in turned:
+            waypoint.q = values
 
         first, last = plan[0].start_frame, plan[-1].end_frame
         # A linear finish leaves a switch-off key one frame past the end, so
@@ -524,7 +529,16 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             _set_linear_interpolation(rig, ik_name)
         rig.kinema_generated_range = owned
         context.scene.frame_set(original)
-        flagged = store_check(rig, check_job(context, rig, plan))
+        checks = check_job(context, rig, plan)
+        # Kept on the move's row too, so it is still there once the report has
+        # gone: anyone who meant the taught turn has to re-teach that waypoint.
+        notes = {
+            int(waypoint.frame): f"{description}: kept as the line arrives"
+            for waypoint, _, description in turned
+        }
+        for check in checks or ():
+            check.turn_note = notes.get(check.end_frame, "")
+        flagged = store_check(rig, checks)
 
         # A joint move replays the joint vector it was taught with, so it
         # cannot follow a marker that has since been dragged somewhere else.
@@ -539,8 +553,16 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             f"Generated {len(plan)} move{'s' if len(plan) != 1 else ''} "
             f"over frames {first}-{last}"
         )
-        if flagged:
+        if checks is None:
+            message += "; not checked, since this rig has no TCP to measure it by"
+        elif flagged:
             message += f"; {_flagged_text(flagged)} in the motion check"
+        for waypoint, _, description in turned:
+            message += (
+                f". '{waypoint.name}' was taught a whole turn from where the line "
+                f"arrives, and keeps the turn it arrives with ({description}). "
+                f"Re-teach it to change that"
+            )
         if stranded:
             self.report(
                 {"WARNING"},
@@ -581,7 +603,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
         (``previous``, returned updated for the next move). A pose converts to
         either of two opposite quaternions, and Blender interpolates the four
         channels independently, so a pair keyed from opposite hemispheres turns
-        the tool the long way round -- 190 degrees for a 20 degree move.
+        the tool the long way round -- 340 degrees for a 20 degree move.
 
         The joints are keyed at both ends as well, at the configurations those
         waypoints were taught in. IK overrides them on every frame, but it
@@ -650,36 +672,73 @@ def _linear_key_frames(span, start: Matrix, end: Matrix) -> list[int]:
 # --------------------------------------------------------------------------
 # a linear move keeps its configuration
 # --------------------------------------------------------------------------
-def configuration_changes(rig, plan) -> list[str]:
-    """The linear moves whose two ends were taught in different configurations.
+#: How a linear move's end compares with the configuration it was taught in.
+SAME, TURNS, BRANCH = "SAME", "TURNS", "BRANCH"
 
-    Named by the waypoint each arrives at, the way the list shows them.
+
+def settle_configurations(rig, plan):
+    """Check every linear move's end against the configuration it was taught in.
+
+    Returns ``(refused, turned)`` and writes nothing, so a refusal leaves the
+    waypoints exactly as they were:
+
+    - ``refused``: the linear moves whose two ends were taught in different
+      configurations, named by the waypoint each arrives at. A straight line
+      cannot change configuration, so these are not generated.
+    - ``turned``: ``(waypoint, joint values, description)`` for each linear
+      move whose end was taught with a joint a whole turn from where the line
+      arrives. That is the same pose, and a linear move keeps the turns it
+      starts with -- a KUKA LIN ignores its target's Turn the same way -- so
+      the waypoint takes the turns the line arrives with. Seeding IK from the
+      taught turn instead would pull it over to that turn part-way along the
+      line, in a single frame.
+
+    Settled in time order, so a move that starts where an earlier one's turns
+    were changed walks from the changed values.
     """
     solver = manager.get_solver(rig, ik_bone_name(rig))
     # A waypoint's pose is the TCP's. With the tip handed to another bone the
     # solver is aiming something else at it, and the walk would prove nothing.
     if solver is None or solver.tip_bone != _tool_bone(rig):
-        return []
-    return [
-        span.end.name
-        for span in plan
-        if span.move == MOVE_LINEAR and _changes_configuration(rig, span, solver.chain)
-    ]
+        return [], []
+    chain = solver.chain
+    refused, turned = [], []
+    changed = {}
+    for span in plan:
+        if span.move != MOVE_LINEAR:
+            continue
+        start = changed.get(span.start.as_pointer(), list(span.start.q))
+        arrival = _arrival(rig, span, chain, start)
+        if arrival is None:
+            continue
+        kind, values = arrival
+        if kind == BRANCH:
+            refused.append(span.end.name)
+        elif kind == TURNS:
+            changed[span.end.as_pointer()] = values
+            turned.append(
+                (span.end, values, _turn_description(rig, chain, span, list(span.end.q), values))
+            )
+    return refused, turned
 
 
-def _changes_configuration(rig, span, chain) -> bool:
-    """True if following the line from the start's configuration ends in another.
+def _arrival(rig, span, chain, start_values):
+    """Where a linear move arrives, against where its end was taught.
 
-    The robot is walked along the line from the configuration its start was
-    taught in, each step seeded from the last -- which is all a straight line
-    can do -- and where it arrives is compared with the configuration the end
-    was taught in. Compared as Find Solutions compares branches, since a
-    different branch is what this is looking for.
+    The robot is walked along the line from the start's configuration, each
+    step seeded from the last -- which is all a straight line can do. Where it
+    arrives is compared with the configuration the end was taught in:
+
+    - on a different branch, as Find Solutions tells branches apart: BRANCH;
+    - on the same branch but with a joint whole turns away, which a comparison
+      modulo a turn cannot see: TURNS, with the end's stored values carrying
+      the turns the walk arrived with;
+    - otherwise SAME.
 
     Solved with the NumPy backend, which needs no compile and answers the same
     question: can the arm follow this line without changing configuration?
 
-    Says False whenever it cannot tell:
+    None whenever it cannot tell:
     - joints added or removed since teaching;
     - a redundant arm, where the end of a line is a whole family of
       configurations and which one the walk lands on says nothing about a
@@ -689,12 +748,12 @@ def _changes_configuration(rig, span, chain) -> bool:
     """
     columns = _chain_columns(rig, chain, span)
     if columns is None:
-        return False
+        return None
     held = manager.held_mask(rig, chain)
     if chain.dof - int(held.sum()) > 6:
-        return False
+        return None
 
-    q_start = np.array(list(span.start.q), dtype=float)[columns]
+    q_start = np.array(start_values, dtype=float)[columns]
     q_end = np.array(list(span.end.q), dtype=float)[columns]
     to_solver = np.linalg.inv(manager.root_pose(rig))
     start, end = pose_of(span.start), pose_of(span.end)
@@ -705,10 +764,10 @@ def _changes_configuration(rig, span, chain) -> bool:
 
     # The end's configuration re-solved for where its marker is now. The same
     # thing as the taught one unless the marker was moved, and still the same
-    # branch when it was.
+    # branch and turns when it was.
     reference = solve(q_end, end)
     if not reference.converged:
-        return False
+        return None
 
     q = q_start
     for fraction in _walk_fractions(span, start, end):
@@ -717,12 +776,32 @@ def _changes_configuration(rig, span, chain) -> bool:
         seed[held] = q_start[held] + (q_end[held] - q_start[held]) * fraction
         result = solve(seed, _between(start, end, fraction))
         if not result.converged:
-            return False
+            return None
         q = result.q
-    return (
+
+    if (
         branches.joint_distance(q, reference.q, chain.is_revolute)
         >= branches.DISTINCT_TOLERANCE
-    )
+    ):
+        return BRANCH, None
+    turns = np.where(chain.is_revolute, np.round((q - reference.q) / (2.0 * math.pi)), 0.0)
+    if not turns.any():
+        return SAME, None
+    values = np.array(list(span.end.q), dtype=float)
+    values[columns] = q_end + turns * 2.0 * math.pi
+    return TURNS, values.tolist()
+
+
+def _turn_description(rig, chain, span, taught, arrived) -> str:
+    """Which joints a linear move's end keeps a different turn of, in words."""
+    columns = _chain_columns(rig, chain, span) or []
+    parts = [
+        f"{name} at {math.degrees(arrived[column]):+.0f}°, "
+        f"taught at {math.degrees(taught[column]):+.0f}°"
+        for name, column in zip(chain.bone_names, columns, strict=True)
+        if abs(arrived[column] - taught[column]) > math.pi
+    ]
+    return "; ".join(parts)
 
 
 def _chain_columns(rig, chain, span) -> list[int] | None:
@@ -770,6 +849,7 @@ class KinemaMoveCheck(PropertyGroup):
     speed_ratio: FloatProperty(name="Speed Against Limit")
     jump_joint: StringProperty(name="Largest Jump")
     jump: FloatProperty(name="Jump")
+    turn_note: StringProperty(name="Turn Kept")
     jump_prismatic: BoolProperty(name="Jump Is Linear")
     jump_frame: IntProperty(name="Jump Frame")
 
@@ -797,8 +877,9 @@ def check_job(context, rig, plan) -> list[motion_check.MoveCheck]:
     tool = _tool_bone(rig)
     if tool not in rig.pose.bones:
         # Taught with a TCP that has since been deleted: there is nothing to
-        # measure a line against, and no row is better than a wrong one.
-        return []
+        # measure a line against. None, not an empty list, so that no caller
+        # can mistake a job it could not measure for one with nothing wrong.
+        return None
     first, last = plan[0].start_frame, plan[-1].end_frame
 
     samples = []
@@ -839,13 +920,43 @@ def check_job(context, rig, plan) -> list[motion_check.MoveCheck]:
 
 
 def store_check(rig, checks) -> int:
-    """Keep the findings on the rig. Returns how many moves have a problem."""
+    """Keep the findings on the rig. Returns how many moves have a problem.
+
+    ``checks`` is None for a job that could not be measured, which leaves no
+    rows rather than rows that look clean. The waypoints the rows describe
+    are fingerprinted alongside them, so the panel can tell when they no
+    longer match the job: see :func:`job_signature`.
+    """
     rig.kinema_motion_check.clear()
-    for check in checks:
+    rig.kinema_motion_check_job = job_signature(rig) if checks is not None else ""
+    for check in checks or ():
         item = rig.kinema_motion_check.add()
         for field in motion_check.MoveCheck.__dataclass_fields__:
             setattr(item, field, getattr(check, field))
-    return sum(1 for check in checks if motion_check.problems(check))
+    return sum(1 for check in checks or () if motion_check.problems(check))
+
+
+def job_signature(rig) -> str:
+    """A fingerprint of the waypoints as they stand: names, frames, moves, poses, joints.
+
+    Stored with a motion check and compared by the panel, so findings about a
+    job that has since been edited are marked as such instead of being shown
+    as current. The keys are not in it -- editing a curve by hand is only
+    caught by Check Again -- but everything Generate Motion reads is.
+    """
+    parts = []
+    for waypoint in sorted(rig.kinema_waypoints, key=lambda w: int(w.frame)):
+        pose = pose_of(waypoint)
+        parts.append(
+            (
+                waypoint.name,
+                int(waypoint.frame),
+                waypoint.move,
+                tuple(round(float(pose[r][c]), 6) for r in range(4) for c in range(4)),
+                tuple(round(float(v), 6) for v in list(waypoint.q)[: waypoint.dof]),
+            )
+        )
+    return hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()
 
 
 def _flagged_text(count: int) -> str:
@@ -874,7 +985,13 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
         except WaypointError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        flagged = store_check(rig, check_job(context, rig, plan))
+        checks = check_job(context, rig, plan)
+        flagged = store_check(rig, checks)
+        if checks is None:
+            self.report(
+                {"WARNING"}, "Nothing checked: this rig has no TCP to measure the job by"
+            )
+            return {"CANCELLED"}
         message = f"Checked {len(plan)} move{'s' if len(plan) != 1 else ''}"
         if flagged:
             self.report({"WARNING"}, f"{message}; {_flagged_text(flagged)}")
@@ -989,6 +1106,12 @@ def register_props() -> None:
     # The last motion check, one row per move. Kept on the rig so it survives a
     # save, and replaced whole by the next Generate Motion or Check Motion.
     bpy.types.Object.kinema_motion_check = CollectionProperty(type=KinemaMoveCheck)
+    # The job those rows describe, as job_signature() saw it then.
+    bpy.types.Object.kinema_motion_check_job = StringProperty(
+        name="Checked Job",
+        description="Fingerprint of the waypoints the motion check measured",
+        default="",
+    )
     # What the last generation covered, so the next one can clear its own
     # leavings even where the new job no longer reaches. Empty when last < first.
     bpy.types.Object.kinema_generated_range = IntVectorProperty(
@@ -1008,5 +1131,6 @@ def register_props() -> None:
 def unregister_props() -> None:
     del bpy.types.Object.kinema_waypoints
     del bpy.types.Object.kinema_motion_check
+    del bpy.types.Object.kinema_motion_check_job
     del bpy.types.Object.kinema_generated_range
     del bpy.types.Object.kinema_active_waypoint

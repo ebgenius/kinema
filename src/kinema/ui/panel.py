@@ -584,6 +584,7 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         return rig is not None and len(rig.kinema_waypoints) > 1
 
     def draw(self, context: bpy.types.Context) -> None:
+        from ..ops.waypoints import job_signature
         from ..rig.motion_check import problems
 
         layout = self.layout
@@ -597,6 +598,10 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         if not len(checks):
             layout.label(text="Generate Motion checks the job too", icon="INFO")
             return
+        # A handful of waypoints hashed per redraw; cheap, and it keeps
+        # findings about a job since edited from passing as current.
+        if rig.kinema_motion_check_job != job_signature(rig):
+            layout.label(text="The waypoints have changed since this check", icon="ERROR")
 
         column = layout.column(align=True)
         for check in checks:

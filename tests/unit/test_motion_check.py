@@ -169,6 +169,21 @@ class TestJoints:
         )
         assert any("rail jumps 500 mm" in problem for problem in check.problems(result))
 
+    def test_a_prismatic_jump_is_not_hidden_by_a_smaller_revolute_one(self):
+        """Radians and metres do not compare; each is judged against its own threshold.
+
+        In one frame the wrist steps 0.9 rad, under its threshold, and the
+        rail jumps 0.3 m, over its own. Picked by raw size the wrist won and
+        the rail's jump went unreported.
+        """
+        samples = _samples([1, 2], [[0.0, 0.0], [0.9, 0.3]], [_pose()] * 2)
+        result = check.check_move(
+            "a", "JOINT", 1, 2, _pose(), _pose(), samples,
+            [check.Joint("wrist"), check.Joint("rail", prismatic=True)], FPS,
+        )
+        assert (result.jump_joint, result.jump_prismatic) == ("rail", True)
+        assert any("rail jumps 300 mm" in problem for problem in check.problems(result))
+
     def test_a_joint_on_its_limit_is_flagged(self):
         joint = check.Joint("j5", lower=-2.0, upper=2.0)
         samples = _samples([1, 2, 3], [[1.5], [1.9], [2.0]], [_pose()] * 3)
@@ -203,3 +218,12 @@ class TestProblems:
             jump_frame = 0
 
         assert check.problems(Stored()) == ["0.5 mm off the line"]
+
+    def test_a_kept_turn_is_reported_first(self):
+        """Set by Generate Motion rather than measured, and the one to act on."""
+        result = check.MoveCheck("b", "LINEAR", 1, 21, line_error=0.0005)
+        result.turn_note = "joint6 at +73°, taught at -287°: kept as the line arrives"
+        assert check.problems(result) == [
+            "joint6 at +73°, taught at -287°: kept as the line arrives",
+            "0.5 mm off the line",
+        ]
