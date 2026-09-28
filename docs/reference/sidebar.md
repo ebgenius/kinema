@@ -185,6 +185,8 @@ A joint's speed is how far it moved since the frame before, times the frame rate
 One row per bone, answering the two questions that come up as soon as a robot is imported:
 what does IK aim at, and what is bolted to this link?
 
+![Screenshot: the Bones panel, with something attached to elbow_joint and a gripper on the TCP, and the attachment's offset from the bone open below.](../assets/images/kinema_bones_panel.png){ .screenshot }
+
 | Part of the row | What it does |
 |---|---|
 | **◉ radio** | Aim the solver at this bone. Offered on joint bones and on the TCP marker, which is the default |
