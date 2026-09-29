@@ -85,6 +85,70 @@ class TestAbsoluteSelfImportScan:
             vendor_tool._assert_no_absolute_self_imports(root)
 
 
+class TestPatchLines:
+    """Fixes carried until upstream has them. They change behaviour, so a patch
+    that quietly stopped applying -- or applied somewhere it did not mean to --
+    would ship a solver that is not the one tested."""
+
+    def patch(self, vendor_tool, tmp_path, content: bytes, patches) -> bytes:
+        (tmp_path / "module.py").write_bytes(content)
+        vendor_tool._patch_lines(tmp_path, patches)
+        return (tmp_path / "module.py").read_bytes()
+
+    @pytest.mark.parametrize("newline", [b"\r\n", b"\n"])
+    def test_a_line_becomes_several_with_the_files_own_newlines(
+        self, vendor_tool, tmp_path, newline
+    ):
+        """A Windows clone is CRLF; a replacement written with bare \\n would
+        leave the file with mixed line endings."""
+        content = newline.join([b"import dis", b"x = 1", b""])
+        result = self.patch(
+            vendor_tool, tmp_path, content, (("module.py", "import dis", "import dis\nimport re"),)
+        )
+        assert result == newline.join([b"import dis", b"import re", b"x = 1", b""])
+
+    def test_only_a_whole_line_matches(self, vendor_tool, tmp_path):
+        """A longer line that merely ends with the old one is not it."""
+        with pytest.raises(SystemExit, match="found 0"):
+            self.patch(
+                vendor_tool, tmp_path, b"reimport dis\n", (("module.py", "import dis", "x"),)
+            )
+
+    def test_a_line_found_twice_is_refused(self, vendor_tool, tmp_path):
+        """Upstream has moved on: the patch no longer says what it touches."""
+        with pytest.raises(SystemExit, match="found 2"):
+            self.patch(
+                vendor_tool, tmp_path, b"    return str(x)\n    return str(x)\n",
+                (("module.py", "    return str(x)", "    return x"),),
+            )
+
+    def test_a_patch_changes_the_fingerprint(self, vendor_tool):
+        jaxls = next(p for p in vendor_tool.PACKAGES if p.name == "jaxls")
+        altered = type(jaxls)(**{**jaxls.__dict__, "patch_lines": jaxls.patch_lines[:1]})
+        assert vendor_tool.recipe_fingerprint(altered) != vendor_tool.recipe_fingerprint(jaxls)
+
+    def test_a_package_without_patches_keeps_its_fingerprint(self, vendor_tool):
+        """Adding the mechanism must not make every other tree read as stale."""
+        import hashlib
+
+        pyroki = next(p for p in vendor_tool.PACKAGES if p.name == "pyroki")
+        assert not pyroki.patch_lines
+        before = repr((pyroki.drop_dirs, pyroki.drop_init_lines, pyroki.rewrite_imports))
+        assert vendor_tool.recipe_fingerprint(pyroki) == (
+            hashlib.sha256(before.encode()).hexdigest()[:12]
+        )
+
+    def test_the_shipped_jaxls_carries_its_patches(self, vendor_tool):
+        jaxls = next(p for p in vendor_tool.PACKAGES if p.name == "jaxls")
+        root = vendor_tool.VENDOR_DIR / "jaxls"
+        if not root.is_dir():
+            pytest.skip("jaxls is not vendored here")
+        for relative_path, _, new in jaxls.patch_lines:
+            lines = (root / relative_path).read_text(encoding="utf-8").splitlines()
+            for line in new.split("\n"):
+                assert line in lines, f"{relative_path} lacks {line!r}"
+
+
 class TestRecipeFingerprint:
     """Why the commit SHA alone cannot say a vendored tree is current."""
 

@@ -40,6 +40,19 @@ list is precisely the thing that misses a file in a subdirectory, and the
 symptom -- ``ModuleNotFoundError: No module named 'jaxls'`` -- shows up far
 from its cause.
 
+**Patched lines.** Fixes Kinema carries until upstream has them, each an exact
+whole line swapped for another, and each justified where it is declared in
+``patch_lines``. A patch whose line has gone -- or that now matches twice -- is a
+hard error, so a pin bump cannot drop one silently. There is one:
+
+* jaxls orders its cost groups by ``str()`` of their tree structure, whose text
+  carries the residual functions' memory addresses (``<function ... at 0x...>``).
+  So the order of groups -- and with it the traced program, and JAX's persistent
+  compilation cache key -- followed the process's allocation history, and a
+  kernel compiled in one Blender session missed the cache in the next. The patch
+  sorts on the text with the addresses taken out; Python's sort is stable, so
+  groups that tie keep the order the costs were given in.
+
 Usage::
 
     uv run python tools/vendor.py           # vendor at the pinned commits
@@ -87,6 +100,11 @@ class VendoredPackage:
     #: as ``kinema.vendor.<name>`` -- see the module docstring. Newline-agnostic
     #: and order-independent; a line that is not found is a hard error.
     rewrite_imports: tuple[tuple[str, str, str], ...] = ()
+    #: ``(file relative to the package, exact old line, replacement)``: fixes
+    #: carried until upstream has them -- see the module docstring. The old line
+    #: must match one whole line exactly once; the replacement may span several,
+    #: separated by ``\n`` and written with the file's own newlines.
+    patch_lines: tuple[tuple[str, str, str], ...] = ()
 
 
 PACKAGES = (
@@ -146,6 +164,16 @@ PACKAGES = (
                 "_solvers.py",
                 "from jaxls._preconditioning import (",
                 "from ._preconditioning import (",
+            ),
+        ),
+        # Cost groups sorted without memory addresses, so a problem traces to the
+        # same program in every process and JAX's compilation cache can hit.
+        patch_lines=(
+            ("_problem.py", "import dis", "import dis\nimport re"),
+            (
+                "_problem.py",
+                "            return str(x)",
+                '            return re.sub(r" at 0x[0-9a-fA-F]+", "", str(x))',
             ),
         ),
     ),
@@ -217,6 +245,41 @@ def _rewrite_imports(
             )
         target.write_bytes(data)
         print(f"    rewrote {relative_path}: {old!r} -> {new!r}")
+
+
+def _patch_lines(package_root: Path, patches: tuple[tuple[str, str, str], ...]) -> None:
+    """Swap exact whole lines for their replacements, in place.
+
+    Stricter than :func:`_rewrite_imports`, because a patch changes behaviour
+    rather than a name: the old line must be a *whole* line -- a longer line that
+    merely ends with it does not count -- and it must occur exactly once, since a
+    second match means upstream has moved on and the patch no longer says what
+    it touches. Either failure stops the run.
+
+    A replacement spanning several lines is written with the file's own
+    newlines, so a CRLF checkout stays CRLF throughout.
+    """
+    for relative_path, old, new in patches:
+        target = package_root / relative_path
+        if not target.is_file():
+            raise SystemExit(
+                f"vendor: {relative_path} not found in {package_root.name}\n"
+                f"Upstream layout changed -- review before bumping the pin."
+            )
+        data = target.read_bytes()
+        newline = b"\r\n" if b"\r\n" in data else b"\n"
+        lines = data.split(newline)
+        matches = [i for i, line in enumerate(lines) if line == old.encode()]
+        if len(matches) != 1:
+            raise SystemExit(
+                f"vendor: expected exactly one line {old!r} in {relative_path}, "
+                f"found {len(matches)}\n"
+                f"Upstream changed -- review the patch before bumping the pin."
+            )
+        (index,) = matches
+        lines[index : index + 1] = [part.encode() for part in new.split("\n")]
+        target.write_bytes(newline.join(lines))
+        print(f"    patched {relative_path}: {old.strip()!r}")
 
 
 #: Package names that must never appear in an absolute import inside a
@@ -310,6 +373,10 @@ def recipe_fingerprint(pkg: VendoredPackage) -> str:
     release with the old absolute imports in it.
     """
     recipe = repr((pkg.drop_dirs, pkg.drop_init_lines, pkg.rewrite_imports))
+    # Only when there are patches, so a package without any keeps the
+    # fingerprint its tree was stamped with.
+    if pkg.patch_lines:
+        recipe += repr(pkg.patch_lines)
     return hashlib.sha256(recipe.encode()).hexdigest()[:12]
 
 
@@ -371,6 +438,7 @@ def vendor(pkg: VendoredPackage, *, check: bool) -> bool:
             print(f"    dropped {drop}/")
         _patch_init(staged / "__init__.py", pkg.drop_init_lines)
         _rewrite_imports(staged, pkg.rewrite_imports)
+        _patch_lines(staged, pkg.patch_lines)
         _assert_no_absolute_self_imports(staged)
 
         # Record provenance so the vendored tree is auditable -- the extension
@@ -379,11 +447,15 @@ def vendor(pkg: VendoredPackage, *, check: bool) -> bool:
             f"  {path}: {old!r} -> {new!r}"
             for path, old, new in pkg.rewrite_imports
         )
+        patched = "\n".join(
+            f"  {path}: {old!r} -> {new!r}" for path, old, new in pkg.patch_lines
+        )
         (staged / STAMP_NAME).write_text(
             f"{pkg.name}\nsource: {pkg.url}\ncommit: {sha}\n"
             f"recipe: {recipe_fingerprint(pkg)}\n"
             f"dropped: {', '.join(pkg.drop_dirs) or '(nothing)'}\n"
-            f"rewritten imports:\n{rewrites or '  (none)'}\n",
+            f"rewritten imports:\n{rewrites or '  (none)'}\n"
+            f"patched lines:\n{patched or '  (none)'}\n",
             encoding="utf-8",
         )
 

@@ -563,10 +563,15 @@ entry named there is marked a duplicate, broken or partial and hidden from the p
   without long-path support the install fails partway with `WinError 206`. Enable
   `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled`, or keep
   Blender's config directory shallow.
-- **The first IK solve compiles.** JAX JITs the solver on first use, roughly 14 s. It is
-  paid up front when the IK target is created, behind a wait cursor. Adding an **Elbow
-  Swivel** pays one more compile, because an elbow goal makes a different problem; pinning a
-  joint pays none. Warm solves are ~5–20 ms.
+- **A robot's first IK solve compiles.** JAX JITs the solver on first use: about 5 s on a
+  desktop, 19–31 s on a modest laptop. It is paid up front when the IK target is created,
+  behind a wait cursor, and only once per robot: the compiled solver is kept on disk, in
+  Kinema's own user folder, and a later Blender session loads it in a few seconds (about 5 s
+  on that laptop). **Keep Compiled Solvers** in the add-on preferences turns this off, and
+  **Clear** empties the folder, which is trimmed back to 256 MB at the start of each
+  session. Adding an **Elbow Swivel**
+  pays one more compile, because an elbow goal makes a different problem; pinning a joint
+  pays none. Warm solves are ~5–20 ms.
 - **Imports block.** A big robot freezes Blender until it has finished loading, with no
   progress and no cancel. Extensions may not start threads, which is what kept the viewport
   alive before.

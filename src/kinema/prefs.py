@@ -138,6 +138,15 @@ class KinemaPreferences(AddonPreferences):
         description="Print solver diagnostics to the system console",
         default=False,
     )
+    keep_compiled: BoolProperty(
+        name="Keep Compiled Solvers",
+        description=(
+            "Save each compiled solver in Kinema's user folder, so a later session "
+            "loads it in seconds instead of compiling it again. Takes effect the "
+            "next time Blender starts"
+        ),
+        default=True,
+    )
     search_paths: CollectionProperty(type=KinemaSearchPath)
     active_search_path: IntProperty(default=0)
 
@@ -148,6 +157,14 @@ class KinemaPreferences(AddonPreferences):
         column.prop(self, "solver_backend")
         column.prop(self, "solve_timeout_ms")
         column.prop(self, "debug_logging")
+        row = column.row(align=True)
+        row.prop(self, "keep_compiled")
+        entries, size = runtime.compile_cache_usage(runtime.compile_cache_folder())
+        row.operator(
+            "kinema.clear_compile_cache",
+            text=f"Clear ({entries} kept, {size / 1024**2:.0f} MB)",
+            icon="TRASH",
+        )
 
         layout.separator()
         header = layout.row()
@@ -206,6 +223,23 @@ class KINEMA_OT_check_dependencies(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class KINEMA_OT_clear_compile_cache(bpy.types.Operator):
+    bl_idname = "kinema.clear_compile_cache"
+    bl_label = "Clear Compiled Solvers"
+    bl_description = (
+        "Delete the compiled solvers kept on disk. Each is compiled again the next "
+        "time it is needed"
+    )
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        # The folder whether or not the cache is ticked on: files kept from
+        # before are still worth clearing. Not created just to be emptied.
+        removed = runtime.clear_compile_cache(runtime.compile_cache_folder())
+        self.report({"INFO"}, f"Kinema: removed {removed} cached files")
+        return {"FINISHED"}
+
+
 def get_prefs(context: bpy.types.Context | None = None) -> KinemaPreferences:
     """Fetch this add-on's preferences, or None if it is being unregistered."""
     context = context or bpy.context
@@ -222,4 +256,5 @@ classes = (
     KINEMA_OT_remove_search_path,
     KinemaPreferences,
     KINEMA_OT_check_dependencies,
+    KINEMA_OT_clear_compile_cache,
 )
