@@ -129,6 +129,9 @@ class RigSolver:
 
         link_name, _ = self.link_target
         solver = pyroki_backend.build(urdf, link_name)
+        # With the limits the rig holds, not the ones the description gave: see
+        # bone_limits.
+        solver.robot = pyroki_backend.with_limits(solver.robot, bone_limits(rig))
 
         # Map our chain's joints onto PyRoki's full actuated vector by name.
         order = {name: index for index, name in enumerate(solver.actuated_names)}
@@ -409,6 +412,54 @@ def held_mask(rig, chain: chain_mod.Chain) -> np.ndarray:
         [bool(getattr(bones[name], "kinema_ik_hold", False)) for name in chain.bone_names],
         dtype=bool,
     )
+
+
+def bone_limits(rig) -> dict[str, tuple[float, float, float]]:
+    """Each joint's range and top speed as the rig holds them, for PyRoki.
+
+    The rig's, not the description's, because they differ:
+    - **Ranges.** PyRoki's parser gives an unlimited continuous joint [-pi, pi],
+      where Kinema treats it as unlimited. That covers a tool spindle, a
+      positioner, and every unlimited MJCF hinge.
+    - **Speeds.** Load Joint Limits and external axes write them to the bones.
+      The URDF a bridged rig is solved from has none of its own.
+
+    A joint with no range, or no speed, gets PyRoki's unbounded values rather
+    than a zero, which PyRoki would read as "may not move".
+
+    Keyed by the bone's name and by the joint's name in the description, since
+    a PyRoki model built from either can be asked for it.
+    """
+    limits = {}
+    for pose_bone in builder.joint_bones(rig):
+        bone = pose_bone.bone
+        lower, upper = bone.get(builder.PROP_LOWER), bone.get(builder.PROP_UPPER)
+        if lower is None or upper is None or not float(upper) > float(lower):
+            lower, upper = -pyroki_backend.UNBOUNDED, pyroki_backend.UNBOUNDED
+        speed = bone.get(builder.PROP_VELOCITY)
+        if speed is None or not float(speed) > 0.0:
+            speed = pyroki_backend.UNLIMITED_SPEED
+        values = (float(lower), float(upper), float(speed))
+        limits[pose_bone.name] = values
+        limits[str(bone.get(builder.PROP_JOINT_NAME, pose_bone.name))] = values
+    return limits
+
+
+def refresh_limits(rig) -> None:
+    """Hand the rig's current limits to every PyRoki model built for it.
+
+    For a change that leaves the rig's structure alone, such as Load Joint
+    Limits. The new values are arrays of the same shapes, so nothing compiles
+    again; rebuilding would throw away a compile that took seconds.
+    """
+    identity = rig_identity(rig)
+    limits = None
+    for (owner, _link), (solver, _mapping, _name) in _pyroki_cache.items():
+        if owner != identity:
+            continue
+        if limits is None:
+            limits = bone_limits(rig)
+        solver.robot = pyroki_backend.with_limits(solver.robot, limits)
 
 
 def _full_mask(held, chain_to_full, dof: int) -> np.ndarray | None:

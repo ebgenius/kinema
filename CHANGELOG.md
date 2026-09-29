@@ -50,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   With **Disable Live IK**, a keyed switch is now keyed off over the baked range and put back
   as it was on the frame after. Before, it was only set off, and its own curve switched it
   back on at the next frame change.
+- PyRoki held an unlimited continuous joint to ±180° (#71). Wound past half a turn, a tool
+  spindle or positioner was pulled back and the arm moved to make up for it; wound a turn
+  and more, the solve failed. PyRoki now takes each joint's range and top speed from the
+  rig:
+  - unlimited joints are unlimited;
+  - speeds are the bones', and Load Joint Limits reaches a compiled solver without
+    compiling it again;
+  - the URDF written for MJCF rigs and rigs with external axes carries each joint's own
+    speed instead of 3.14.
 
 ## [0.6.0] - 2026-09-26
 

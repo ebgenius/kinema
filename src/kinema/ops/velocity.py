@@ -230,6 +230,9 @@ class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
                 bone[builder.PROP_VELOCITY] = float(value)
                 set_count += 1
 
+        # The solver reads the same limits; hand it the new ones.
+        manager.refresh_limits(rig)
+
         message = f"Loaded {set_count} velocity limit{'s' if set_count != 1 else ''}"
         if cleared:
             message += f", turned {cleared} off"

@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from ..rig.kinematics import RobotModel
+from .pyroki_backend import UNLIMITED_SPEED
 
 
 def _rpy_from_matrix(rotation: np.ndarray) -> tuple[float, float, float]:
@@ -76,8 +77,11 @@ def urdf_xml(model: RobotModel) -> str:
             # effort and velocity are always emitted. URDF makes <limit>
             # optional on a continuous joint, but PyRoki rejects one without
             # velocity limits outright -- which is how every unlimited MJCF
-            # hinge failed to load before.
-            limit = {"effort": "100", "velocity": "3.14"}
+            # hinge failed to load before. The velocity is the joint's own, or
+            # unbounded where it has none: a made-up figure would stand in for
+            # a real limit. Nothing here reads effort, which URDF requires.
+            speed = joint.velocity if joint.velocity else UNLIMITED_SPEED
+            limit = {"effort": "100", "velocity": f"{speed:.12g}"}
             if joint.has_limits:
                 limit["lower"] = f"{joint.lower:.12g}"
                 limit["upper"] = f"{joint.upper:.12g}"
