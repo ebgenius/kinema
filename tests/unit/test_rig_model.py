@@ -140,6 +140,33 @@ def test_joints_carry_the_bones_names_types_and_limits():
         assert np.linalg.norm(joint.axis) == pytest.approx(1.0)
 
 
+def test_the_urdf_carries_each_joints_own_speed():
+    """Not a stand-in figure: PyRoki reads these as the joints' limits.
+
+    A joint with no speed of its own gets an unbounded one rather than a made-up
+    one, since URDF and PyRoki both insist on a value.
+    """
+    import dataclasses
+    import xml.etree.ElementTree as ElementTree
+
+    urdf_bridge = load_addon_module("solver.urdf_bridge")
+    pyroki_backend = load_addon_module("solver.pyroki_backend")
+    records = _random_rig(np.random.default_rng(5))
+    records[1] = dataclasses.replace(records[1], velocity=None)
+    root = ElementTree.fromstring(
+        urdf_bridge.urdf_xml(rig_model.model_from_records("robot", records))
+    )
+    speeds = {
+        joint.get("name"): float(joint.find("limit").get("velocity"))
+        for joint in root.iter("joint")
+        if joint.find("limit") is not None
+    }
+
+    assert speeds["j0"] == pytest.approx(0.5)
+    assert speeds["j2"] == pytest.approx(1.5)
+    assert speeds["j1"] == pytest.approx(pyroki_backend.UNLIMITED_SPEED)
+
+
 def test_it_renders_as_urdf():
     urdf_bridge = load_addon_module("solver.urdf_bridge")
     xml = urdf_bridge.urdf_xml(

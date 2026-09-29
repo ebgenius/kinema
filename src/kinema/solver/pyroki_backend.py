@@ -71,6 +71,15 @@ ELBOW_WEIGHT = 2.0
 #: placed by hand, so the tool is the one that gives.
 HOLD_WEIGHT = 1000.0
 
+#: A joint's range where it has none of its own. PyRoki holds every joint to a
+#: range, and its URDF parser gives an unlimited continuous joint [-pi, pi]: a
+#: spindle wound past half a turn was pulled back, and the arm moved to make
+#: up for it. 1e4 rad is over 1500 turns, and still exact in float32.
+UNBOUNDED = 1.0e4
+#: A joint's top speed where none is given. Kinema reads 0 as "not given";
+#: PyRoki would read it as "may not move".
+UNLIMITED_SPEED = 1.0e4
+
 
 @dataclass
 class PyrokiSolver:
@@ -280,6 +289,51 @@ def _wxyz_xyz_to_matrix(wxyz_xyz: np.ndarray) -> np.ndarray:
     )
     matrix[:3, 3] = wxyz_xyz[4:7]
     return matrix
+
+
+# --------------------------------------------------------------------------
+# limits
+# --------------------------------------------------------------------------
+_LIMIT_FIELDS = (
+    ("lower_limits", "upper_limits", "velocity_limits"),
+    ("lower_limits_all", "upper_limits_all", "velocity_limits_all"),
+)
+
+
+def with_limits(robot, limits: dict[str, tuple[float, float, float]]):
+    """``robot`` with the named joints' ranges and top speeds replaced.
+
+    ``limits`` maps a joint name to ``(lower, upper, velocity)``; joints it
+    does not name keep the description's values.
+
+    PyRoki keeps each limit as an array twice over: once per actuated joint,
+    which its velocity costs read, and once over every joint, which its limit
+    constraint reads. Replacing values leaves the arrays' shapes alone, so a
+    solve compiled for the old values runs on the new without compiling again.
+    """
+    from .. import runtime
+
+    stack = runtime.load_solver_stack()
+    if stack is None:
+        raise SolverError(runtime.solver_error() or "JAX stack unavailable")
+    jnp, jdc = stack["jnp"], stack["jdc"]
+
+    joints = robot.joints
+    replaced = {}
+    for names, fields in (
+        (joints.actuated_names, _LIMIT_FIELDS[0]),
+        (joints.names, _LIMIT_FIELDS[1]),
+    ):
+        index = {name: i for i, name in enumerate(names)}
+        arrays = [np.array(getattr(joints, field), dtype=np.float32) for field in fields]
+        for name, values in limits.items():
+            if name in index:
+                for array, value in zip(arrays, values, strict=True):
+                    array[index[name]] = value
+        replaced.update(
+            {field: jnp.asarray(array) for field, array in zip(fields, arrays, strict=True)}
+        )
+    return jdc.replace(robot, joints=jdc.replace(joints, **replaced))
 
 
 # --------------------------------------------------------------------------
