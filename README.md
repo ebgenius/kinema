@@ -115,19 +115,53 @@ type:
 - **Linear** drives the tool along the straight line between the two poses. What a process
   move needs. On a KR120 the tool holds that line to 0.002 mm over a 300 mm plunge.
 
-**Generate Motion** writes it out as ordinary keyframes: joint channels for joint moves, the
-IK goal for linear ones, and the live-IK switch keyed so each span is solved the way it
-should be. Nothing about the result is special — which is the point. Blender's own graph
-editor shapes it afterwards, and easing a two-key linear span changes the *speed profile
-along* the straight line without bending it, because X, Y and Z share the interpolation
-shape and only the parameterisation changes. That is a real robot's acceleration ramp. Give
-a corner three waypoints and Bezier handles bow the path through it, which is the blend
-radius a real controller would apply.
+**Generate Motion** writes it out as ordinary keyframes, and keys the live-IK switch so each
+span is solved the way it should be:
+- a joint move keys the joint channels;
+- a linear move keys the IK goal, plus the joints at both ends in the configurations they
+  were taught in. IK solves every frame of the move from those, so the line runs in the taught
+  configuration.
+
+The goal turns the short way between the two orientations. A turn longer than 30° gets extra
+keys along it, so Blender's interpolation stays on the shortest turn.
+
+A straight line can't change configuration, so a linear move whose two ends were taught in
+different ones is refused, the way a robot controller refuses it. Make it a joint move, or
+re-teach one end.
+
+It can't change a joint's turns either. On a wrist that turns ±350°, one pose can be held
+with a joint a whole turn apart: 20° and −340° put the tool in the same place. An end taught
+a whole turn from where the line arrives keeps the turn the line arrives with, the way a KUKA
+LIN ignores its target's Turn. Generate Motion says which joint and both values, and the
+move's row in the Motion Check keeps saying so. Re-teach that waypoint if you meant the
+other turn.
+
+Nothing about the result is special, which is the point, and Blender's own graph editor
+shapes it afterwards. Linear moves come out LINEAR, so the tool's speed changes all at once
+at each waypoint. Easing them is up to you:
+- **Easing a linear move** changes the *speed profile along* the straight line without
+  bending it. X, Y and Z share the interpolation shape, so only the parameterisation changes.
+  That is a real robot's acceleration ramp.
+- **Bezier handles across a corner** of three waypoints bow the path through it. That is the
+  blend radius a real controller would apply.
 
 Regenerating replaces the previous motion rather than layering on it, so moving a waypoint
-from frame 40 to frame 30 does not leave the robot visiting frame 40 as well. When the shot
-is right, **Bake IK to Keyframes** turns the whole thing into plain joint curves that render
-with Kinema uninstalled.
+from frame 40 to frame 30 does not leave the robot visiting frame 40 as well.
+
+Generating ends with a **Motion Check**: the job is played through once, solved as playback
+solves it, and each move gets a row listing what went wrong:
+- how far a linear move's tool strayed from its line, or turned off the shortest turn;
+- a joint that reached its limit;
+- the fastest joint against its velocity limit;
+- a joint that jumped more than a radian (or 25 cm) in one frame, which is how a
+  configuration flip shows.
+
+**Check Again** plays it through after you've edited the curves by hand. Once the waypoints
+change, the panel says the check is out of date.
+
+When the shot is right, **Bake IK to Keyframes** turns the whole thing into plain joint
+curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves
+bake as IK solves them.
 
 ## Checking joint speeds
 

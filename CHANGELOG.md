@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Motion Check**, under the waypoints. Generate Motion now ends by playing the job through
+  once, solved as playback solves it, and lists each move with what went wrong:
+  - a linear move's worst distance from its line, and how far the tool turned off the
+    shortest turn;
+  - a joint that reached its limit;
+  - the fastest joint against its velocity limit;
+  - a joint that jumped more than a radian (or 25 cm) in one frame, which is how a
+    configuration flip shows.
+
+  **Check Again** re-runs it after the curves have been edited by hand. The panel says when
+  the waypoints have changed since the check, and a job it can't measure, on a rig with no
+  TCP, is reported as unchecked rather than clean.
+
+### Fixed
+
+- A linear move could turn the tool the long way round (#69). The IK goal's rotation was
+  keyed as each waypoint's pose came, and a pair keyed in opposite quaternion hemispheres
+  interpolated through the far side: a 20° turn went 340° the other way. Each key is now
+  made compatible with the one before. A turn longer than 30° gets extra keys along it, so
+  Blender's per-channel interpolation stays on the shortest turn.
+- A linear move ran in whatever configuration its neighbours were keyed in (#70). Only the
+  IK goal was keyed, so IK seeded every frame of the move from the next joint move's keys.
+  The joints are now keyed at both ends, in the configurations those waypoints were taught
+  in. A linear move whose ends were taught in different configurations is refused, because a
+  straight line can't change configuration.
+  - It can't change a joint's turns either. An end taught with a joint a whole turn from
+    where the line arrives is the same pose, so it keeps the turn the line arrives with, as a
+    KUKA LIN ignores its target's Turn. Seeded from the taught turn instead, IK would be
+    pulled over to it part-way along the line, a whole turn in one frame.
+  - Generate Motion names the joint and both values, and the move's row in the Motion Check
+    keeps them, for anyone who meant the other turn and would rather re-teach.
+- Bake IK threw away the joint moves of a generated job (#72). It solved IK on every frame,
+  including those where the job keys live IK off, so the robot baked to a standstill. Where
+  the live-IK switch is keyed, the bake now bakes what the job plays:
+  - on frames where IK is off, it keeps the joints where playback puts them, NLA strips and
+    blending included;
+  - on frames where IK is on, it seeds IK from those same joints.
+
+  With **Disable Live IK**, a keyed switch is now keyed off over the baked range and put back
+  as it was on the frame after. Before, it was only set off, and its own curve switched it
+  back on at the next frame change.
+
 ## [0.6.0] - 2026-09-26
 
 0.5.0 was about the choices inside a job. This release is about the cell around the robot and
