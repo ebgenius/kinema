@@ -5,7 +5,7 @@ The claims:
 * the folder is inside the add-on's user folder -- JAX runs what its cache holds,
   so the cache must never sit where another user could write;
 * a session's IK compile lands in it, which is what lets the next session skip
-  the compile (19-31 s on a modest laptop, about 5 s loaded back);
+  the compile and load the solver back instead;
 * unticking *Keep Compiled Solvers* turns it off, and leaves the folder there to
   be cleared.
 

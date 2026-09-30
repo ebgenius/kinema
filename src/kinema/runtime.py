@@ -30,9 +30,9 @@ Design rules:
   records are disabled unless the user turns on debug logging.
 * **Compiled solvers are kept on disk,** in JAX's persistent compilation cache
   under the add-on's own user folder. The first solve of a session otherwise
-  compiles from scratch every time: 19-31 s for IK on a modest laptop, about 5 s
-  loaded from the cache. It only hits because ``tools/vendor.py`` patches jaxls
-  to trace the same program in every process -- see its "Patched lines".
+  compiles from scratch every time, seconds per robot; kept, the solver loads
+  back in a fraction of that. It only hits because ``tools/vendor.py`` patches
+  jaxls to trace the same program in every process -- see its "Patched lines".
 """
 
 from __future__ import annotations
