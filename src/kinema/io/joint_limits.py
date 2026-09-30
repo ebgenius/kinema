@@ -1,20 +1,26 @@
-"""Read joint velocity limits from a MoveIt or ros2_control ``joint_limits.yaml``.
+"""Read joint limits from a MoveIt or ros2_control ``joint_limits.yaml``.
 
-A URDF's ``<limit velocity>`` is often a placeholder, and the numbers a robot
-is actually run at live in its MoveIt configuration instead. Both MoveIt and
-ros2_control write them the same way::
+A URDF's ``<limit velocity>`` is often a placeholder, URDF has no field for
+acceleration or jerk at all, and the numbers a robot is actually run at live in
+its MoveIt configuration instead. Both MoveIt and ros2_control write them the
+same way::
 
     joint_limits:
       joint_1:
         has_velocity_limits: true
         max_velocity: 2.175
+        has_acceleration_limits: true
+        max_acceleration: 3.75
+        has_jerk_limits: false
+        has_effort_limits: true
+        max_effort: 87.0
 
 MoveIt 2 and ros2_control files often nest that section under a node name and
 ``ros__parameters``, so it is searched for rather than expected at the top.
 
-Following MoveIt, the file overrides the description joint by joint:
-``has_velocity_limits: true`` sets the limit, ``false`` turns it off, and a
-joint the file does not mention keeps whatever the description gave it.
+Following MoveIt, the file overrides the description joint by joint and kind by
+kind: ``has_<kind>_limits: true`` sets that limit, ``false`` turns it off, and a
+kind the file does not mention keeps whatever the description gave the joint.
 
 Deliberately free of ``bpy``, like the rest of ``io/``.
 """
@@ -25,18 +31,22 @@ import math
 from pathlib import Path
 
 SECTION = "joint_limits"
+#: The kinds of limit the file can carry, spelled as its keys spell them:
+#: ``has_<kind>_limits`` and ``max_<kind>``.
+KINDS = ("velocity", "acceleration", "jerk", "effort")
 
 
 class JointLimitsError(ValueError):
     """A file that holds no joint limits Kinema can read."""
 
 
-def velocity_limits(text: str, *, source: str = "the file") -> dict[str, float | None]:
-    """Joint name -> max velocity, or None where the file turns the limit off.
+def joint_limits(text: str, *, source: str = "the file") -> dict[str, dict[str, float | None]]:
+    """Joint name -> {kind: maximum, or None where the file turns that limit off}.
 
-    Joints the file says nothing usable about -- no ``has_velocity_limits``,
-    or a limit switched on without a positive ``max_velocity`` -- are left out,
-    so the description's own value stands for them.
+    A kind the file says nothing usable about -- no ``has_<kind>_limits``, or a
+    limit switched on without a positive ``max_<kind>`` -- is left out, so the
+    description's own value stands for it. A joint with no usable kind at all
+    is left out too.
     """
     try:
         import yaml
@@ -54,28 +64,35 @@ def velocity_limits(text: str, *, source: str = "the file") -> dict[str, float |
     if not sections:
         raise JointLimitsError(f"No '{SECTION}' section in {source}")
 
-    limits: dict[str, float | None] = {}
+    limits: dict[str, dict[str, float | None]] = {}
     for section in sections:
         for joint, entry in section.items():
-            if not isinstance(entry, dict) or "has_velocity_limits" not in entry:
+            if not isinstance(entry, dict):
                 continue
-            if not _truthy(entry["has_velocity_limits"]):
-                limits[str(joint)] = None
-                continue
-            value = _positive(entry.get("max_velocity"))
-            if value is not None:
-                limits[str(joint)] = value
+            found: dict[str, float | None] = {}
+            for kind in KINDS:
+                flag = f"has_{kind}_limits"
+                if flag not in entry:
+                    continue
+                if not _truthy(entry[flag]):
+                    found[kind] = None
+                    continue
+                value = _positive(entry.get(f"max_{kind}"))
+                if value is not None:
+                    found[kind] = value
+            if found:
+                limits.setdefault(str(joint), {}).update(found)
     return limits
 
 
-def read_velocity_limits(path: str | Path) -> dict[str, float | None]:
-    """:func:`velocity_limits` for a file on disk."""
+def read_joint_limits(path: str | Path) -> dict[str, dict[str, float | None]]:
+    """:func:`joint_limits` for a file on disk."""
     path = Path(path)
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise JointLimitsError(f"Could not open {path.name}: {exc}") from exc
-    return velocity_limits(text, source=path.name)
+    return joint_limits(text, source=path.name)
 
 
 def _find_sections(node):

@@ -78,7 +78,7 @@ from ..rig.waypoints import MOVE_JOINT, MOVE_LINEAR, WaypointError, spans
 from ..solver import branches, manager, numpy_backend
 from ..ui.panel import active_rig
 from .ik import key_joint_value, own_fcurve_containers
-from .velocity import joint_value, limit_of
+from .velocity import acceleration_limit_of, joint_value, limit_of
 
 #: Empty display size, as a fraction of the robot's reach. Waypoints are read
 #: at the scale of the robot, not the scene.
@@ -847,6 +847,8 @@ class KinemaMoveCheck(PropertyGroup):
     limit_joint: StringProperty(name="At a Limit")
     speed_joint: StringProperty(name="Fastest Joint")
     speed_ratio: FloatProperty(name="Speed Against Limit")
+    accel_joint: StringProperty(name="Hardest-Accelerating Joint")
+    accel_ratio: FloatProperty(name="Acceleration Against Limit")
     jump_joint: StringProperty(name="Largest Jump")
     jump: FloatProperty(name="Jump")
     turn_note: StringProperty(name="Turn Kept")
@@ -871,6 +873,7 @@ def check_job(context, rig, plan) -> list[motion_check.MoveCheck]:
             lower=_float_or_none(pose_bone.bone.get(builder.PROP_LOWER)),
             upper=_float_or_none(pose_bone.bone.get(builder.PROP_UPPER)),
             velocity=limit_of(pose_bone),
+            acceleration=acceleration_limit_of(pose_bone),
         )
         for pose_bone in bones
     ]
@@ -882,12 +885,15 @@ def check_job(context, rig, plan) -> list[motion_check.MoveCheck]:
         return None
     first, last = plan[0].start_frame, plan[-1].end_frame
 
+    # A frame either side of the job as well. An acceleration is measured
+    # from a frame's neighbours, and the job's own ends are where one that
+    # sets off or stops at speed changes it all at once.
     samples = []
     original = scene.frame_current
     window = context.window_manager
-    window.progress_begin(first, last)
+    window.progress_begin(first - 1, last + 1)
     try:
-        for frame in range(first, last + 1):
+        for frame in range(first - 1, last + 2):
             scene.frame_set(frame)
             context.view_layer.update()
             samples.append(

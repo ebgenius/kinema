@@ -805,6 +805,41 @@ class TestMotionCheck:
             for problem in found
         ), found
 
+    def test_a_joint_over_its_acceleration_limit_is_flagged(self, arm6, builder, addon):
+        """One radian in twenty frames is within joint1's speed, not within 1 rad/s²."""
+        import bpy
+
+        check = importlib.import_module(f"{addon.__name__}.rig.motion_check")
+        arm6.data.bones["joint1"][builder.PROP_ACCELERATION] = 1.0
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, [1.0] + Q0[1:], "JOINT", "swing")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        found = check.problems(arm6.kinema_motion_check[0])
+        assert not any("speed limit" in problem for problem in found), found
+        assert any(
+            problem.startswith("joint1 at") and "acceleration limit" in problem
+            for problem in found
+        ), found
+
+    def test_a_job_setting_off_at_speed_is_flagged(self, arm6, builder, addon):
+        """Still before its first frame, at speed from there: the job's own end counts.
+
+        Along the line the joints barely accelerate; setting off, they reach
+        about 0.01 rad a frame at once, some 6 rad/s² at 24 fps.
+        """
+        import bpy
+
+        check = importlib.import_module(f"{addon.__name__}.rig.motion_check")
+        for pose_bone in builder.joint_bones(arm6):
+            pose_bone.bone[builder.PROP_ACCELERATION] = 1.0
+        _teach(builder, arm6, 1, REACH_A, "JOINT", "a")
+        _teach(builder, arm6, 21, REACH_B, "LINEAR", "b")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        found = check.problems(arm6.kinema_motion_check[0])
+        assert any("acceleration limit" in problem for problem in found), found
+
     def test_a_turn_the_wrist_cannot_make_is_flagged(self, arm6, builder, addon):
         """Joint 6 stops at 3.14 rad, so it cannot turn across 180 degrees.
 

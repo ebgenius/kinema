@@ -1,15 +1,17 @@
-"""Joint velocity limits: read at import, checked at every frame. Needs a real ``bpy``.
+"""Joint motion limits: read at import, checked at every frame. Needs a real ``bpy``.
 
 The claims worth holding onto:
 
-* the description's ``<limit velocity>`` lands on the joint bone,
+* the description's ``<limit velocity>`` and ``<limit effort>`` land on the
+  joint bone,
 * a keyed joint is measured from its own curve, exactly, however the frame was
-  reached,
-* a joint live IK drives is measured against the frame before, as the handler
-  saw it *after* solving,
+  reached -- its speed from the frame before, its acceleration from the two,
+* a joint live IK drives is measured against the frames before, as the handler
+  saw them *after* solving,
 * a joint pressed against its stop is not racing, whatever its curve does,
-* Ignore Velocity Limits silences the panel and the viewport, not the numbers,
-* a joint_limits.yaml overrides the description joint by joint.
+* Ignore Motion Limits silences the panel and the viewport, and measures and
+  records nothing while it is on,
+* a joint_limits.yaml overrides the description joint by joint and kind by kind.
 """
 
 from __future__ import annotations
@@ -98,6 +100,42 @@ def _by_joint(velocity, rig):
     return {r.joint: r for r in velocity.readings(rig, bpy.context.scene)}
 
 
+def _accelerations(velocity, rig):
+    import bpy
+
+    return {r.joint: r for r in velocity.acceleration_readings(rig, bpy.context.scene)}
+
+
+def _limit_acceleration(builder, rig, value: float) -> None:
+    """The same acceleration limit on every joint: URDF gives none."""
+    for pose_bone in builder.joint_bones(rig):
+        pose_bone.bone[builder.PROP_ACCELERATION] = value
+
+
+class _Layout:
+    """Enough of a UILayout to draw a panel into headless: it keeps the labels."""
+
+    def __init__(self, texts=None):
+        self.texts = [] if texts is None else texts
+        self.active = True
+        self.alert = False
+        self.alignment = "EXPAND"
+
+    def label(self, *, text="", icon="NONE"):
+        self.texts.append(text)
+
+    def row(self, **_):
+        return _Layout(self.texts)
+
+    column = row
+
+    def prop(self, *_, **__):
+        pass
+
+    def operator(self, *_, **__):
+        pass
+
+
 class TestImport:
     def test_bones_carry_the_description_velocity(self, arm6, builder):
         bones = arm6.data.bones
@@ -106,6 +144,26 @@ class TestImport:
 
     def test_every_limited_joint_is_read(self, arm6, velocity):
         assert set(_by_joint(velocity, arm6)) == {f"joint{i}" for i in range(1, 7)}
+
+    def test_bones_carry_the_description_effort(self, arm6, builder):
+        bones = arm6.data.bones
+        assert bones["joint1"][builder.PROP_EFFORT] == pytest.approx(150.0)
+        assert bones["joint6"][builder.PROP_EFFORT] == pytest.approx(28.0)
+
+    def test_the_effort_is_listed_under_not_checked(self, arm6):
+        import types
+
+        import bpy
+
+        panel = importlib.import_module(f"{EXTENSION_ID}.ui.panel")
+        layout = _Layout()
+        panel.KINEMA_PT_motion_unchecked.draw(types.SimpleNamespace(layout=layout), bpy.context)
+        assert [layout.texts.count(text) for text in ("150 N·m", "28 N·m")] == [3, 3]
+
+    def test_urdf_brings_no_acceleration_limits(self, arm6, builder, velocity):
+        """URDF has no field for one: nothing is checked until a file adds them."""
+        assert not any(builder.PROP_ACCELERATION in bone for bone in arm6.data.bones)
+        assert _accelerations(velocity, arm6) == {}
 
     def test_mjcf_has_no_velocity_limits(self, addon, builder, fixture_dir, clean_scene, velocity):
         """MJCF has no such attribute: the rig says so rather than inventing one."""
@@ -177,6 +235,56 @@ class TestKeyedJoints:
         assert not reading.over
 
 
+class TestKeyedAcceleration:
+    """joint1 still to frame 10, then 0.05 rad a frame to frame 20, then still."""
+
+    @pytest.fixture
+    def ramp(self, arm6, builder):
+        _limit_acceleration(builder, arm6, 10.0)
+        _key(arm6, "joint1", [(1, 0.0), (10, 0.0), (20, 0.5)])
+        return arm6
+
+    def test_setting_off_is_measured(self, ramp, velocity):
+        """From still to 0.05 rad a frame: 0.05 times 24 squared is 28.8 rad/s²."""
+        import bpy
+
+        bpy.context.scene.frame_set(11)
+        reading = _accelerations(velocity, ramp)["joint1"]
+        assert reading.speed == pytest.approx(0.05 * FPS * FPS, rel=1e-4)
+        assert reading.over
+        assert any(
+            r.joint == "joint1" and r.kind == "acceleration"
+            for r in velocity.warnings(ramp, bpy.context.scene)
+        )
+
+    def test_stopping_is_measured(self, ramp, velocity):
+        import bpy
+
+        bpy.context.scene.frame_set(21)
+        assert _accelerations(velocity, ramp)["joint1"].speed == pytest.approx(
+            0.05 * FPS * FPS, rel=1e-4
+        )
+
+    @pytest.mark.parametrize("frame", [5, 15], ids=["still", "steady"])
+    def test_a_steady_speed_is_not_accelerating(self, ramp, velocity, frame):
+        import bpy
+
+        bpy.context.scene.frame_set(frame)
+        reading = _accelerations(velocity, ramp)["joint1"]
+        assert reading.speed == pytest.approx(0.0, abs=0.01)
+        assert not reading.over
+
+    def test_the_frame_rate_squared_sets_it(self, ramp, velocity):
+        """The same keys at twice the frame rate change speed four times as hard."""
+        import bpy
+
+        bpy.context.scene.render.fps = 2 * FPS
+        bpy.context.scene.frame_set(11)
+        assert _accelerations(velocity, ramp)["joint1"].speed == pytest.approx(
+            0.05 * (2 * FPS) ** 2, rel=1e-4
+        )
+
+
 class TestIgnore:
     def test_ignoring_silences_the_warnings(self, arm6, velocity, overlay):
         import bpy
@@ -190,14 +298,62 @@ class TestIgnore:
         assert velocity.warnings(arm6, bpy.context.scene) == []
         assert overlay.flagged(bpy.context) == []
 
-    def test_ignoring_keeps_the_numbers(self, arm6, velocity):
-        """The panel still lists every joint, greyed; only the alarm is off."""
+    def test_a_checked_rig_lists_what_it_measures(self, arm6):
+        """12 rad/s is 688°/s, against arm6's 3.15 rad/s: 180°/s."""
         import bpy
 
+        panel = importlib.import_module(f"{EXTENSION_ID}.ui.panel")
+        _key(arm6, "joint1", [(1, 0.0), (2, 0.5)])
+        bpy.context.scene.frame_set(2)
+
+        layout = _Layout()
+        panel._draw_checked(layout, bpy.context, "speed", missing=("none",), unknown="?")
+        assert "688°/s  of  180°/s" in layout.texts
+
+    def test_an_ignored_rig_lists_its_limits_and_measures_nothing(
+        self, arm6, velocity, monkeypatch
+    ):
+        import bpy
+
+        panel = importlib.import_module(f"{EXTENSION_ID}.ui.panel")
         _key(arm6, "joint1", [(1, 0.0), (2, 0.5)])
         bpy.context.scene.frame_set(2)
         arm6.kinema_ignore_velocity = True
-        assert _by_joint(velocity, arm6)["joint1"].over
+
+        def measure(*_):
+            raise AssertionError("measured a rig whose limits are ignored")
+
+        monkeypatch.setattr(velocity, "readings", measure)
+        monkeypatch.setattr(velocity, "acceleration_readings", measure)
+        layout = _Layout()
+        panel._draw_checked(layout, bpy.context, "speed", missing=("none",), unknown="?")
+        assert "limit 180°/s" in layout.texts
+
+    def test_an_ignored_rig_is_not_observed(self, arm6, velocity):
+        import bpy
+
+        scene = bpy.context.scene
+        scene.frame_set(1)
+        scene.frame_set(2)
+        assert velocity._history.before(arm6.session_uid, 2) is not None, (
+            "precondition: a checked rig is"
+        )
+
+        arm6.kinema_ignore_velocity = True
+        scene.frame_set(10)
+        scene.frame_set(11)
+        assert velocity._history.before(arm6.session_uid, 11) is None
+
+    def test_turning_the_check_back_on_forgets_the_frames_before(self, arm6, velocity):
+        """They were seen before it was ignored; the animation may have changed since."""
+        import bpy
+
+        scene = bpy.context.scene
+        scene.frame_set(1)
+        scene.frame_set(2)
+        arm6.kinema_ignore_velocity = True
+        arm6.kinema_ignore_velocity = False
+        assert velocity._history.before(arm6.session_uid, 3) is None
 
 
 class TestLiveIk:
@@ -276,6 +432,56 @@ class TestLiveIk:
         assert all(r.speed is None for r in readings.values())
         assert velocity.warnings(live, scene) == []
 
+    def test_a_driven_joint_accelerates_against_the_two_frames_before(
+        self, live, builder, velocity
+    ):
+        """Moved at frame 2 and stopped at 3: that stop is the acceleration."""
+        import bpy
+
+        _limit_acceleration(builder, live, 10.0)
+        scene = bpy.context.scene
+        seen = []
+        for frame in (1, 2, 3):
+            scene.frame_set(frame)
+            seen.append(self._q(builder, live))
+
+        readings = _accelerations(velocity, live)
+        for name, reading in readings.items():
+            expected = abs(seen[2][name] - 2.0 * seen[1][name] + seen[0][name]) * FPS**2
+            assert reading.speed == pytest.approx(expected, rel=1e-3, abs=1e-2), name
+        assert any(r.over for r in readings.values())
+
+    def test_a_joint_limited_only_in_acceleration_is_still_recorded(
+        self, live, builder, velocity
+    ):
+        """What was seen is kept for either check, not only for the speed one."""
+        import bpy
+
+        _limit_acceleration(builder, live, 10.0)
+        for pose_bone in builder.joint_bones(live):
+            del pose_bone.bone[builder.PROP_VELOCITY]
+        scene = bpy.context.scene
+        for frame in (1, 2, 3):
+            scene.frame_set(frame)
+
+        readings = _accelerations(velocity, live)
+        assert readings, "precondition: the joints are checked"
+        assert all(r.speed is not None for r in readings.values())
+
+    def test_one_frame_stepped_leaves_a_driven_acceleration_unknown(
+        self, live, builder, velocity
+    ):
+        import bpy
+
+        _limit_acceleration(builder, live, 10.0)
+        scene = bpy.context.scene
+        scene.frame_set(1)
+        scene.frame_set(2)
+        assert _by_joint(velocity, live)["joint2"].speed is not None, (
+            "precondition: one frame is enough for a speed"
+        )
+        assert all(r.speed is None for r in _accelerations(velocity, live).values())
+
     def test_a_held_keyed_joint_follows_its_curve(self, live, velocity):
         """Held means the solver leaves it alone, so its curve is the truth."""
         import bpy
@@ -340,6 +546,29 @@ class TestOverlay:
             assert point.y == pytest.approx(0.5 * length, abs=1e-5)
             assert np.hypot(point.x, point.z) == pytest.approx(0.35 * length, abs=1e-5)
 
+    def test_a_joint_over_both_limits_is_traced_and_labelled_once(
+        self, arm6, builder, velocity, overlay
+    ):
+        """12 rad/s against 3.15, and 288 rad/s² -- half a radian in a frame
+        from still -- against 10."""
+        import bpy
+
+        _limit_acceleration(builder, arm6, 10.0)
+        _key(arm6, "joint2", [(1, 0.0), (2, 0.5)])
+        bpy.context.scene.frame_set(2)
+        over = velocity.warnings(arm6, bpy.context.scene)
+        assert [(r.joint, r.kind) for r in over] == [
+            ("joint2", "speed"), ("joint2", "acceleration")
+        ], "precondition: over both"
+
+        edges = len(arm6.pose.bones["joint2"].custom_shape.data.edges)
+        assert len(overlay.warning_lines(arm6, over)) == edges
+        grouped = overlay.by_joint(over)
+        assert list(grouped) == ["joint2"]
+        assert overlay.label_text("joint2", grouped["joint2"]) == (
+            "joint2  speed 381%  accel 2880%"
+        )
+
     def test_the_draw_handlers_are_registered(self, addon, overlay):
         assert len(overlay._handles) == 2
 
@@ -380,6 +609,71 @@ joint_limits:
         path.write_text(self.YAML, encoding="utf-8")
         bpy.ops.kinema.load_joint_limits(filepath=str(path))
         assert _by_joint(velocity, arm6)["joint1"].over, "1 rad/s against 0.5"
+
+    EVERY_KIND = """
+joint_limits:
+  joint1:
+    has_velocity_limits: true
+    max_velocity: 2.0
+    has_acceleration_limits: true
+    max_acceleration: 4.0
+    has_jerk_limits: true
+    max_jerk: 80.0
+    has_effort_limits: true
+    max_effort: 90.0
+  joint2:
+    has_effort_limits: false
+  joint3:
+    has_acceleration_limits: true
+    max_acceleration: 6.0
+"""
+
+    def _load_every_kind(self, tmp_path):
+        import bpy
+
+        path = tmp_path / "joint_limits.yaml"
+        path.write_text(self.EVERY_KIND, encoding="utf-8")
+        assert "FINISHED" in bpy.ops.kinema.load_joint_limits(filepath=str(path))
+
+    def test_every_kind_is_loaded(self, arm6, builder, tmp_path):
+        self._load_every_kind(tmp_path)
+        bone = arm6.data.bones["joint1"]
+        assert [bone[prop] for prop in builder.LIMIT_PROPS.values()] == pytest.approx(
+            [2.0, 4.0, 80.0, 90.0]
+        )
+
+    def test_each_kind_is_overridden_on_its_own(self, arm6, builder, tmp_path):
+        """joint2 turns its effort off and keeps its speed; joint3 gains an
+        acceleration and keeps its speed and effort."""
+        self._load_every_kind(tmp_path)
+        bones = arm6.data.bones
+        assert builder.PROP_EFFORT not in bones["joint2"]
+        assert bones["joint2"][builder.PROP_VELOCITY] == pytest.approx(3.15)
+        assert bones["joint3"][builder.PROP_ACCELERATION] == pytest.approx(6.0)
+        assert bones["joint3"][builder.PROP_VELOCITY] == pytest.approx(3.15)
+        assert bones["joint3"][builder.PROP_EFFORT] == pytest.approx(150.0)
+
+    def test_a_loaded_acceleration_limit_is_checked(self, arm6, velocity, tmp_path):
+        """0.05 rad a frame from still: 28.8 rad/s², against 4."""
+        import bpy
+
+        _key(arm6, "joint1", [(1, 0.0), (10, 0.0), (20, 0.5)])
+        bpy.context.scene.frame_set(11)
+        assert _accelerations(velocity, arm6) == {}, "precondition: none before loading"
+
+        self._load_every_kind(tmp_path)
+        assert _accelerations(velocity, arm6)["joint1"].over
+
+    def test_the_rig_describes_them_to_the_solver(self, addon, arm6, tmp_path):
+        """What a rig with external axes is solved from: the bones, not the file."""
+        rig_model = importlib.import_module(f"{addon.__name__}.solver.rig_model")
+        self._load_every_kind(tmp_path)
+        joint = next(
+            j for j in rig_model.model_from_rig(arm6).joints if j.name == "joint1"
+        )
+        assert (joint.velocity, joint.acceleration, joint.jerk, joint.effort) == (
+            pytest.approx(2.0), pytest.approx(4.0), pytest.approx(80.0), pytest.approx(90.0)
+        )
 
     def test_another_robots_file_is_refused(self, arm6, tmp_path):
         import bpy

@@ -859,12 +859,12 @@ class KINEMA_OT_add_external_axis(Operator):
     )
     speed_distance: FloatProperty(
         name="Top Speed", default=1.0, min=0.0, unit="VELOCITY",
-        description="Fastest it may move; the Velocity Limits check warns past it. Zero for none",
+        description="Fastest it may move; the Motion Limits check warns past it. Zero for none",
     )
     speed_angle: FloatProperty(
         name="Top Speed", default=math.radians(90.0), min=0.0, subtype="ANGLE",
         description=(
-            "Fastest it may turn, per second; the Velocity Limits check warns past it. "
+            "Fastest it may turn, per second; the Motion Limits check warns past it. "
             "Zero for none"
         ),
     )

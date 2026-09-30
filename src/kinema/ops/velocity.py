@@ -1,18 +1,21 @@
-"""Warn when a joint moves faster than its velocity limit.
+"""Warn when a joint moves faster, or speeds up harder, than its limits allow.
 
 A robot cannot follow an animation its motors cannot keep up with, and nothing
 in Blender says so: a joint keyed through half a turn in two frames plays back
-as smoothly as one given two seconds. The limits are already in most robot
+as smoothly as one given two seconds. Velocity limits are already in most robot
 descriptions, as ``<limit velocity>``, and the importer keeps them on each
-joint bone. This checks the frame on screen against them.
+joint bone; acceleration limits come from a ``joint_limits.yaml``. This checks
+the frame on screen against both.
 
-Two places show a joint over its limit: its row in the panel, and its own
-widget in the viewport, redrawn in red (``ui/overlay.py``). One tickbox per rig,
-**Ignore Velocity Limits**, turns both off -- for a shot that is never going to
-a real robot, or a description whose limits are placeholders.
+Two places show a joint over a limit: its row in the panel, and its own widget
+in the viewport, redrawn in red (``ui/overlay.py``). One tickbox per rig,
+**Ignore Motion Limits**, turns both off -- for a shot that is never going to a
+real robot, or a description whose limits are placeholders. Jerk and effort
+limits are shown in the panel but never checked; see ``rig/velocity.py``.
 
-How a speed is measured, and why keyed and IK-driven joints differ, is in
-``rig/velocity.py``. This module reads the channels and feeds the history.
+How a speed or acceleration is measured, and why keyed and IK-driven joints
+differ, is in ``rig/velocity.py``. This module reads the channels and feeds the
+history.
 """
 
 from __future__ import annotations
@@ -22,9 +25,17 @@ from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 
-from ..io.joint_limits import JointLimitsError, read_velocity_limits
+from ..io.joint_limits import KINDS, JointLimitsError, read_joint_limits
 from ..rig import builder
-from ..rig.velocity import History, Reading, clamp, speed
+from ..rig.velocity import (
+    ACCELERATION,
+    SPEED,
+    History,
+    Reading,
+    acceleration,
+    clamp,
+    speed,
+)
 from ..solver import manager
 from ..solver.chain import chain_bones
 from ..ui.panel import active_rig
@@ -34,14 +45,50 @@ from .ik import joint_curves
 _history = History()
 
 
-def limit_of(pose_bone) -> float | None:
-    """This joint's velocity limit, or None if it has none."""
-    value = pose_bone.bone.get(builder.PROP_VELOCITY)
+def stored_limit(pose_bone, prop: str) -> float | None:
+    """The joint's limit stored under ``prop``, or None if it has none."""
+    value = pose_bone.bone.get(prop)
     try:
         value = float(value)
     except (TypeError, ValueError):
         return None
     return value if value > 0.0 else None
+
+
+def limit_of(pose_bone) -> float | None:
+    """This joint's velocity limit, or None if it has none."""
+    return stored_limit(pose_bone, builder.PROP_VELOCITY)
+
+
+def acceleration_limit_of(pose_bone) -> float | None:
+    """This joint's acceleration limit, or None if it has none."""
+    return stored_limit(pose_bone, builder.PROP_ACCELERATION)
+
+
+#: Where the limit each checked kind is measured against is kept.
+_PROPS = {SPEED: builder.PROP_VELOCITY, ACCELERATION: builder.PROP_ACCELERATION}
+
+
+def _limited(rig, kind: str) -> list:
+    """(pose bone, limit) for every joint with a ``kind`` limit, in rig order."""
+    prop = _PROPS[kind]
+    return [
+        (pose_bone, limit)
+        for pose_bone in builder.joint_bones(rig)
+        if (limit := stored_limit(pose_bone, prop)) is not None
+    ]
+
+
+def limits(rig, kind: str) -> list[Reading]:
+    """Every joint's ``kind`` limit, with nothing measured.
+
+    What the panel lists for a rig whose limits are ignored: it reads no curve
+    and asks nothing of the solver.
+    """
+    return [
+        Reading(pose_bone.name, limit, None, _is_prismatic(pose_bone), kind)
+        for pose_bone, limit in _limited(rig, kind)
+    ]
 
 
 def ignored(rig) -> bool:
@@ -110,17 +157,17 @@ def _key(rig):
     return rig.session_uid
 
 
+def _fps(scene) -> float:
+    return scene.render.fps / scene.render.fps_base
+
+
 def readings(rig, scene) -> list[Reading]:
     """Every speed-limited joint's speed at the current frame, over or not."""
-    limited = [
-        (pose_bone, limit)
-        for pose_bone in builder.joint_bones(rig)
-        if (limit := limit_of(pose_bone)) is not None
-    ]
+    limited = _limited(rig, SPEED)
     if not limited:
         return []
 
-    fps = scene.render.fps / scene.render.fps_base
+    fps = _fps(scene)
     frame = scene.frame_current
     curves = joint_curves(rig)
     driven = _ik_driven(rig)
@@ -141,34 +188,87 @@ def readings(rig, scene) -> list[Reading]:
         else:
             measured = None
         result.append(
-            Reading(pose_bone.name, limit, measured, _is_prismatic(pose_bone))
+            Reading(pose_bone.name, limit, measured, _is_prismatic(pose_bone), SPEED)
+        )
+    return result
+
+
+def acceleration_readings(rig, scene) -> list[Reading]:
+    """Every acceleration-limited joint's acceleration at the current frame, over or not.
+
+    The change of speed over the last two frames: from the joint's curve where
+    it has one and nothing else drives it, from the frames seen before where
+    live IK does.
+    """
+    limited = _limited(rig, ACCELERATION)
+    if not limited:
+        return []
+
+    fps = _fps(scene)
+    frame = scene.frame_current
+    curves = joint_curves(rig)
+    driven = _ik_driven(rig)
+    seen = _history.two_before(_key(rig), frame)
+
+    result = []
+    for pose_bone, limit in limited:
+        now = joint_value(pose_bone)
+        curve = curves.get(pose_bone.name)
+        if curve is not None and pose_bone.name not in driven:
+            points = [(frame, now)] + [
+                (frame - back, _clamped(pose_bone, curve.evaluate(frame - back)))
+                for back in (1, 2)
+            ]
+            measured = acceleration(points, fps)
+        elif seen is not None and all(pose_bone.name in values for _, values in seen):
+            points = [(frame, now)] + [(f, values[pose_bone.name]) for f, values in seen]
+            measured = acceleration(points, fps)
+        elif pose_bone.name not in driven:
+            measured = 0.0
+        else:
+            measured = None
+        result.append(
+            Reading(pose_bone.name, limit, measured, _is_prismatic(pose_bone), ACCELERATION)
         )
     return result
 
 
 def warnings(rig, scene) -> list[Reading]:
-    """The joints to flag at the current frame: over their limit, unless ignored."""
+    """The readings to flag at the current frame: over their limit, unless ignored.
+
+    Speeds first, then accelerations; a joint over both appears twice, once as
+    each :data:`~..rig.velocity.SPEED` and :data:`~..rig.velocity.ACCELERATION`.
+    """
     if rig is None or ignored(rig):
         return []
-    return [reading for reading in readings(rig, scene) if reading.over]
+    return [
+        reading
+        for reading in readings(rig, scene) + acceleration_readings(rig, scene)
+        if reading.over
+    ]
 
 
 def observe(scene) -> None:
-    """Record where every speed-limited rig stands, after the frame has solved."""
+    """Record where every checked rig stands, after the frame has solved.
+
+    A rig whose limits are ignored is skipped: nothing is read back from it.
+    """
     frame = scene.frame_current
     for obj in scene.objects:
-        if not builder.is_kinema_rig(obj):
+        if not builder.is_kinema_rig(obj) or ignored(obj):
             continue
         values = {
             pose_bone.name: joint_value(pose_bone)
             for pose_bone in builder.joint_bones(obj)
             if limit_of(pose_bone) is not None
+            or acceleration_limit_of(pose_bone) is not None
         }
         if values:
             _history.observe(_key(obj), frame, values)
 
 
 def forget() -> None:
+    """Drop every rig's history: a new file, or the add-on going away."""
     _history.forget()
 
 
@@ -176,8 +276,9 @@ class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
     bl_idname = "kinema.load_joint_limits"
     bl_label = "Load Joint Limits"
     bl_description = (
-        "Read velocity limits from a MoveIt or ros2_control joint_limits.yaml. "
-        "They replace the robot description's, joint by joint"
+        "Read velocity, acceleration, jerk and effort limits from a MoveIt or "
+        "ros2_control joint_limits.yaml. They replace the robot description's, "
+        "joint by joint"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -191,12 +292,12 @@ class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
         try:
-            limits = read_velocity_limits(self.filepath)
+            limits = read_joint_limits(self.filepath)
         except JointLimitsError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         if not limits:
-            self.report({"ERROR"}, "No velocity limits in that file")
+            self.report({"ERROR"}, "No joint limits in that file")
             return {"CANCELLED"}
 
         # By URDF joint name, which is what the file uses. The bone is usually
@@ -218,22 +319,25 @@ class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
             )
             return {"CANCELLED"}
 
-        set_count = cleared = 0
+        loaded = dict.fromkeys(KINDS, 0)
+        cleared = 0
         for name in matched:
             bone = by_joint[name].bone
-            value = limits[name]
-            if value is None:
-                if builder.PROP_VELOCITY in bone:
-                    del bone[builder.PROP_VELOCITY]
-                    cleared += 1
-            else:
-                bone[builder.PROP_VELOCITY] = float(value)
-                set_count += 1
+            for kind, value in limits[name].items():
+                prop = builder.LIMIT_PROPS[kind]
+                if value is None:
+                    if prop in bone:
+                        del bone[prop]
+                        cleared += 1
+                else:
+                    bone[prop] = float(value)
+                    loaded[kind] += 1
 
         # The solver reads the same limits; hand it the new ones.
         manager.refresh_limits(rig)
 
-        message = f"Loaded {set_count} velocity limit{'s' if set_count != 1 else ''}"
+        parts = [f"{count} {kind}" for kind, count in loaded.items() if count]
+        message = f"Loaded {_listed(parts) or 'no'} limit{'s' if sum(loaded.values()) != 1 else ''}"
         if cleared:
             message += f", turned {cleared} off"
         unknown = len(limits) - len(matched)
@@ -248,19 +352,39 @@ class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
         return {"FINISHED"}
 
 
+def _listed(parts: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    if len(parts) <= 1:
+        return "".join(parts)
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
 classes = (KINEMA_OT_load_joint_limits,)
+
+
+def _on_ignore_changed(rig, context) -> None:
+    """Start the rig's history afresh.
+
+    Nothing is recorded while a rig is ignored, so the frames it holds are from
+    before -- and the animation may have changed since. A driven joint reads
+    unknown until a frame is stepped, rather than against a stale pose.
+    """
+    _history.forget(_key(rig))
 
 
 def register_props() -> None:
     # Per rig, and saved: a shot that will never run on hardware stays quiet
     # when the file is reopened, and a second robot in the scene keeps warning.
+    # Named for velocity, which it was first; renaming it would lose the setting
+    # in every file saved before.
     bpy.types.Object.kinema_ignore_velocity = BoolProperty(
-        name="Ignore Velocity Limits",
+        name="Ignore Motion Limits",
         description=(
-            "Stop flagging joints that move faster than their velocity limit, "
-            "in the panel and in the viewport"
+            "Stop flagging joints that move faster, or speed up harder, than their "
+            "limits allow, in the panel and in the viewport"
         ),
         default=False,
+        update=_on_ignore_changed,
     )
 
 

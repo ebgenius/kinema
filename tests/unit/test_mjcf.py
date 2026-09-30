@@ -175,3 +175,38 @@ class TestFloatingBase:
         assert base.joint_type == "fixed"
         assert [j.name for j in model.actuated_joints] == ["hip"]
         assert np.allclose(model.link_frames()["base"][:3, 3], [0, 0, 0.5])
+
+
+class TestEffort:
+    @staticmethod
+    def _joint(tmp_path, attributes: str, default: str = ""):
+        path = tmp_path / "effort.xml"
+        path.write_text(
+            f'<mujoco model="e"><default>{default}</default><worldbody>'
+            f'<body name="a"><joint name="j" axis="0 0 1" {attributes}/>'
+            '<geom type="box" size="0.1 0.1 0.1"/></body></worldbody></mujoco>',
+            encoding="utf-8",
+        )
+        return next(j for j in mjcf.model_from_mjcf(path).joints if j.name == "j")
+
+    def test_the_actuator_force_range_is_the_effort(self, tmp_path):
+        joint = self._joint(tmp_path, 'actuatorfrcrange="-87 87"')
+        assert joint.effort == pytest.approx(87.0)
+
+    @pytest.mark.parametrize(("bounds", "effort"), [("-20 50", 50.0), ("-60 50", 60.0)])
+    def test_the_larger_bound_is_taken(self, tmp_path, bounds, effort):
+        joint = self._joint(tmp_path, f'actuatorfrcrange="{bounds}"')
+        assert joint.effort == pytest.approx(effort)
+
+    def test_a_range_turned_off_is_no_effort(self, tmp_path):
+        joint = self._joint(
+            tmp_path, 'actuatorfrcrange="-87 87" actuatorfrclimited="false"'
+        )
+        assert joint.effort is None
+
+    def test_a_class_default_applies(self, tmp_path):
+        joint = self._joint(tmp_path, "", default='<joint actuatorfrcrange="-12 12"/>')
+        assert joint.effort == pytest.approx(12.0)
+
+    def test_no_range_is_no_effort(self, tmp_path):
+        assert self._joint(tmp_path, "").effort is None

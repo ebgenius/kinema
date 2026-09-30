@@ -1,9 +1,9 @@
-"""Draw a joint that is over its velocity limit in red, in the 3D viewport.
+"""Draw a joint that is over its speed or acceleration limit in red, in the 3D viewport.
 
 The joint's own widget -- the dial or arrow the rig already draws -- is traced
-over itself in red, thicker, with the joint's name and how far over it is
-beside it. So the warning sits on the thing that is moving too fast, not in a
-panel the user has scrolled past.
+over itself in red, thicker, with the joint's name beside it and how far over
+each limit it is. So the warning sits on the thing that is moving too fast, not
+in a panel the user has scrolled past.
 
 Drawn, not recoloured. Tinting the bone would write to the file on every frame
 of playback, push depsgraph updates while it did, and overwrite any colours
@@ -22,10 +22,14 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..rig import builder
+from ..rig.velocity import ACCELERATION, SPEED
 
 COLOR = (1.0, 0.18, 0.12, 1.0)
 LINE_WIDTH = 3.0
 LABEL_SIZE = 12
+
+#: Each kind of limit as a label names it: short, since it sits in the viewport.
+_SHORT = {SPEED: "speed", ACCELERATION: "accel"}
 
 #: Handles returned by draw_handler_add, kept to remove them again.
 _handles: list = []
@@ -69,11 +73,29 @@ def _shape_matrix(rig, pose_bone) -> Matrix:
     )
 
 
+def by_joint(over) -> dict[str, list]:
+    """The readings in ``over`` grouped by joint, joints in the order they first appear.
+
+    A joint over both its limits comes with two readings, and is still one
+    widget and one label.
+    """
+    grouped: dict[str, list] = {}
+    for reading in over:
+        grouped.setdefault(reading.joint, []).append(reading)
+    return grouped
+
+
+def label_text(joint: str, readings) -> str:
+    """What hangs beside a flagged joint: its name, then how far over each limit."""
+    parts = [f"{_SHORT[reading.kind]} {reading.ratio:.0%}" for reading in readings]
+    return "  ".join([joint, *parts])
+
+
 def warning_lines(rig, over) -> list[tuple[Vector, Vector]]:
     """World-space line segments tracing the widgets of the joints in ``over``."""
     lines = []
-    for reading in over:
-        pose_bone = rig.pose.bones.get(reading.joint)
+    for joint in by_joint(over):
+        pose_bone = rig.pose.bones.get(joint)
         if pose_bone is None:
             continue
         matrix = _shape_matrix(rig, pose_bone)
@@ -164,8 +186,8 @@ def _draw_labels() -> None:
     blf.shadow_offset(font, 1, -1)
     try:
         for rig, over in found:
-            for reading in over:
-                pose_bone = rig.pose.bones.get(reading.joint)
+            for joint, readings in by_joint(over).items():
+                pose_bone = rig.pose.bones.get(joint)
                 if pose_bone is None:
                     continue
                 point = location_3d_to_region_2d(
@@ -174,7 +196,7 @@ def _draw_labels() -> None:
                 if point is None:
                     continue
                 blf.position(font, point.x + 10 * scale, point.y + 6 * scale, 0)
-                blf.draw(font, f"{reading.joint}  {reading.ratio:.0%}")
+                blf.draw(font, label_text(joint, readings))
     finally:
         blf.disable(font, blf.SHADOW)
 

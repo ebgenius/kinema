@@ -68,6 +68,9 @@ def _random_rig(rng, count: int = 7):
                 lower=-1.0 if index % 3 != 2 else None,
                 upper=1.0 if index % 3 != 2 else None,
                 velocity=0.5 * (index + 1),
+                acceleration=2.0 * (index + 1),
+                jerk=50.0 if index % 2 else None,
+                effort=10.0 * (index + 1),
             )
         )
     return records
@@ -135,6 +138,9 @@ def test_joints_carry_the_bones_names_types_and_limits():
         assert (joint.lower, joint.upper, joint.velocity) == (
             record.lower, record.upper, record.velocity
         )
+        assert (joint.acceleration, joint.jerk, joint.effort) == (
+            record.acceleration, record.jerk, record.effort
+        )
         parent = next((r for r in records if r.name == record.parent), None)
         assert joint.parent_link == (parent.child_link if parent else rig_model.WORLD_LINK)
         assert np.linalg.norm(joint.axis) == pytest.approx(1.0)
@@ -165,6 +171,28 @@ def test_the_urdf_carries_each_joints_own_speed():
     assert speeds["j0"] == pytest.approx(0.5)
     assert speeds["j2"] == pytest.approx(1.5)
     assert speeds["j1"] == pytest.approx(pyroki_backend.UNLIMITED_SPEED)
+
+
+def test_the_urdf_carries_each_joints_own_effort():
+    """URDF requires one; a joint with none of its own gets a stand-in."""
+    import dataclasses
+    import xml.etree.ElementTree as ElementTree
+
+    urdf_bridge = load_addon_module("solver.urdf_bridge")
+    records = _random_rig(np.random.default_rng(5))
+    records[1] = dataclasses.replace(records[1], effort=None)
+    root = ElementTree.fromstring(
+        urdf_bridge.urdf_xml(rig_model.model_from_records("robot", records))
+    )
+    efforts = {
+        joint.get("name"): float(joint.find("limit").get("effort"))
+        for joint in root.iter("joint")
+        if joint.find("limit") is not None
+    }
+
+    assert efforts["j0"] == pytest.approx(10.0)
+    assert efforts["j2"] == pytest.approx(30.0)
+    assert efforts["j1"] > 0.0
 
 
 def test_it_renders_as_urdf():

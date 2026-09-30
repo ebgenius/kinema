@@ -81,6 +81,23 @@ PROP_UPPER = "kinema_upper"
 #: <limit velocity>, or loaded later from a joint_limits.yaml. Absent when
 #: neither gives one, and then the joint is never checked.
 PROP_VELOCITY = "kinema_velocity"
+#: How fast its speed may change, rad/s² or m/s². Only a joint_limits.yaml gives
+#: one: URDF has no field for it. Checked like the velocity.
+PROP_ACCELERATION = "kinema_acceleration"
+#: How fast its acceleration may change, rad/s³ or m/s³, from a
+#: joint_limits.yaml. Listed in the panel; not checked.
+PROP_JERK = "kinema_jerk"
+#: Most torque or force the joint's motor may exert, N·m or N. From <limit
+#: effort>, MJCF's actuatorfrcrange, or a joint_limits.yaml. Shown, never
+#: checked: that needs the robot's dynamics.
+PROP_EFFORT = "kinema_effort"
+#: Every per-joint motion limit, by the name joint_limits.yaml gives its kind.
+LIMIT_PROPS = {
+    "velocity": PROP_VELOCITY,
+    "acceleration": PROP_ACCELERATION,
+    "jerk": PROP_JERK,
+    "effort": PROP_EFFORT,
+}
 PROP_AXIS = "kinema_axis"
 #: The URDF link this joint moves, and the constant transform from the bone's
 #: rest frame to that link's rest frame. PyRoki targets *links*, but Kinema's
@@ -388,6 +405,9 @@ def _setup_pose_bones(
             velocity=joint.velocity,
             child_link=joint.child_link,
             link_frame=link_frames[joint.child_link],
+            acceleration=joint.acceleration,
+            jerk=joint.jerk,
+            effort=joint.effort,
         )
         mount = result.mounts.get(joint.name)
         if mount is not None:
@@ -453,7 +473,7 @@ def configure_joint_bone(pose_bone, *, revolute: bool, limits) -> None:
 
 def write_joint_props(
     bone, *, joint_name: str, joint_type: str, axis, limits, velocity, child_link: str,
-    link_frame,
+    link_frame, acceleration=None, jerk=None, effort=None,
 ) -> None:
     """The facts a joint bone carries, so the rig describes itself.
 
@@ -470,9 +490,15 @@ def write_joint_props(
         bone[PROP_LOWER] = float(limits[0])
         bone[PROP_UPPER] = float(limits[1])
     # Independent of the range: a continuous joint has no range, but a motor
-    # still has a top speed, and URDF gives it one.
-    if velocity is not None:
-        bone[PROP_VELOCITY] = float(velocity)
+    # still has a top speed, and URDF gives it one. The same goes for the rest.
+    for prop, value in (
+        (PROP_VELOCITY, velocity),
+        (PROP_ACCELERATION, acceleration),
+        (PROP_JERK, jerk),
+        (PROP_EFFORT, effort),
+    ):
+        if value is not None:
+            bone[prop] = float(value)
     bone[PROP_CHILD_LINK] = child_link
     correction = np.linalg.inv(_np4(bone.matrix_local)) @ np.asarray(link_frame, dtype=float)
     bone[PROP_LINK_CORRECTION] = [float(v) for v in correction.flatten()]
