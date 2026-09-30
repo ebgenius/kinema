@@ -153,6 +153,8 @@ solves it, and each move gets a row listing what went wrong:
 - how far a linear move's tool strayed from its line, or turned off the shortest turn;
 - a joint that reached its limit;
 - the fastest joint against its velocity limit;
+- the hardest-accelerating joint against its acceleration limit, measured at the waypoints
+  too, from the frames either side: a linear move changes speed there at once;
 - a joint that jumped more than a radian (or 25 cm) in one frame, which is how a
   configuration flip shows.
 
@@ -163,43 +165,59 @@ When the shot is right, **Bake IK to Keyframes** turns the whole thing into plai
 curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves
 bake as IK solves them.
 
-## Checking joint speeds
+## Checking motion limits
 
 A robot can't follow motion faster than its motors, and Blender plays back a joint keyed
 through half a turn in two frames as smoothly as one given two seconds. Most robot
-descriptions give each joint a top speed in `<limit velocity>`. Kinema keeps it on the joint
-and checks the frame on screen against it.
+descriptions give each joint a top speed in `<limit velocity>`, and a `joint_limits.yaml`
+can add how hard it may accelerate. Kinema keeps both on the joint and checks the frame on
+screen against them.
 
-A joint over its limit is flagged in two places:
+A joint over either limit is flagged in two places:
 
-- **In the panel.** Its slider in **Joints (FK)** turns red, and **Velocity Limits** lists
-  every joint's speed against its limit.
-- **In the viewport.** Its dial or arrow is redrawn in red, with its name and its speed as a
-  percentage of the limit.
+- **In the panel.** Its slider in **Joints (FK)** turns red. **Motion Limits** lists every
+  joint's speed against its limit under **Speed**, and its acceleration under
+  **Acceleration**.
+- **In the viewport.** Its dial or arrow is redrawn in red, with its name and how far over
+  each limit it is: `joint2  speed 130%  accel 150%`.
 
-**Ignore Velocity Limits**, in that section, turns both off for one rig: for a shot that will
-never run on a robot, or a description whose limits are placeholders. The numbers stay
-listed, greyed out.
+During playback, Blender redraws the sidebar only with **Timeline › Playback › Play In ›
+Properties and Sidebars** on, and it's off by default. Without it, the sliders and rows
+aren't redrawn as the animation plays, while the viewport follows every frame either way.
+
+**Ignore Motion Limits**, in that section, turns both off for one rig: for a shot that will
+never run on a robot, or a description whose limits are placeholders. The limits stay
+listed, greyed out, and nothing is measured for that rig until you untick it.
 
 | Joint | Measured against | After a jump or a scrub |
 |---|---|---|
-| Keyed, including joint moves from Generate Motion and baked IK | its own curve, one frame back | exact |
-| Driven by live IK, including linear moves | the pose seen one frame earlier | `—` until you play or step a frame |
-| Neither | the pose seen one frame earlier | still |
+| Keyed, including joint moves from Generate Motion and baked IK | its own curve: one frame back for speed, two for acceleration | exact |
+| Driven by live IK, including linear moves | the poses seen one and two frames earlier | `—` until you play or step a frame, or two for acceleration |
+| Neither | the poses seen one and two frames earlier | still |
 
-Speeds use the scene's frame rate. A gap of up to three frames, from playback dropping
-frames, is averaged. An average can miss a spike inside the gap, but never reports one that
-isn't there. A joint pressed against its range stop doesn't count as moving, whatever its
-curve does.
+Both use the scene's frame rate. A gap of up to three frames, from playback dropping frames,
+is averaged. An average can miss a spike inside the gap, but never reports one that isn't
+there. A joint pressed against its range stop doesn't count as moving, whatever its curve
+does.
+
+Jerk and effort limits are kept on each joint too, and listed under **Not Checked**. Only
+speed and acceleration are checked. Effort would need the robot's masses and inertias, which
+a rig doesn't carry. Jerk would add little: between frames, a joint passes a jerk limit only
+if its acceleration changes by more than that limit over the frame rate, within one frame.
+For a Franka Panda at 24 fps that is a change of over 300 rad/s², against an acceleration
+limit of 15, so the acceleration check has flagged it already.
 
 **Load Joint Limits…** reads a MoveIt or ros2_control `joint_limits.yaml`. That is often
-where a robot's real running speeds live. It works joint by joint:
+where a robot's real running speeds live, and where its acceleration limits are, since URDF
+has no field for them. It reads velocity, acceleration, jerk and effort, joint by joint and
+kind by kind:
 
-- `has_velocity_limits: true` sets a limit;
+- `has_acceleration_limits: true`, with `max_acceleration`, sets that limit;
 - `false` turns it off;
-- a joint the file doesn't mention keeps the description's value.
+- a joint or a kind the file doesn't mention keeps the description's value.
 
-MJCF has no velocity limits, so an MJCF rig only gets them from such a file.
+MJCF has no velocity or acceleration limits, so an MJCF rig only gets them from such a file.
+Its effort limits come from each joint's `actuatorfrcrange`.
 
 ## Choosing how the arm reaches
 
@@ -296,7 +314,7 @@ rides, a turntable under it, a positioner holding the part, a spindle on its fla
     it in the **Bones** panel.
 - **Motion and direction:** linear or rotary, along or about ±X, ±Y or ±Z of the axis's base
   placement. A rotary axis can be continuous.
-- **Limits and top speed.** The speed feeds the **Velocity Limits** check like any other
+- **Limits and top speed.** The speed feeds the **Motion Limits** check like any other
   joint's.
 - **External axis base:** where the axis sits, calculated from the current robot base, or
   from the current tool frame for an axis on the tool. Location, plus roll, pitch and yaw
@@ -310,7 +328,7 @@ lowest one's rail or turntable. Add an X track, then a Y track, and the Y track 
 the X track's rail and carries it, as if the X track were already part of the robot.
 
 The axis is an ordinary joint bone, built by the same code as an imported joint. It gets a
-slider in **Joints (FK)**, keys, bake and a velocity check, and it starts **held**, since it
+slider in **Joints (FK)**, keys, bake and a speed check, and it starts **held**, since it
 is positioned by hand and the arm reaches from wherever it stands. Release the pin to let IK
 move it too.
 

@@ -56,6 +56,7 @@ def register() -> None:
 def unregister() -> None:
     axis_preview.stop()
     tcp_preview.stop()
+    velocity.forget()
     external_axes.forget()
     tcp.forget()
     deferral.forget()

@@ -174,6 +174,21 @@ def _floats(text: str | None, count: int, default) -> np.ndarray:
     return np.array(parts[:count], dtype=float)
 
 
+def _actuator_force(joint_attributes: dict) -> float | None:
+    """The joint's effort limit: MJCF's ``actuatorfrcrange``, the larger bound.
+
+    MuJoCo clamps the total force its actuators put on the joint to that range,
+    which is what a URDF's ``<limit effort>`` says. None where the joint has no
+    range, or ``actuatorfrclimited`` turns it off.
+    """
+    if not joint_attributes.get("actuatorfrcrange"):
+        return None
+    if str(joint_attributes.get("actuatorfrclimited", "auto")).lower() in ("false", "0"):
+        return None
+    largest = float(np.max(np.abs(_floats(joint_attributes["actuatorfrcrange"], 2, (0.0, 0.0)))))
+    return largest if largest > 0.0 else None
+
+
 # --------------------------------------------------------------------------
 # document loading
 # --------------------------------------------------------------------------
@@ -414,6 +429,7 @@ class _Builder:
                     axis=normalize(_floats(joint_attributes.get("axis"), 3, (0.0, 0.0, 1.0))),
                     lower=lower,
                     upper=upper,
+                    effort=_actuator_force(joint_attributes),
                 )
             )
 

@@ -221,16 +221,17 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
 
         from ..ops import velocity
 
-        # Red on the slider of a joint moving faster than its limit here, so
-        # the warning sits on the control that fixes it.
-        too_fast = {reading.joint for reading in velocity.warnings(rig, context.scene)}
+        # Red on the slider of a joint moving faster, or speeding up harder,
+        # than its limits allow here, so the warning sits on the control that
+        # fixes it.
+        flagged = {reading.joint for reading in velocity.warnings(rig, context.scene)}
 
         column = layout.column(align=True)
         for pose_bone in joints:
             bone = pose_bone.bone
             is_revolute = bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic"
             row = column.row(align=True)
-            row.alert = pose_bone.name in too_fast
+            row.alert = pose_bone.name in flagged
             # index=1 is the Y channel: the one aligned to the joint axis.
             if is_revolute:
                 row.prop(pose_bone, "rotation_euler", index=1, text=pose_bone.name)
@@ -251,12 +252,15 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
             sub.label(text="", icon=icon)
 
 
-class KINEMA_PT_velocity(KinemaPanelBase, Panel):
-    """Each joint's speed at this frame, against its velocity limit."""
+class KINEMA_PT_motion_limits(KinemaPanelBase, Panel):
+    """Each joint's speed and acceleration at this frame, against its limits.
 
-    bl_idname = "KINEMA_PT_velocity"
+    Each kind of limit has a sub-panel of its own; this holds what they share.
+    """
+
+    bl_idname = "KINEMA_PT_motion_limits"
     bl_parent_id = "KINEMA_PT_main"
-    bl_label = "Velocity Limits"
+    bl_label = "Motion Limits"
     bl_options = {"DEFAULT_CLOSED"}
 
     @classmethod
@@ -271,48 +275,149 @@ class KINEMA_PT_velocity(KinemaPanelBase, Panel):
             self.layout.label(text="", icon="ERROR")
 
     def draw(self, context: bpy.types.Context) -> None:
-        from ..ops import velocity
-        from ..rig.velocity import format_speed
-
         layout = self.layout
-        rig = active_rig(context)
         scene = context.scene
-        readings = velocity.readings(rig, scene)
-
-        if not readings:
-            layout.label(text="No velocity limits on this rig", icon="INFO")
-            layout.operator(
-                "kinema.load_joint_limits", text="Load Joint Limits…", icon="FILE_FOLDER"
-            )
-            return
-
-        layout.prop(rig, "kinema_ignore_velocity")
-        ignored = velocity.ignored(rig)
-        degrees = scene.unit_settings.system_rotation == "DEGREES"
-
-        column = layout.column(align=True)
-        column.active = not ignored
-        for reading in readings:
-            row = column.row(align=True)
-            row.alert = reading.over and not ignored
-            row.label(text=reading.joint, icon="ERROR" if row.alert else "BLANK1")
-            speed, limit = (
-                format_speed(value, prismatic=reading.prismatic, degrees=degrees)
-                for value in (reading.speed, reading.limit)
-            )
-            sub = row.row(align=True)
-            sub.alignment = "RIGHT"
-            sub.label(text=f"{speed}  of  {limit}")
-
+        layout.prop(active_rig(context), "kinema_ignore_velocity")
         fps = scene.render.fps / scene.render.fps_base
         layout.label(text=f"Frame {scene.frame_current} at {fps:g} fps", icon="TIME")
-        if any(reading.speed is None for reading in readings):
-            # Only a joint live IK drives can read "—": its last frame is
-            # remembered, not stored, and a jump leaves nothing to compare.
-            layout.label(text="— : play or step a frame to measure", icon="INFO")
         layout.operator(
             "kinema.load_joint_limits", text="Load Joint Limits…", icon="FILE_FOLDER"
         )
+
+
+def _draw_checked(layout, context, kind: str, *, missing: tuple[str, ...], unknown: str) -> None:
+    """One row per joint with a ``kind`` limit: what it measures here, against it.
+
+    A rig whose limits are ignored lists the limits alone, greyed: nothing is
+    measured for it, so ignoring a rig also saves the work.
+    """
+    from ..ops import velocity
+    from ..rig.velocity import ORDERS, SPEED, format_rate
+
+    rig = active_rig(context)
+    scene = context.scene
+    ignored = velocity.ignored(rig)
+    if ignored:
+        readings = velocity.limits(rig, kind)
+    elif kind == SPEED:
+        readings = velocity.readings(rig, scene)
+    else:
+        readings = velocity.acceleration_readings(rig, scene)
+    if not readings:
+        for index, line in enumerate(missing):
+            layout.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+        return
+
+    degrees = scene.unit_settings.system_rotation == "DEGREES"
+    column = layout.column(align=True)
+    column.active = not ignored
+    for reading in readings:
+        row = column.row(align=True)
+        row.alert = reading.over
+        row.label(text=reading.joint, icon="ERROR" if row.alert else "BLANK1")
+        value, limit = (
+            format_rate(
+                number, prismatic=reading.prismatic, degrees=degrees, order=ORDERS[kind]
+            )
+            for number in (reading.speed, reading.limit)
+        )
+        sub = row.row(align=True)
+        sub.alignment = "RIGHT"
+        sub.label(text=f"limit {limit}" if ignored else f"{value}  of  {limit}")
+
+    if not ignored and any(reading.speed is None for reading in readings):
+        # Only a joint live IK drives can read "—": the frames before are
+        # remembered, not stored, and a jump leaves nothing to compare.
+        layout.label(text=unknown, icon="INFO")
+
+
+class KINEMA_PT_motion_speed(KinemaPanelBase, Panel):
+    """Each joint's speed at this frame, against its velocity limit."""
+
+    bl_idname = "KINEMA_PT_motion_speed"
+    bl_parent_id = "KINEMA_PT_motion_limits"
+    bl_label = "Speed"
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from ..rig.velocity import SPEED
+
+        _draw_checked(
+            self.layout, context, SPEED,
+            missing=("No velocity limits on this rig",),
+            unknown="— : play or step a frame to measure",
+        )
+
+
+class KINEMA_PT_motion_acceleration(KinemaPanelBase, Panel):
+    """Each joint's acceleration at this frame, against its acceleration limit."""
+
+    bl_idname = "KINEMA_PT_motion_acceleration"
+    bl_parent_id = "KINEMA_PT_motion_limits"
+    bl_label = "Acceleration"
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from ..rig.velocity import ACCELERATION
+
+        # URDF has no field for it, so most rigs start with none: say where
+        # they come from.
+        _draw_checked(
+            self.layout, context, ACCELERATION,
+            missing=("No acceleration limits on this rig", "A joint_limits.yaml can add them"),
+            unknown="— : play or step two frames to measure",
+        )
+
+
+class KINEMA_PT_motion_unchecked(KinemaPanelBase, Panel):
+    """Jerk and effort limits: kept on each joint and listed, not checked.
+
+    Why neither is checked is in ``rig/velocity.py``.
+    """
+
+    bl_idname = "KINEMA_PT_motion_unchecked"
+    bl_parent_id = "KINEMA_PT_motion_limits"
+    bl_label = "Not Checked"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from ..ops.velocity import stored_limit
+        from ..rig.velocity import format_effort, format_rate
+
+        layout = self.layout
+        rig = active_rig(context)
+        degrees = context.scene.unit_settings.system_rotation == "DEGREES"
+        column = layout.column(align=True)
+        listed = False
+        for pose_bone in builder.joint_bones(rig):
+            prismatic = pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
+            jerk = stored_limit(pose_bone, builder.PROP_JERK)
+            effort = stored_limit(pose_bone, builder.PROP_EFFORT)
+            parts = []
+            if jerk is not None:
+                parts.append(format_rate(jerk, prismatic=prismatic, degrees=degrees, order=3))
+            if effort is not None:
+                parts.append(format_effort(effort, prismatic=prismatic))
+            if not parts:
+                continue
+            listed = True
+            row = column.row(align=True)
+            row.label(text=pose_bone.name, icon="BLANK1")
+            sub = row.row(align=True)
+            sub.alignment = "RIGHT"
+            sub.label(text="   ".join(parts))
+        if not listed:
+            layout.label(text="No jerk or effort limits on this rig", icon="INFO")
 
 
 def _joint_indices(rig: bpy.types.Object) -> dict[str, int]:
@@ -1018,7 +1123,10 @@ classes = (
     KINEMA_UL_waypoints,
     KINEMA_PT_main,
     KINEMA_PT_joints,
-    KINEMA_PT_velocity,
+    KINEMA_PT_motion_limits,
+    KINEMA_PT_motion_speed,
+    KINEMA_PT_motion_acceleration,
+    KINEMA_PT_motion_unchecked,
     KINEMA_PT_bones,
     KINEMA_PT_waypoints,
     KINEMA_PT_motion_check,

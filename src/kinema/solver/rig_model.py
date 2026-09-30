@@ -57,6 +57,9 @@ class BoneRecord:
     lower: float | None = None
     upper: float | None = None
     velocity: float | None = None
+    acceleration: float | None = None
+    jerk: float | None = None
+    effort: float | None = None
 
     @property
     def link_frame(self) -> np.ndarray:
@@ -87,6 +90,9 @@ def model_from_records(name: str, records: list[BoneRecord]) -> RobotModel:
                 lower=record.lower,
                 upper=record.upper,
                 velocity=record.velocity,
+                acceleration=record.acceleration,
+                jerk=record.jerk,
+                effort=record.effort,
             )
         )
         links[record.child_link] = LinkSpec(record.child_link)
@@ -142,6 +148,9 @@ def records_from_rig(rig) -> list[BoneRecord]:
                 lower=optional(bone, builder.PROP_LOWER),
                 upper=optional(bone, builder.PROP_UPPER),
                 velocity=optional(bone, builder.PROP_VELOCITY),
+                acceleration=optional(bone, builder.PROP_ACCELERATION),
+                jerk=optional(bone, builder.PROP_JERK),
+                effort=optional(bone, builder.PROP_EFFORT),
             )
         )
     return records

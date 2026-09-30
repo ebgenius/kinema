@@ -249,7 +249,7 @@ def on_frame_change(scene: bpy.types.Scene, depsgraph=None) -> None:
 
 @persistent
 def on_pose_settled(scene: bpy.types.Scene, depsgraph=None) -> None:
-    """Record where each rig stands, for the velocity check to measure against.
+    """Record where each rig stands, for the motion-limit check to measure against.
 
     Registered after the solving handlers in both lists, so on a frame change
     the pose it reads is the one live IK has just solved. Skipped while

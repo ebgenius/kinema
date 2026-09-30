@@ -202,6 +202,55 @@ class TestJoints:
         assert result.limit_joint == ""
 
 
+class TestAcceleration:
+    JOINT = check.Joint("j1", velocity=100.0, acceleration=10.0)
+
+    @staticmethod
+    def _kinked():
+        """Still to frame 11, then 0.05 rad a frame: the speed changes at once at 11."""
+        frames = list(range(1, 22))
+        q = [[0.0 if frame <= 11 else 0.05 * (frame - 11)] for frame in frames]
+        return _samples(frames, q, [_pose()] * len(frames))
+
+    def test_a_sudden_change_of_speed_is_flagged(self):
+        # From still to 0.05 rad a frame: 0.05 times 24 squared is 28.8 rad/s²,
+        # against a 10 rad/s² limit.
+        result = check.check_move(
+            "b", "JOINT", 11, 21, _pose(), _pose(), self._kinked(), [self.JOINT], FPS
+        )
+        assert result.accel_joint == "j1"
+        assert result.accel_ratio == pytest.approx(2.88)
+        assert "j1 at 288% of its acceleration limit" in check.problems(result)
+
+    def test_both_moves_meeting_there_report_it(self):
+        """The first move ends still; the frame after it is the next move's."""
+        samples = self._kinked()
+        into = check.check_move(
+            "a", "JOINT", 1, 11, _pose(), _pose(), samples, [self.JOINT], FPS
+        )
+        out_of = check.check_move(
+            "b", "JOINT", 11, 21, _pose(), _pose(), samples, [self.JOINT], FPS
+        )
+        assert into.accel_ratio == pytest.approx(2.88)
+        assert out_of.accel_ratio == pytest.approx(2.88)
+
+    def test_a_steady_speed_is_not_accelerating(self):
+        frames = list(range(1, 11))
+        samples = _samples(frames, [[0.05 * frame] for frame in frames], [_pose()] * 10)
+        result = check.check_move(
+            "a", "JOINT", 1, 10, _pose(), _pose(), samples, [self.JOINT], FPS
+        )
+        assert result.accel_ratio == pytest.approx(0.0, abs=1e-9)
+        assert not any("acceleration" in problem for problem in check.problems(result))
+
+    def test_a_joint_without_a_limit_is_never_over_it(self):
+        result = check.check_move(
+            "b", "JOINT", 11, 21, _pose(), _pose(), self._kinked(),
+            [check.Joint("free", velocity=100.0)], FPS,
+        )
+        assert (result.accel_ratio, result.accel_joint) == (0.0, "")
+
+
 class TestProblems:
     def test_reads_anything_shaped_like_a_check(self):
         """The copy stored on the rig is a Blender property group, not the dataclass."""

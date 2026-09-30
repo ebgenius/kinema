@@ -15,12 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     shortest turn;
   - a joint that reached its limit;
   - the fastest joint against its velocity limit;
+  - the hardest-accelerating joint against its acceleration limit, measured at the waypoints
+    too, where a linear move changes speed at once;
   - a joint that jumped more than a radian (or 25 cm) in one frame, which is how a
     configuration flip shows.
 
   **Check Again** re-runs it after the curves have been edited by hand. The panel says when
   the waypoints have changed since the check, and a job it can't measure, on a rig with no
   TCP, is reported as unchecked rather than clean.
+- **Acceleration limits are checked,** beside speed. Each joint's acceleration at the frame
+  on screen is measured from its curve, or from the frames live IK was seen at, and flagged
+  the way its speed is: on its slider in **Joints (FK)**, in the panel, and in the viewport.
+  - **Load Joint Limits…** reads acceleration, jerk and effort from a `joint_limits.yaml`,
+    as well as velocity, kind by kind. URDF has no field for acceleration, so this is where
+    it comes from.
+  - Effort also comes from a URDF's `<limit effort>` and an MJCF joint's
+    `actuatorfrcrange`.
+  - Jerk and effort are kept on each joint and listed, not checked.
 - **Compiled solvers are kept on disk,** in JAX's compilation cache under Kinema's own user
   folder. While a robot's IK solver is kept there, a new Blender session loads it instead of
   compiling it again. Add IK on a UR5e went from 5.7 s to 2–3 s on a desktop, and from 2–3 s
@@ -32,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The vendored jaxls is patched so that this can work. It ordered its cost groups by text
     that carried memory addresses, so the same problem could trace to a differently ordered
     program in each session and miss what was kept. It now orders them by name.
+
+### Changed
+
+- **Velocity Limits is now Motion Limits,** with **Speed**, **Acceleration** and **Not
+  Checked** sub-panels. **Ignore Velocity Limits** is now **Ignore Motion Limits**, and a
+  file saved with it ticked keeps it.
+- **An ignored rig is no longer measured.** Its limits are listed, greyed out, without its
+  curves being read or its poses recorded. Unticking Ignore starts its history afresh, so a
+  pose from before the rig was ignored is never measured against.
 
 ### Fixed
 

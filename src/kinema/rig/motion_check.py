@@ -9,6 +9,9 @@ line per move:
   turned off the shortest rotation between its two ends;
 * a joint that reached its limit;
 * the fastest any joint moved, against its velocity limit;
+* the hardest any joint accelerated, against its acceleration limit -- the
+  waypoint at each end included, where a move keyed LINEAR changes speed at
+  once;
 * the largest jump any joint made between two frames, which is how a
   configuration flip shows up.
 
@@ -28,6 +31,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .velocity import TOLERANCE as SPEED_TOLERANCE
+from .velocity import acceleration
 from .waypoints import MOVE_LINEAR
 
 #: How far the tool may stray from a linear move's line, in metres, before it
@@ -58,6 +62,8 @@ class Joint:
     upper: float | None = None
     #: rad/s or m/s; None when the description gives none.
     velocity: float | None = None
+    #: rad/s² or m/s²; None when none was loaded.
+    acceleration: float | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +93,9 @@ class MoveCheck:
     speed_joint: str = ""
     #: Fastest speed as a fraction of that joint's limit; 0 when none has one.
     speed_ratio: float = 0.0
+    accel_joint: str = ""
+    #: Hardest acceleration as a fraction of that joint's limit; 0 when none has one.
+    accel_ratio: float = 0.0
     jump_joint: str = ""
     jump: float = 0.0
     jump_prismatic: bool = False
@@ -155,7 +164,36 @@ def check_move(
                 result.jump_joint = joint.name
                 result.jump_prismatic = joint.prismatic
                 result.jump_frame = int(b)
+
+    result.accel_ratio, result.accel_joint = _hardest_acceleration(
+        samples, start_frame, end_frame, joints, fps
+    )
     return result
+
+
+def _hardest_acceleration(samples, start_frame, end_frame, joints, fps) -> tuple[float, str]:
+    """The largest acceleration against its limit at any of the move's own frames.
+
+    Measured at each frame from its neighbours, which may lie outside the move:
+    the frame a move ends on is where the next one's speed takes over, and a
+    move keyed LINEAR changes speed there all at once. Both moves that meet at
+    a waypoint report it.
+    """
+    limited = [(index, joint) for index, joint in enumerate(joints) if joint.acceleration]
+    if not limited:
+        return 0.0, ""
+    ordered = sorted(samples, key=lambda s: s.frame)
+    worst, name = 0.0, ""
+    for before, now, after in zip(ordered, ordered[1:], ordered[2:], strict=False):
+        if not start_frame <= now.frame <= end_frame:
+            continue
+        for index, joint in limited:
+            value = acceleration(
+                [(s.frame, float(s.q[index])) for s in (before, now, after)], fps
+            )
+            if value / joint.acceleration > worst:
+                worst, name = value / joint.acceleration, joint.name
+    return worst, name
 
 
 def problems(check) -> list[str]:
@@ -177,6 +215,11 @@ def problems(check) -> list[str]:
     if check.speed_ratio > 1.0 + SPEED_TOLERANCE:
         found.append(
             f"{check.speed_joint} at {check.speed_ratio * 100:.0f}% of its speed limit"
+        )
+    accel_ratio = getattr(check, "accel_ratio", 0.0)
+    if accel_ratio > 1.0 + SPEED_TOLERANCE:
+        found.append(
+            f"{check.accel_joint} at {accel_ratio * 100:.0f}% of its acceleration limit"
         )
     threshold = JUMP_PRISMATIC if check.jump_prismatic else JUMP_REVOLUTE
     if check.jump > threshold:

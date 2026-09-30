@@ -79,9 +79,11 @@ def urdf_xml(model: RobotModel) -> str:
             # velocity limits outright -- which is how every unlimited MJCF
             # hinge failed to load before. The velocity is the joint's own, or
             # unbounded where it has none: a made-up figure would stand in for
-            # a real limit. Nothing here reads effort, which URDF requires.
+            # a real limit. The effort is the joint's own too; URDF requires
+            # one, and nothing reads it, so a stand-in fills in where it has none.
             speed = joint.velocity if joint.velocity else UNLIMITED_SPEED
-            limit = {"effort": "100", "velocity": f"{speed:.12g}"}
+            effort = joint.effort if joint.effort else 100.0
+            limit = {"effort": f"{effort:.12g}", "velocity": f"{speed:.12g}"}
             if joint.has_limits:
                 limit["lower"] = f"{joint.lower:.12g}"
                 limit["upper"] = f"{joint.upper:.12g}"

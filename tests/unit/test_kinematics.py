@@ -80,7 +80,7 @@ class TestModelStructure:
         assert joint1.velocity == pytest.approx(1.0)
 
 
-class TestVelocityLimits:
+class TestMotionLimits:
     @staticmethod
     def _joint(tmp_path, joint_type: str, limit: str):
         yourdfpy = pytest.importorskip("yourdfpy")
@@ -113,6 +113,28 @@ class TestVelocityLimits:
     def test_no_limit_element_means_no_velocity(self, tmp_path):
         joint = self._joint(tmp_path, "continuous", "")
         assert joint.velocity is None
+
+    def test_the_effort_is_read(self, tmp_path):
+        joint = self._joint(
+            tmp_path, "revolute",
+            '<limit lower="-1" upper="1" effort="87" velocity="2.1"/>',
+        )
+        assert joint.effort == pytest.approx(87.0)
+
+    def test_a_zero_effort_means_not_given(self, tmp_path):
+        joint = self._joint(
+            tmp_path, "revolute",
+            '<limit lower="-1" upper="1" effort="0" velocity="2.1"/>',
+        )
+        assert joint.effort is None
+
+    def test_urdf_gives_no_acceleration_or_jerk(self, tmp_path):
+        """It has no field for either; a joint_limits.yaml brings them."""
+        joint = self._joint(
+            tmp_path, "revolute",
+            '<limit lower="-1" upper="1" effort="87" velocity="2.1"/>',
+        )
+        assert (joint.acceleration, joint.jerk) == (None, None)
 
 
 class TestForwardKinematics:

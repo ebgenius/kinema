@@ -55,6 +55,14 @@ class JointSpec:
     #: None when the description gives none, or gives zero: a zero is how
     #: descriptions say "not specified", since no joint is limited to rest.
     velocity: float | None = None
+    #: How fast its speed may change, rad/s² or m/s². URDF has no field for it;
+    #: it comes from a joint_limits.yaml.
+    acceleration: float | None = None
+    #: How fast its acceleration may change, rad/s³ or m/s³. joint_limits.yaml only.
+    jerk: float | None = None
+    #: Most torque or force its motor may exert, N·m or N -- URDF <limit effort>,
+    #: MJCF actuatorfrcrange. Shown, never checked: that needs the dynamics.
+    effort: float | None = None
     #: URDF <mimic>: this joint follows another. Recorded so the rig can lock
     #: the bone and drive it, instead of exposing a control that does nothing.
     mimic_joint: str | None = None
@@ -498,6 +506,7 @@ def model_from_urdf(urdf, mesh_resolver=None) -> RobotModel:
                 lower=float(limit.lower) if limit is not None and limit.lower is not None else None,
                 upper=float(limit.upper) if limit is not None and limit.upper is not None else None,
                 velocity=_positive(getattr(limit, "velocity", None)),
+                effort=_positive(getattr(limit, "effort", None)),
                 mimic_joint=getattr(mimic, "joint", None) if mimic is not None else None,
                 mimic_multiplier=float(getattr(mimic, "multiplier", None) or 1.0)
                 if mimic is not None else 1.0,
