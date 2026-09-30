@@ -52,8 +52,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An ignored rig is no longer measured.** Its limits are listed, greyed out, without its
   curves being read or its poses recorded. Unticking Ignore starts its history afresh, so a
   pose from before the rig was ignored is never measured against.
+- **A waypoint's marker is the waypoint.** Drag it, and the next Generate Motion re-aims
+  every move to and from it, joint moves included. The joints are re-solved at the marker,
+  walked there from the configuration taught so they keep it, and stored in its place as
+  Update would store them. Generate Motion names the waypoints it re-solved, and refuses a
+  marker the robot can't reach that way. Before, a joint move replayed the configuration
+  taught at the marker's old place, with a warning.
 
 ### Fixed
+
+- A robot whose linear move ended at a dragged marker jumped back to where that waypoint was
+  taught, on the frame live IK handed over to the joint keys: after the job, or where a joint
+  move began (#81). Those keys held the joints taught at the old place. They are now the
+  ones re-solved at the marker.
 
 - A linear move could turn the tool the long way round (#69). The IK goal's rotation was
   keyed as each waypoint's pose came, and a pair keyed in opposite quaternion hemispheres

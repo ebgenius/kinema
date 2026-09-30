@@ -47,6 +47,11 @@ is the portable truth -- it can be replayed on a different robot -- while the
 joint vector pins the configuration, which a pose alone cannot, since a pose
 has up to eight solutions and nothing else records which one was taught.
 
+The marker Record leaves at the tool is the waypoint. Drag it, and the next
+generation re-aims every move to and from it, joint moves included: the joint
+vector is walked from the taught one to the marker, so it keeps its
+configuration, and both are stored as Update would store them.
+
 Generating ends with a check of the job as it plays: each move's distance from
 its line, joint limits, speeds and jumps. It is kept on the rig and shown under
 the waypoints; ``rig/motion_check.py`` has what is measured.
@@ -76,6 +81,7 @@ from mathutils import Matrix
 from ..rig import builder, motion_check
 from ..rig.waypoints import MOVE_JOINT, MOVE_LINEAR, WaypointError, spans
 from ..solver import branches, manager, numpy_backend
+from ..solver.chain import chain_from_rig
 from ..ui.panel import active_rig
 from .ik import key_joint_value, own_fcurve_containers
 from .velocity import acceleration_limit_of, joint_value, limit_of
@@ -263,7 +269,7 @@ def pose_of(waypoint) -> Matrix:
     feature on the part" possible at all -- issue #3's actual request -- and
     that is only true if moving it moves the waypoint. So the Empty's own
     transform wins over the pose stored at teaching time, and dragging it in
-    the viewport re-aims the move.
+    the viewport re-aims every move to and from it: see :func:`follow_markers`.
 
     Its ``matrix_basis`` *is* the pose in rig space: the marker is parented to
     the rig with an identity parent inverse, exactly so these two are the same
@@ -276,11 +282,10 @@ def pose_of(waypoint) -> Matrix:
 
 
 def marker_has_moved(waypoint, tolerance: float = 1e-6) -> bool:
-    """True if the marker no longer agrees with the configuration taught for it.
+    """True if the marker no longer agrees with the pose stored for it.
 
-    Matters only for a joint move, which replays the stored joint vector and so
-    cannot follow a marker anywhere. A linear move solves for the pose and
-    follows it without needing to be told.
+    The stored joint vector was taught at that pose, so it is stale too until
+    :func:`follow_markers` walks it to the marker and the pose is stored again.
     """
     marker = waypoint.marker
     if marker is None or marker.parent is None:
@@ -475,7 +480,23 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 "waypoints to Joint",
             )
             return {"CANCELLED"}
-        refused, turned = settle_configurations(rig, plan) if needs_ik else ([], [])
+        # The marker is the waypoint: one dragged since teaching takes every
+        # move to and from it along. Its joints are found there before anything
+        # is checked or written, and the checks below see them.
+        unreachable, followed = follow_markers(rig, plan)
+        if unreachable:
+            names = ", ".join(f"'{name}'" for name in unreachable)
+            self.report(
+                {"ERROR"},
+                f"{names}: the robot can't follow the marker there from the "
+                f"configuration it was taught in. Move the marker back, or pose "
+                f"the robot there and press Update",
+            )
+            return {"CANCELLED"}
+        overrides = {waypoint.as_pointer(): values for waypoint, values in followed}
+        refused, turned = (
+            settle_configurations(rig, plan, overrides) if needs_ik else ([], [])
+        )
         if refused:
             names = ", ".join(f"'{name}'" for name in refused)
             self.report(
@@ -487,6 +508,11 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             return {"CANCELLED"}
         # Only now, with nothing refused: a cancelled operator leaves no undo
         # step, so a change made before a refusal could not be taken back.
+        # Stored as Update stores a pose, so the waypoint *is* where its marker
+        # is: Go To restores it there, and the next generation starts from it.
+        for waypoint, values in followed:
+            waypoint.q = values
+            waypoint.pose = _flatten(waypoint.marker.matrix_basis)
         for waypoint, values, _ in turned:
             waypoint.q = values
 
@@ -540,19 +566,18 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             check.turn_note = notes.get(check.end_frame, "")
         flagged = store_check(rig, checks)
 
-        # A joint move replays the joint vector it was taught with, so it
-        # cannot follow a marker that has since been dragged somewhere else.
-        # Silently ignoring the marker would be the worst of both: it moved on
-        # screen and changed nothing.
-        stranded = [
-            span.end.name
-            for span in plan
-            if span.move == MOVE_JOINT and marker_has_moved(span.end)
-        ]
         message = (
             f"Generated {len(plan)} move{'s' if len(plan) != 1 else ''} "
             f"over frames {first}-{last}"
         )
+        if followed:
+            # Said, since it rewrites what was taught there.
+            names = ", ".join(f"'{waypoint.name}'" for waypoint, _ in followed)
+            several = len(followed) != 1
+            message += (
+                f", with {names} re-solved at {'their' if several else 'its'} "
+                f"moved marker{'s' if several else ''}"
+            )
         if checks is None:
             message += "; not checked, since this rig has no TCP to measure it by"
         elif flagged:
@@ -563,14 +588,6 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 f"arrives, and keeps the turn it arrives with ({description}). "
                 f"Re-teach it to change that"
             )
-        if stranded:
-            self.report(
-                {"WARNING"},
-                f"{message}. {', '.join(stranded)}: the marker has moved but a "
-                f"joint move replays its taught configuration -- press Update, "
-                f"or set it to Linear to follow the marker",
-            )
-            return {"FINISHED"}
         self.report({"WARNING"} if flagged else {"INFO"}, message)
         return {"FINISHED"}
 
@@ -670,14 +687,92 @@ def _linear_key_frames(span, start: Matrix, end: Matrix) -> list[int]:
 
 
 # --------------------------------------------------------------------------
+# a moved marker re-aims its waypoint
+# --------------------------------------------------------------------------
+def follow_markers(rig, plan):
+    """The joint values each waypoint whose marker has been dragged takes there.
+
+    Returns ``(refused, followed)`` and writes nothing, so a refusal leaves the
+    waypoints exactly as they were:
+
+    - ``followed``: ``(waypoint, joint values)`` for every waypoint in the job
+      whose marker has moved since it was taught. The values are walked there
+      from the taught ones, a few millimetres and degrees at a time, so they
+      keep the configuration taught: the same elbow, wrist and turns.
+    - ``refused``: the names of those the walk cannot take there -- out of
+      reach, or taught with a different set of joints than the rig has now.
+
+    The marker is the waypoint (:func:`pose_of`), so once these are stored
+    every move to and from it follows: a joint move replays them, and a linear
+    move keys them as IK's seed. Keying the values taught at the marker's old
+    place instead left a joint move there, and had the robot jump back wherever
+    live IK hands a linear move over to the joint keys.
+    """
+    moved, seen = [], set()
+    for span in plan:
+        for waypoint in (span.start, span.end):
+            if waypoint.as_pointer() not in seen and marker_has_moved(waypoint):
+                seen.add(waypoint.as_pointer())
+                moved.append(waypoint)
+    if not moved:
+        return [], []
+    # Built here rather than asked of the solver: a job of joint moves needs no
+    # IK target, and the solver is only made for one.
+    chain = chain_from_rig(rig, _tool_bone(rig))
+    if chain is None:
+        return [waypoint.name for waypoint in moved], []
+
+    names = [pose_bone.name for pose_bone in builder.joint_bones(rig)]
+    columns = [names.index(name) for name in chain.bone_names]
+    held = manager.held_mask(rig, chain)
+    to_solver = np.linalg.inv(manager.root_pose(rig))
+
+    refused, followed = [], []
+    for waypoint in moved:
+        values = None
+        if waypoint.dof == len(names):
+            values = _walk_to_marker(chain, held, to_solver, columns, waypoint)
+        if values is None:
+            refused.append(waypoint.name)
+        else:
+            followed.append((waypoint, values))
+    return refused, followed
+
+
+def _walk_to_marker(chain, held, to_solver, columns, waypoint) -> list[float] | None:
+    """A waypoint's stored joint values, walked from its taught pose to its marker.
+
+    Each step is seeded from the last, as a linear move's configuration check
+    walks its line: one solve from the taught values straight to a marker
+    dragged a long way could land in any configuration that reaches it. Held
+    joints keep their taught values. None if a step cannot be solved.
+    """
+    values = np.array(list(waypoint.q), dtype=float)
+    start, end = _unflatten(waypoint.pose), pose_of(waypoint)
+    q = values[columns]
+    for fraction in _walk_fractions(start, end):
+        goal = to_solver @ np.array(_between(start, end, fraction), dtype=float)
+        result = numpy_backend.solve(chain, q, goal, held=held)
+        if not result.converged:
+            return None
+        q = result.q
+    values[columns] = q
+    return values.tolist()
+
+
+# --------------------------------------------------------------------------
 # a linear move keeps its configuration
 # --------------------------------------------------------------------------
 #: How a linear move's end compares with the configuration it was taught in.
 SAME, TURNS, BRANCH = "SAME", "TURNS", "BRANCH"
 
 
-def settle_configurations(rig, plan):
+def settle_configurations(rig, plan, overrides=None):
     """Check every linear move's end against the configuration it was taught in.
+
+    ``overrides`` maps a waypoint's ``as_pointer()`` to joint values to use in
+    place of its stored ones: those :func:`follow_markers` found for it, which
+    are only written once nothing has been refused.
 
     Returns ``(refused, turned)`` and writes nothing, so a refusal leaves the
     waypoints exactly as they were:
@@ -703,12 +798,13 @@ def settle_configurations(rig, plan):
         return [], []
     chain = solver.chain
     refused, turned = [], []
-    changed = {}
+    changed = dict(overrides or {})
     for span in plan:
         if span.move != MOVE_LINEAR:
             continue
         start = changed.get(span.start.as_pointer(), list(span.start.q))
-        arrival = _arrival(rig, span, chain, start)
+        end = changed.get(span.end.as_pointer(), list(span.end.q))
+        arrival = _arrival(rig, span, chain, start, end)
         if arrival is None:
             continue
         kind, values = arrival
@@ -716,13 +812,11 @@ def settle_configurations(rig, plan):
             refused.append(span.end.name)
         elif kind == TURNS:
             changed[span.end.as_pointer()] = values
-            turned.append(
-                (span.end, values, _turn_description(rig, chain, span, list(span.end.q), values))
-            )
+            turned.append((span.end, values, _turn_description(rig, chain, span, end, values)))
     return refused, turned
 
 
-def _arrival(rig, span, chain, start_values):
+def _arrival(rig, span, chain, start_values, end_values):
     """Where a linear move arrives, against where its end was taught.
 
     The robot is walked along the line from the start's configuration, each
@@ -754,7 +848,7 @@ def _arrival(rig, span, chain, start_values):
         return None
 
     q_start = np.array(start_values, dtype=float)[columns]
-    q_end = np.array(list(span.end.q), dtype=float)[columns]
+    q_end = np.array(end_values, dtype=float)[columns]
     to_solver = np.linalg.inv(manager.root_pose(rig))
     start, end = pose_of(span.start), pose_of(span.end)
 
@@ -762,15 +856,15 @@ def _arrival(rig, span, chain, start_values):
         goal = to_solver @ np.array(pose, dtype=float)
         return numpy_backend.solve(chain, seed, goal, held=held)
 
-    # The end's configuration re-solved for where its marker is now. The same
-    # thing as the taught one unless the marker was moved, and still the same
-    # branch and turns when it was.
+    # The end's configuration solved for where its marker is: the same thing
+    # as the values given, which for a moved marker follow_markers has already
+    # walked there.
     reference = solve(q_end, end)
     if not reference.converged:
         return None
 
     q = q_start
-    for fraction in _walk_fractions(span, start, end):
+    for fraction in _walk_fractions(start, end, span.frames):
         seed = q.copy()
         # Held joints are not solved for; they go where their keys take them.
         seed[held] = q_start[held] + (q_end[held] - q_start[held]) * fraction
@@ -787,7 +881,7 @@ def _arrival(rig, span, chain, start_values):
     turns = np.where(chain.is_revolute, np.round((q - reference.q) / (2.0 * math.pi)), 0.0)
     if not turns.any():
         return SAME, None
-    values = np.array(list(span.end.q), dtype=float)
+    values = np.array(end_values, dtype=float)
     values[columns] = q_end + turns * 2.0 * math.pi
     return TURNS, values.tolist()
 
@@ -819,11 +913,11 @@ def _chain_columns(rig, chain, span) -> list[int] | None:
     return [index[name] for name in chain.bone_names]
 
 
-def _walk_fractions(span, start: Matrix, end: Matrix) -> list[float]:
-    """Where along the line the walk solves: every frame, or finer on a fast move."""
+def _walk_fractions(start: Matrix, end: Matrix, frames: int = 1) -> list[float]:
+    """Where between two poses a walk solves: every frame, or finer on a fast move."""
     distance = (end.translation - start.translation).length
     steps = max(
-        span.frames,
+        frames,
         math.ceil(_turn(start, end) / WALK_TURN_STEP),
         math.ceil(distance / WALK_DISTANCE_STEP),
         1,

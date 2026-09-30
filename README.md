@@ -96,6 +96,17 @@ Pose the robot, press **Record**, and give the row a name — `home`, `approach`
 a pose alone does not say which of a robot's up-to-eight solutions you meant. **Go To**
 restores that exact configuration rather than re-solving and landing somewhere else.
 
+**Record** also leaves an arrows Empty at the tool, the waypoint's marker, and the marker
+*is* the waypoint. Drag it, or snap it to a feature on the part, and the next **Generate
+Motion** re-aims every move to and from it, joint moves included:
+- the joints are re-solved at the marker, walked there from the ones taught so they keep
+  the same configuration;
+- they replace the ones taught, as **Update** would after posing the robot there, and
+  Generate Motion names each waypoint it re-solved;
+- a marker the robot can't reach from its taught configuration is refused, with its name.
+
+Baked keys are never touched.
+
 A waypoint also carries a **frame**, and that is the only ordering there is — there is no
 separate list order to keep in sync. Retime a move by editing the frame in its row and
 regenerating; the list redraws in time order. Two waypoints may not share a frame, since

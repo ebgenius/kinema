@@ -372,8 +372,12 @@ class TestGeneration:
             _tool(builder, arm6), np.array(moved.translation), atol=1e-4
         ), "the linear move ignored the marker"
 
-    def test_a_moved_marker_on_a_joint_move_is_reported(self, arm6, builder):
-        """It cannot follow one, so saying nothing would be the worst answer."""
+    def test_a_joint_move_follows_a_moved_marker(self, arm6, builder, wp_ops):
+        """The marker is the waypoint, whichever move arrives there.
+
+        Its joints are re-solved at the marker and stored with the marker's
+        pose, as Update would store them, so Go To lands there too.
+        """
         import bpy
         from mathutils import Vector
 
@@ -386,9 +390,117 @@ class TestGeneration:
         bpy.context.view_layer.update()
 
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
-        # The joint move still replays what it was taught.
         bpy.context.scene.frame_set(21)
-        assert np.allclose(_q(builder, arm6), Q1, atol=1e-6)
+        assert np.allclose(_tool(builder, arm6), np.array(moved.translation), atol=1e-4)
+        assert not wp_ops.marker_has_moved(pick), "the marker's pose was not stored"
+
+        bpy.context.scene.frame_set(1)
+        assert "FINISHED" in bpy.ops.kinema.goto_waypoint(index=1)
+        assert np.allclose(_tool(builder, arm6), np.array(moved.translation), atol=1e-4)
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            [(1, REACH_A, "JOINT", "a"), (21, REACH_B, "LINEAR", "b")],
+            [
+                (1, REACH_A, "JOINT", "a"),
+                (21, REACH_B, "LINEAR", "b"),
+                (41, REACH_C, "JOINT", "c"),
+            ],
+        ],
+        ids=["ending-the-job", "into-a-joint-move"],
+    )
+    def test_a_moved_marker_leaves_no_jump_where_ik_hands_over(
+        self, arm6, builder, addon, script
+    ):
+        """#81: where live IK hands a linear move over to the joint keys, those
+        were the ones taught at the marker's old place, and the robot jumped
+        back 2 cm there -- 0.07 rad on joint3 in one frame."""
+        import bpy
+        from mathutils import Vector
+
+        check = importlib.import_module(f"{addon.__name__}.rig.motion_check")
+        for pose_bone in builder.joint_bones(arm6):
+            pose_bone.bone[builder.PROP_ACCELERATION] = 10.0
+        for frame, q, move, name in script:
+            _teach(builder, arm6, frame, q, move, name)
+        b = arm6.kinema_waypoints["b"]
+        moved = b.marker.matrix_basis.copy()
+        moved.translation = moved.translation + Vector((0.02, 0.0, 0.0))
+        b.marker.matrix_basis = moved
+        bpy.context.view_layer.update()
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        scene = bpy.context.scene
+        seen = {}
+        for frame in (20, 21, 22):
+            scene.frame_set(frame)
+            seen[frame] = _q(builder, arm6)
+        steps = [float(np.max(np.abs(seen[f] - seen[f - 1]))) for f in (21, 22)]
+        assert max(steps) < 0.03, f"a jump where IK hands over: {steps}"
+
+        scene.frame_set(21)
+        assert np.allclose(_tool(builder, arm6), np.array(moved.translation), atol=1e-4)
+        for row in arm6.kinema_motion_check:
+            assert check.problems(row) == [], row.name
+
+    def test_a_moved_marker_keeps_the_configuration_taught(
+        self, arm6, builder, ik_ops, addon
+    ):
+        """Walked there from the taught joints, not solved afresh, so a nudged
+        marker keeps even a configuration IK would not have picked."""
+        import bpy
+        from mathutils import Vector
+
+        branches = importlib.import_module(f"{addon.__name__}.solver.branches")
+        _teach(builder, arm6, 1, REACH_A, "JOINT", "a")
+        bpy.context.scene.frame_set(21)
+        _set_q(builder, arm6, REACH_B)
+        bpy.ops.kinema.snap_ik()
+        assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=30)
+        solutions = [np.array(values) for values in ik_ops._read_solutions(arm6)]
+        other = max(
+            range(len(solutions)),
+            key=lambda i: branches.joint_distance(solutions[i], REACH_B),
+        )
+        assert "FINISHED" in bpy.ops.kinema.apply_solution(index=other)
+        taught = _q(builder, arm6)
+        assert branches.joint_distance(taught, REACH_B) > 1.0, (
+            "no configuration far from REACH_B was found, so this proves nothing"
+        )
+        assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="b")
+        b = arm6.kinema_waypoints["b"]
+
+        moved = b.marker.matrix_basis.copy()
+        moved.translation = moved.translation + Vector((0.0, 0.0, 0.03))
+        b.marker.matrix_basis = moved
+        bpy.context.view_layer.update()
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        followed = np.array(list(b.q)[: b.dof])
+        assert np.max(np.abs(followed - taught)) < 0.3, (followed, taught)
+        bpy.context.scene.frame_set(21)
+        assert np.allclose(_tool(builder, arm6), np.array(moved.translation), atol=1e-4)
+
+    def test_a_marker_out_of_reach_is_refused(self, arm6, builder):
+        """Named, and nothing keyed or rewritten: a cancelled operator leaves no
+        undo step to take a change back with."""
+        import bpy
+        from mathutils import Vector
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        pick = _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        taught = (list(pick.q), list(pick.pose))
+
+        moved = pick.marker.matrix_basis.copy()
+        moved.translation = moved.translation + Vector((5.0, 0.0, 0.0))
+        pick.marker.matrix_basis = moved
+        bpy.context.view_layer.update()
+
+        with pytest.raises(RuntimeError, match="'pick': the robot can't follow the marker"):
+            bpy.ops.kinema.generate_motion()
+        assert (list(pick.q), list(pick.pose)) == taught
+        assert _curves(arm6) == [], "the refused job was keyed anyway"
 
     def test_a_linear_finish_switches_ik_off_afterwards(self, arm6, builder):
         """Otherwise the solver runs for every frame after the job forever."""
@@ -671,6 +783,40 @@ class TestConfiguration:
         assert any("joint6" in problem and "taught at" in problem for problem in found), (
             found
         )
+
+    def test_a_wound_end_with_a_moved_marker_keeps_the_turn_at_the_marker(
+        self, wide6, builder
+    ):
+        """Both at once. The turn is settled from the joints re-solved at the
+        marker; settled from the stale ones, the end stored the joints of the
+        marker's old place, and the robot jumped back there after the job."""
+        import bpy
+        from mathutils import Vector
+
+        _teach(builder, wide6, 1, WRIST + [FLIP - 0.2], "JOINT", "a")
+        end = _teach(builder, wide6, 21, WRIST + [FLIP + 0.2], "LINEAR", "b")
+        arrives = list(end.q)[5]
+        wound = list(end.q)
+        wound[5] -= 2.0 * math.pi
+        end.q = wound
+        moved = end.marker.matrix_basis.copy()
+        moved.translation = moved.translation + Vector((0.02, 0.0, 0.0))
+        end.marker.matrix_basis = moved
+        bpy.context.view_layer.update()
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        # Within half a radian: the marker moved, so joint6 moved a little too,
+        # but a whole turn off would be 6.28 away.
+        assert list(end.q)[5] == pytest.approx(arrives, abs=0.5), "not the turn it arrives with"
+        played = _played(builder, wide6, range(1, 23))
+        worst = max(
+            float(np.max(np.abs(played[frame] - played[frame - 1])))
+            for frame in range(2, 23)
+        )
+        assert worst < 0.03, f"a joint jumped {worst:.3f} rad in a frame"
+        bpy.context.scene.frame_set(22)
+        assert np.allclose(_tool(builder, wide6), np.array(moved.translation), atol=1e-4)
 
 
 class TestBakingAJob:
