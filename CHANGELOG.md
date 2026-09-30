@@ -45,8 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     program in each session and miss what was kept. It now orders them by name.
 - **Graph Editor**, in Joints (FK) (#53). One click shows the robot's joint curves in a
   Graph Editor:
-  - it reuses one already in the window, or turns the Timeline into one, grown to a third
-    of the window, or opens one in a window of its own;
+  - it reuses one already in the window, or splits one off the bottom third of the 3D
+    viewport, keeping the Timeline, or opens one in a window of its own;
   - the joint bones are selected with Only Show Selected on, so it lists the joint curves;
   - the curves are normalised and have sliders, and the sidebar is redrawn during
     playback.

@@ -157,9 +157,9 @@ at each waypoint. Easing them is up to you:
   blend radius a real controller would apply.
 
 **Graph Editor**, in Joints (FK), takes one click to open those curves:
-- **Where.** A Graph Editor already in the window is reused. Otherwise the Timeline at the
-  bottom becomes one, grown to a third of the window, or it opens in a window of its own,
-  as the preferences say.
+- **Where.** A Graph Editor already in the window is reused. Otherwise the bottom third of
+  the 3D viewport becomes one, and the Timeline stays. Or, as the preferences say, it opens
+  in a window of its own.
 - **What.** The robot's joint bones are selected, and none of its other bones, with *Only
   Show Selected* on. The editor lists the joint curves, each with a slider, plus the live-IK
   switch where a job keys it.

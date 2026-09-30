@@ -12,8 +12,8 @@ it won't know:
 **Graph Editor**, in Joints (FK), does all of it.
 
 **Where.** A Graph Editor already in the window is reused. Otherwise the
-Timeline at the bottom becomes one, grown to a third of the window, or the 3D
-view is copied into a window of its own, as the preferences say.
+bottom third of the 3D viewport is split off as one, and the Timeline stays.
+Or, as the preferences say, the 3D view is copied into a window of its own.
 
 **Joints only.** The joint bones are selected, and the rig's other bones
 deselected, with *Only Show Selected* on. That's the Graph Editor's own filter,
@@ -37,15 +37,14 @@ from bpy.types import Operator, Panel
 from ..rig import builder
 from ..ui.panel import active_rig
 
-#: How much of the window's height the Timeline grows to when it becomes the
-#: Graph Editor: at its own 68 pixels, a curve is a line.
-GROW_TO = 1.0 / 3.0
+#: How much of the 3D viewport's height is split off for the Graph Editor.
+SHARE = 1.0 / 3.0
 
 #: What each preference is set to until someone changes it. prefs.py declares
 #: the properties with these defaults, and a missing preferences object (an
 #: add-on being registered) falls back to them.
 DEFAULTS = SimpleNamespace(
-    graph_open_in="TIMELINE",
+    graph_open_in="VIEWPORT",
     graph_joints_only=True,
     graph_normalize=True,
     graph_sliders=True,
@@ -94,23 +93,31 @@ def _graph_editor(window):
     return next((area for area in window.screen.areas if area.ui_type == "FCURVES"), None)
 
 
-def _timeline(window):
-    return next((area for area in window.screen.areas if area.ui_type == "TIMELINE"), None)
+def _split_viewport(context, window):
+    """The bottom third of the 3D viewport, split off as the Graph Editor. None if refused.
 
-
-def _grow(context, window, area) -> None:
-    """Move the area's top edge up until it's a third of the window's height.
-
-    The new height shows once Blender redraws the screen, not straight away.
+    A split rather than the Timeline grown. Growing an area means moving its
+    edge, and Blender allows that only with the pointer on the edge itself
+    (``area_move``'s poll wants no active region), never on the button just
+    clicked. Splitting has no such rule, and the Timeline keeps its playback
+    controls.
     """
-    target = int(window.height * GROW_TO)
-    edge = area.y + area.height + 1
-    if area.height >= target or edge >= window.height:
-        return
-    with context.temp_override(window=window, area=area):
-        bpy.ops.screen.area_move(
-            x=area.x + area.width // 2, y=edge, delta=target - area.height
-        )
+    view = context.area if context.area is not None and context.area.type == "VIEW_3D" else None
+    if view is None:
+        views = [area for area in window.screen.areas if area.type == "VIEW_3D"]
+        if not views:
+            return None
+        view = max(views, key=lambda area: area.width * area.height)
+    before = set(window.screen.areas)
+    with context.temp_override(window=window, area=view):
+        if not bpy.ops.screen.area_split.poll():
+            return None
+        # Horizontal at a factor under a half: the new area is the lower part.
+        bpy.ops.screen.area_split(direction="HORIZONTAL", factor=SHARE)
+    area = next((area for area in window.screen.areas if area not in before), None)
+    if area is not None:
+        area.ui_type = "FCURVES"
+    return area
 
 
 def _new_window(context):
@@ -118,6 +125,8 @@ def _new_window(context):
     before = set(context.window_manager.windows)
     source = context.area or max(context.window.screen.areas, key=lambda a: a.width * a.height)
     with context.temp_override(window=context.window, area=source):
+        if not bpy.ops.screen.area_dupli.poll():
+            return None, None
         bpy.ops.screen.area_dupli("INVOKE_DEFAULT")
     window = next((w for w in context.window_manager.windows if w not in before), None)
     if window is None:
@@ -138,9 +147,15 @@ def _open_and_frame(window) -> None:
         # object opens to its action, the action to the joints' groups, and
         # the groups to the curves and their sliders.
         for _ in range(3):
-            bpy.ops.anim.channels_expand(all=True)
+            if bpy.ops.anim.channels_expand.poll():
+                bpy.ops.anim.channels_expand(all=True)
 
-    for region_type, operator in (("CHANNELS", expand), ("WINDOW", bpy.ops.graph.view_all)):
+    def frame():
+        # Refused with nothing keyed to frame, which is no error here.
+        if bpy.ops.graph.view_all.poll():
+            bpy.ops.graph.view_all()
+
+    for region_type, operator in (("CHANNELS", expand), ("WINDOW", frame)):
         region = next((r for r in area.regions if r.type == region_type), None)
         if region is not None:
             with bpy.context.temp_override(window=window, area=area, region=region):
@@ -150,7 +165,7 @@ def _open_and_frame(window) -> None:
 def _when_drawn(window) -> None:
     """:func:`_open_and_frame` once Blender has drawn the editor at its new size.
 
-    A grown Timeline, or a new window, takes its size at the next redraw, and
+    A split-off area, or a new window, takes its size at the next redraw, and
     framing before then fits the curves to the old one.
     """
     def later():
@@ -192,12 +207,10 @@ class KINEMA_OT_graph_editor(Operator):
         window = context.window
         area = _graph_editor(window)
         where = "the Graph Editor"
-        if area is None and chosen.graph_open_in == "TIMELINE":
-            area = _timeline(window)
-            if area is not None:
-                area.ui_type = "FCURVES"
-                _grow(context, window, area)
-                where = "the Timeline, now the Graph Editor"
+        if area is None and chosen.graph_open_in == "VIEWPORT":
+            area = _split_viewport(context, window)
+            where = "the Graph Editor below the 3D Viewport"
+        # Also when the split is refused.
         if area is None:
             window, area = _new_window(context)
             where = "a new window"

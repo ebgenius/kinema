@@ -157,13 +157,13 @@ class KinemaPreferences(AddonPreferences):
         description="Where Graph Editor opens when the window has none",
         items=[
             (
-                "TIMELINE", "Timeline",
-                "Turn the Timeline at the bottom of the window into the Graph Editor, "
-                "grown to a third of the window",
+                "VIEWPORT", "Below the 3D Viewport",
+                "Split the bottom third off the 3D viewport as the Graph Editor. The "
+                "Timeline stays",
             ),
             ("WINDOW", "New Window", "Open the Graph Editor in a window of its own"),
         ],
-        default="TIMELINE",
+        default="VIEWPORT",
     )
     graph_joints_only: BoolProperty(
         name="Joints Only",
