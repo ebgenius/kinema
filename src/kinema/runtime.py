@@ -28,19 +28,32 @@ Design rules:
 * **jaxls logs at INFO through loguru on every ``analyze()``.** In a live
   viewport handler that is several lines of console spam per mouse move, so its
   records are disabled unless the user turns on debug logging.
+* **Compiled solvers are kept on disk,** in JAX's persistent compilation cache
+  under the add-on's own user folder. The first solve of a session otherwise
+  compiles from scratch every time, seconds per robot; kept, the solver loads
+  back in a fraction of that. It only hits because ``tools/vendor.py`` patches
+  jaxls to trace the same program in every process -- see its "Patched lines".
 """
 
 from __future__ import annotations
 
 import importlib
+import os
 from types import ModuleType
 
 #: Populated by :func:`load_solver_stack`. Never import these at module scope.
 _stack: dict[str, ModuleType] = {}
 _load_error: str | None = None
 
+#: The compilation cache's folder, inside the add-on's user folder.
+COMPILE_CACHE_FOLDER = "jax_cache"
+#: Its ceiling on disk, enforced by :func:`prune_compile_cache` at the start of
+#: each session. One compiled IK or trajectory solver takes a few hundred kB to
+#: about 1 MB.
+COMPILE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 
-def configure_jax(jax) -> None:
+
+def configure_jax(jax, cache_dir: str | None = None) -> None:
     """Settle JAX's configuration, after the import rather than before it.
 
     This used to be two ``os.environ`` writes: ``JAX_PLATFORMS=cpu`` and
@@ -53,8 +66,157 @@ def configure_jax(jax) -> None:
       probe for and choose.
     * 64-bit mode is a plain config flag, and ``jax.config.update`` is the
       documented way to set it.
+
+    ``cache_dir`` turns on the persistent compilation cache there. It has to be
+    set before the first compile: JAX sets its cache up once per process, on
+    the first compile that could use it. Only compiles over a second are kept
+    (JAX's default), which is every solver and none of the small helpers.
+
+    JAX's own size cap, ``jax_compilation_cache_max_size``, is left alone on
+    purpose. It needs the ``filelock`` package, which Kinema does not bundle,
+    and set without it every compile in the session fails -- IK included. The
+    folder is trimmed by :func:`prune_compile_cache` instead.
     """
     jax.config.update("jax_enable_x64", False)
+    if cache_dir:
+        jax.config.update("jax_compilation_cache_dir", cache_dir)
+
+
+def compile_cache_folder(create: bool = False) -> str | None:
+    """The add-on's cache folder, whether or not the cache is in use.
+
+    None outside Blender, or where Blender gives the add-on no user folder: a
+    legacy, non-extension install. The folder is the add-on's own on purpose.
+    JAX treats its cache as trusted code, so it must never sit where another
+    user could write.
+    """
+    try:
+        import bpy
+    except ImportError:
+        return None
+    try:
+        return bpy.utils.extension_path_user(
+            __package__, path=COMPILE_CACHE_FOLDER, create=create
+        )
+    except Exception:  # noqa: BLE001 - no user folder means no cache, never an error
+        return None
+
+
+def compile_cache_dir() -> str | None:
+    """Where compiled solvers are kept between sessions, or None when they aren't.
+
+    As :func:`compile_cache_folder`, and None too with *Keep Compiled Solvers*
+    unticked.
+    """
+    try:
+        import bpy  # noqa: F401 - only to know we are inside Blender
+    except ImportError:
+        return None
+    # Here, not at the top: prefs imports this module.
+    from .prefs import get_prefs
+
+    preferences = get_prefs()
+    if preferences is not None and not preferences.keep_compiled:
+        return None
+    return compile_cache_folder(create=True)
+
+
+def _session_cache_dir() -> str | None:
+    """This session's cache folder, trimmed; None when there is to be no cache.
+
+    Called while loading the solver stack, and must not take it down: a cache
+    that fails in any way leaves the session without a cache, not without
+    PyRoki. A trim that fails still leaves the cache in use.
+    """
+    try:
+        cache_dir = compile_cache_dir()
+    except Exception:  # noqa: BLE001 - no cache, never no solver
+        return None
+    try:
+        prune_compile_cache(cache_dir)
+    except Exception:  # noqa: BLE001 - housekeeping; the cache itself still works
+        pass
+    return cache_dir
+
+
+def _cache_files(path: str | None) -> list[tuple[str, str, int, float]]:
+    """``(name, path, bytes, written)`` for each file in the cache folder at ``path``.
+
+    Never raises. The folder is shared with every other Blender running
+    Kinema, and JAX writes to it mid-session, so a file can go between being
+    listed and being looked at: that file is skipped. A folder that is missing
+    or can't be read lists as empty. A cache problem must mean no cache -- not
+    a solver stack that fails to load, or a preferences panel that fails to draw.
+    """
+    if not path:
+        return []
+    files = []
+    try:
+        with os.scandir(path) as found:
+            for entry in found:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        stat = entry.stat(follow_symlinks=False)
+                        files.append((entry.name, entry.path, stat.st_size, stat.st_mtime))
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    return files
+
+
+def _is_solver(name: str) -> bool:
+    """A compiled solver, as JAX names its entries. Not a lock or an access time."""
+    return name.endswith("-cache")
+
+
+def compile_cache_usage(path: str | None) -> tuple[int, int]:
+    """``(solvers, bytes)`` kept in the cache folder at ``path``. Never raises."""
+    files = _cache_files(path)
+    return sum(_is_solver(name) for name, *_ in files), sum(size for _, _, size, _ in files)
+
+
+def prune_compile_cache(path: str | None, max_bytes: int = COMPILE_CACHE_MAX_BYTES) -> int:
+    """Trim the cache folder at ``path`` to ``max_bytes``. Returns how many files went.
+
+    Run once per session, before JAX first uses the folder. Oldest written go
+    first: JAX records no access times without the lock it would need for its
+    own cap. A file another Blender has open is left for next time. Never raises.
+    """
+    files = _cache_files(path)
+    total = sum(size for _, _, size, _ in files)
+    removed = 0
+    for _, file_path, size, _ in sorted(files, key=lambda f: f[3]):
+        if total <= max_bytes:
+            break
+        try:
+            os.remove(file_path)
+        except OSError:
+            continue
+        total -= size
+        removed += 1
+    return removed
+
+
+def clear_compile_cache(path: str | None) -> tuple[int, int]:
+    """Delete every file in the cache folder at ``path``. Never raises.
+
+    Returns ``(solvers removed, files left)``. A file JAX or another Blender has
+    open can't be deleted on Windows; it is left, and the rest still go.
+
+    Files only, never folders or links: the folder is JAX's, flat, and nothing
+    else of the add-on lives in it. A solver deleted here is compiled again the
+    next time it is needed.
+    """
+    removed = left = 0
+    for name, file_path, _, _ in _cache_files(path):
+        try:
+            os.remove(file_path)
+        except OSError:
+            left += 1
+            continue
+        removed += _is_solver(name)
+    return removed, left
 
 
 #: Vendored packages that log through loguru, and whose output Kinema silences.
@@ -129,7 +291,7 @@ def load_solver_stack(debug: bool = False) -> dict[str, ModuleType] | None:
         # `import jax` itself and cannot be got in front of, which is the reason
         # to settle this at the earliest point that exists rather than the
         # earliest that would be ideal.
-        configure_jax(jax)
+        configure_jax(jax, _session_cache_dir())
 
         import jax.numpy as jnp
         import jax_dataclasses as jdc

@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Check Again** re-runs it after the curves have been edited by hand. The panel says when
   the waypoints have changed since the check, and a job it can't measure, on a rig with no
   TCP, is reported as unchecked rather than clean.
+- **Compiled solvers are kept on disk,** in JAX's compilation cache under Kinema's own user
+  folder. While a robot's IK solver is kept there, a new Blender session loads it instead of
+  compiling it again. Add IK on a UR5e went from 5.7 s to 2–3 s on a desktop, and from 2–3 s
+  to near-instant on a laptop.
+  - **Keep Compiled Solvers** in the preferences turns it off, from the next start.
+    **Clear** empties the folder.
+  - The folder is trimmed back to 256 MB at the start of each session, oldest solvers
+    first.
+  - The vendored jaxls is patched so that this can work. It ordered its cost groups by text
+    that carried memory addresses, so the same problem could trace to a differently ordered
+    program in each session and miss what was kept. It now orders them by name.
 
 ### Fixed
 
