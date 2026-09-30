@@ -840,6 +840,39 @@ class TestMotionCheck:
         found = check.problems(arm6.kinema_motion_check[0])
         assert any("acceleration limit" in problem for problem in found), found
 
+    @pytest.mark.parametrize(
+        "script",
+        [
+            [(1, REACH_A, "JOINT", "a"), (21, REACH_B, "LINEAR", "b")],
+            [
+                (1, REACH_A, "JOINT", "a"),
+                (21, REACH_B, "LINEAR", "b"),
+                (41, REACH_C, "JOINT", "c"),
+            ],
+        ],
+        ids=["ending-the-job", "into-a-joint-move"],
+    )
+    def test_where_live_ik_hands_over_nothing_is_flagged(self, arm6, builder, addon, script):
+        """Where live IK switches off, the joints play their keys: the configuration
+        taught at the waypoint, where the solver put them a frame before. The check
+        reads across that frame, so the two must agree, or every linear move that
+        ends a job or runs into a joint move would be flagged.
+
+        The stop itself is real, about 6 rad/s² here, inside the 10 allowed.
+        """
+        import bpy
+
+        check = importlib.import_module(f"{addon.__name__}.rig.motion_check")
+        for pose_bone in builder.joint_bones(arm6):
+            pose_bone.bone[builder.PROP_ACCELERATION] = 10.0
+        for frame, q, move, name in script:
+            _teach(builder, arm6, frame, q, move, name)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        for row in arm6.kinema_motion_check:
+            assert 0.0 < row.accel_ratio < 1.0, (row.name, row.accel_ratio)
+            assert check.problems(row) == [], row.name
+
     def test_a_turn_the_wrist_cannot_make_is_flagged(self, arm6, builder, addon):
         """Joint 6 stops at 3.14 rad, so it cannot turn across 180 degrees.
 

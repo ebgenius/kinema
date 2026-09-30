@@ -181,6 +181,10 @@ A joint over either limit is flagged in two places:
 - **In the viewport.** Its dial or arrow is redrawn in red, with its name and how far over
   each limit it is: `joint2  speed 130%  accel 150%`.
 
+During playback, Blender redraws the sidebar only with **Timeline › Playback › Play In ›
+Properties and Sidebars** on, and it's off by default. Without it, the sliders and rows
+aren't redrawn as the animation plays, while the viewport follows every frame either way.
+
 **Ignore Motion Limits**, in that section, turns both off for one rig: for a shot that will
 never run on a robot, or a description whose limits are placeholders. The limits stay
 listed, greyed out, and nothing is measured for that rig until you untick it.
