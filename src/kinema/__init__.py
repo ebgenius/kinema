@@ -19,6 +19,7 @@ from .ops import (
     attach,
     deferral,
     external_axes,
+    graph_editor,
     ik,
     import_dae,
     import_robot,
@@ -33,10 +34,12 @@ from .ui import axis_preview, overlay, panel, tcp_preview
 # decides which classes exist when Blender resolves parent panels. waypoints
 # after ik, which it borrows key_joint_value and own_fcurve_containers from;
 # velocity after ik for the same reason. tcp after pose, whose Set TCP it runs.
-# external_axes last: it builds on all of them.
+# external_axes after the others: it builds on all of them. graph_editor,
+# whose panel sits in the Graph Editor rather than under Kinema's, has no
+# order to keep.
 _MODULES = (
     prefs, panel, import_dae, import_robot, pose, tcp, ik, attach, waypoints, velocity,
-    external_axes,
+    external_axes, graph_editor,
 )
 
 

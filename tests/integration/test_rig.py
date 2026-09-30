@@ -1269,3 +1269,30 @@ class TestRigIdentification:
 
         obj = bpy.data.objects.new("plain", bpy.data.armatures.new("plain"))
         assert not builder.is_kinema_rig(obj)
+
+
+class TestDefaultSolver:
+    """A new rig starts on the solver the preferences name.
+
+    PyRoki is the default on both sides, so only the others can show it's read.
+    """
+
+    @pytest.fixture
+    def preferences(self, addon):
+        prefs = importlib.import_module(f"{addon.__name__}.prefs").get_prefs()
+        before = prefs.solver_backend
+        yield prefs
+        prefs.solver_backend = before
+
+    @pytest.mark.parametrize("backend", ["NUMPY", "OFF"])
+    def test_a_new_rig_starts_on_it(
+        self, preferences, builder, fixture_dir, clean_scene, backend
+    ):
+        import bpy
+
+        preferences.solver_backend = backend
+        assert "FINISHED" in bpy.ops.kinema.build_robot(
+            filepath=str(fixture_dir / "arm3.urdf")
+        )
+        rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
+        assert rig.kinema_solver_mode == backend

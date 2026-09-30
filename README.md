@@ -156,6 +156,21 @@ at each waypoint. Easing them is up to you:
 - **Bezier handles across a corner** of three waypoints bow the path through it. That is the
   blend radius a real controller would apply.
 
+**Graph Editor**, in Joints (FK), takes one click to open those curves:
+- **Where.** A Graph Editor already in the window is reused. Otherwise the Timeline at the
+  bottom becomes one, grown to a third of the window, or it opens in a window of its own,
+  as the preferences say.
+- **What.** The robot's joint bones are selected, and none of its other bones, with *Only
+  Show Selected* on. The editor lists the joint curves, each with a slider, plus the live-IK
+  switch where a job keys it.
+- **How.** The curves are normalised, so a rail's metres and a wrist's radians share one
+  scale. The sidebar is redrawn during playback, so the joint sliders and Motion Limits
+  follow the animation.
+
+Each setting is in Kinema's preferences, with a Reset. The Graph Editor's own sidebar has a
+Kinema tab with **Kinema View**, which sets it up again, and **Blender Defaults**, which
+puts back what Blender gives a new Graph Editor.
+
 Regenerating replaces the previous motion rather than layering on it, so moving a waypoint
 from frame 40 to frame 30 does not leave the robot visiting frame 40 as well.
 
@@ -195,6 +210,7 @@ A joint over either limit is flagged in two places:
 During playback, Blender redraws the sidebar only with **Timeline › Playback › Play In ›
 Properties and Sidebars** on, and it's off by default. Without it, the sliders and rows
 aren't redrawn as the animation plays, while the viewport follows every frame either way.
+**Graph Editor** turns it on for the screen it opens in.
 
 **Ignore Motion Limits**, in that section, turns both off for one rig: for a shot that will
 never run on a robot, or a description whose limits are placeholders. The limits stay

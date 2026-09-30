@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The vendored jaxls is patched so that this can work. It ordered its cost groups by text
     that carried memory addresses, so the same problem could trace to a differently ordered
     program in each session and miss what was kept. It now orders them by name.
+- **Graph Editor**, in Joints (FK) (#53). One click shows the robot's joint curves in a
+  Graph Editor:
+  - it reuses one already in the window, or turns the Timeline into one, grown to a third
+    of the window, or opens one in a window of its own;
+  - the joint bones are selected with Only Show Selected on, so it lists the joint curves;
+  - the curves are normalised and have sliders, and the sidebar is redrawn during
+    playback.
+
+  Each of these is a preference, with a Reset. A Kinema tab in the Graph Editor's sidebar
+  sets the view up again, or puts back Blender's defaults.
 
 ### Changed
 
@@ -67,6 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The **Default Solver** preference was never read: every new rig started on PyRoki,
+  whatever it said. A new rig now starts on the solver it names.
 - A robot whose linear move ended at a dragged marker jumped back to where that waypoint was
   taught, on the frame live IK handed over to the joint keys: after the job, or where a joint
   move began (#81). Those keys held the joints taught at the old place. They are now the

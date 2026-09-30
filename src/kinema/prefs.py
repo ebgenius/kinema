@@ -1,4 +1,4 @@
-"""Add-on preferences: dependency diagnostics and solver defaults."""
+"""Add-on preferences: solver defaults, dependency diagnostics and the Graph Editor set-up."""
 
 from __future__ import annotations
 
@@ -150,6 +150,52 @@ class KinemaPreferences(AddonPreferences):
     search_paths: CollectionProperty(type=KinemaSearchPath)
     active_search_path: IntProperty(default=0)
 
+    # Graph Editor, in Joints (FK): see ops/graph_editor.py, whose DEFAULTS
+    # repeat these defaults for when there are no preferences to read.
+    graph_open_in: EnumProperty(
+        name="Open In",
+        description="Where Graph Editor opens when the window has none",
+        items=[
+            (
+                "TIMELINE", "Timeline",
+                "Turn the Timeline at the bottom of the window into the Graph Editor, "
+                "grown to a third of the window",
+            ),
+            ("WINDOW", "New Window", "Open the Graph Editor in a window of its own"),
+        ],
+        default="TIMELINE",
+    )
+    graph_joints_only: BoolProperty(
+        name="Joints Only",
+        description=(
+            "Select the robot's joint bones and none of its other bones, with Only "
+            "Show Selected on, so the Graph Editor lists the joint curves"
+        ),
+        default=True,
+    )
+    graph_normalize: BoolProperty(
+        name="Normalize",
+        description=(
+            "Scale each curve to -1..1, so a rail's metres and a wrist's radians "
+            "share one scale"
+        ),
+        default=True,
+    )
+    graph_sliders: BoolProperty(
+        name="Sliders",
+        description="Show a slider beside each channel, for its value on the current frame",
+        default=True,
+    )
+    graph_playback_sidebar: BoolProperty(
+        name="Sidebar Follows Playback",
+        description=(
+            "Redraw the sidebar on every frame of playback, so the joint sliders and "
+            "Motion Limits follow the animation. Blender leaves this off: Timeline, "
+            "Playback, Play In, Properties and Sidebars"
+        ),
+        default=True,
+    )
+
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
 
@@ -165,6 +211,15 @@ class KinemaPreferences(AddonPreferences):
             text=f"Clear ({entries} kept, {size / 1024**2:.0f} MB)",
             icon="TRASH",
         )
+
+        layout.separator()
+        layout.separator()
+        header = layout.row()
+        header.label(text="Graph Editor", icon="GRAPH")
+        header.operator("kinema.reset_graph_preferences", text="Reset", icon="LOOP_BACK")
+        column = layout.box().column()
+        for name in GRAPH_SETTINGS:
+            column.prop(self, name)
 
         layout.separator()
         header = layout.row()
@@ -205,6 +260,32 @@ class KinemaPreferences(AddonPreferences):
             text="For a cell whose macros live in a different repository from its robots.",
             icon="BLANK1",
         )
+
+
+#: The Graph Editor preferences, in the order they are drawn, and the ones
+#: Reset puts back.
+GRAPH_SETTINGS = (
+    "graph_open_in",
+    "graph_joints_only",
+    "graph_normalize",
+    "graph_sliders",
+    "graph_playback_sidebar",
+)
+
+
+class KINEMA_OT_reset_graph_preferences(bpy.types.Operator):
+    bl_idname = "kinema.reset_graph_preferences"
+    bl_label = "Reset Graph Editor Preferences"
+    bl_description = "Put the Graph Editor preferences back to Kinema's defaults"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        preferences = get_prefs(context)
+        if preferences is None:
+            return {"CANCELLED"}
+        for name in GRAPH_SETTINGS:
+            preferences.property_unset(name)
+        return {"FINISHED"}
 
 
 class KINEMA_OT_check_dependencies(bpy.types.Operator):
@@ -262,4 +343,5 @@ classes = (
     KinemaPreferences,
     KINEMA_OT_check_dependencies,
     KINEMA_OT_clear_compile_cache,
+    KINEMA_OT_reset_graph_preferences,
 )

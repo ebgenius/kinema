@@ -203,6 +203,8 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
         header = layout.row(align=True)
         header.operator("kinema.reset_pose", text="Rest Pose", icon="LOOP_BACK")
         header.operator("kinema.key_joints", text="Key All", icon="DECORATE_KEYFRAME")
+        # Where the keys this panel makes are shaped afterwards.
+        layout.operator("kinema.graph_editor", icon="GRAPH")
 
         # Beside Rest Pose because it answers the same question -- "put the
         # robot back" -- for the half Rest Pose cannot reach. Only shown when
