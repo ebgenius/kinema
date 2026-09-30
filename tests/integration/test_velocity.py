@@ -475,6 +475,23 @@ class TestLiveIk:
         live.kinema_ignore_velocity = False
         assert _by_joint(velocity, live)["joint2"].speed is None
 
+    def test_a_bake_is_measured_afresh(self, live, velocity):
+        """Bake IK runs with the handlers suspended, and ends with the scene
+        already evaluated, so no update follows it to clear what was shared. A
+        driven joint that read unknown went on reading unknown after the bake,
+        though it now had a curve to be measured from."""
+        import bpy
+
+        scene = bpy.context.scene
+        scene.frame_set(1)
+        scene.frame_set(20)
+        assert _by_joint(velocity, live)["joint2"].speed is None, "precondition: after a jump"
+
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(
+            frame_start=1, frame_end=20, disable_live_ik=True
+        )
+        assert _by_joint(velocity, live)["joint2"].speed is not None
+
     def test_after_a_jump_a_driven_joint_is_unknown(self, live, velocity):
         import bpy
 

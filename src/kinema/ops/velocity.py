@@ -302,6 +302,15 @@ def forget() -> None:
     _readings.clear()
 
 
+def discard_readings() -> None:
+    """Work every rig's readings out afresh at the next ask.
+
+    For a change :func:`observe` was never told about: see
+    ``handlers.suspended``.
+    """
+    _readings.clear()
+
+
 class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
     bl_idname = "kinema.load_joint_limits"
     bl_label = "Load Joint Limits"
