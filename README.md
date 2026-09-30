@@ -565,12 +565,16 @@ entry named there is marked a duplicate, broken or partial and hidden from the p
   Blender's config directory shallow.
 - **A robot's first IK solve compiles.** JAX JITs the solver on first use, which takes a few
   seconds, more for a bigger robot or on a slower machine. It is paid up front when the IK
-  target is created, behind a wait cursor, and only once per robot. The compiled solver is
-  kept on disk, in Kinema's own user folder, and a later Blender session loads it instead.
-  **Keep Compiled Solvers** in the add-on preferences turns this off, and **Clear** empties
-  the folder, which is trimmed back to 256 MB at the start of each session. Adding an
-  **Elbow Swivel** pays one more compile, because an elbow goal makes a different problem;
-  pinning a joint pays none. Warm solves are ~5–20 ms.
+  target is created, behind a wait cursor. The compiled solver is kept in Kinema's own user
+  folder, and a later Blender session loads it instead of compiling again, for as long as it
+  is kept:
+  - **Keep Compiled Solvers** in the add-on preferences turns keeping them off;
+  - **Clear** empties the folder;
+  - the folder is trimmed back to 256 MB, oldest first, at the start of each session;
+  - an update that changes the solver's code compiles it afresh.
+
+  Adding an **Elbow Swivel** pays one more compile, because an elbow goal makes a different
+  problem; pinning a joint pays none. Warm solves are ~5–20 ms.
 - **Imports block.** A big robot freezes Blender until it has finished loading, with no
   progress and no cancel. Extensions may not start threads, which is what kept the viewport
   alive before.

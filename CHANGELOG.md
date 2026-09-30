@@ -22,9 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the waypoints have changed since the check, and a job it can't measure, on a rig with no
   TCP, is reported as unchecked rather than clean.
 - **Compiled solvers are kept on disk,** in JAX's compilation cache under Kinema's own user
-  folder. A new Blender session loads a robot's IK solver instead of compiling it again. Add
-  IK on a UR5e went from 5.7 s to 2–3 s on a desktop, and from 2–3 s to near-instant on a
-  laptop.
+  folder. While a robot's IK solver is kept there, a new Blender session loads it instead of
+  compiling it again. Add IK on a UR5e went from 5.7 s to 2–3 s on a desktop, and from 2–3 s
+  to near-instant on a laptop.
   - **Keep Compiled Solvers** in the preferences turns it off, from the next start.
     **Clear** empties the folder.
   - The folder is trimmed back to 256 MB at the start of each session, oldest solvers
