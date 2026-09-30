@@ -211,6 +211,21 @@ is averaged. An average can miss a spike inside the gap, but never reports one t
 there. A joint pressed against its range stop doesn't count as moving, whatever its curve
 does.
 
+**What it costs.** Each rig's readings are worked out once per frame, and shared by the
+sliders, the rows and the viewport. It was measured on a desktop (i7-12700K) with a Unitree
+G1 with hands, which has 43 joints, keyed on every frame and limited in speed and
+acceleration:
+
+| | Cost |
+|---|---|
+| Working out the rig's readings | 1.2 ms a frame |
+| Recording each frame, for the joints live IK drives | 0.2 ms |
+| A window redraw with nothing changed, such as orbiting the view | 1 ms more than with the rig ignored, mostly drawing the joints flagged |
+| A frame of playback, with the Kinema sidebar open | 2.3–2.8 ms more than with the rig ignored |
+
+Playback held 24 fps either way. Six 7-joint arms, 42 joints in all, take 1.6 ms a frame
+between them. With **Ignore Motion Limits** ticked, a rig costs nothing.
+
 Jerk and effort limits are kept on each joint too, and listed under **Not Checked**. Only
 speed and acceleration are checked. Effort would need the robot's masses and inertias, which
 a rig doesn't carry. Jerk would add little: between frames, a joint passes a jerk limit only

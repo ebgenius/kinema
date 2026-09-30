@@ -290,6 +290,11 @@ def suspended():
     Reuses the re-entrancy flag rather than adding a second one, because it
     wants exactly what that flag already means: whatever is happening to the
     scene right now, it is not the handlers' business.
+
+    On the way out, the motion-limit readings shared from before are dropped.
+    The block changed poses or curves out of the handlers' sight, and the
+    scene can come out of it already evaluated -- a bake ends with a
+    ``frame_set`` -- with no update left to tell them.
     """
     global _solving
     previous = _solving
@@ -298,6 +303,9 @@ def suspended():
         yield
     finally:
         _solving = previous
+        from .ops import velocity
+
+        velocity.discard_readings()
 
 
 def last_solve_ms(rig: bpy.types.Object) -> float | None:

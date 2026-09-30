@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An ignored rig is no longer measured.** Its limits are listed, greyed out, without its
   curves being read or its poses recorded. Unticking Ignore starts its history afresh, so a
   pose from before the rig was ignored is never measured against.
+- **The motion-limit check is worked out once per frame** (#54). The sliders, the Motion
+  Limits rows and the viewport overlay used to work it out again each time they drew,
+  several times a redraw. Now they share each rig's readings until something changes.
+  - Measured on a 43-joint humanoid with speed and acceleration limits.
+  - A redraw with nothing changed went from 4.6–5.0 ms more than an ignored rig to 1 ms.
+  - A frame of playback went from 3.9–4.8 ms more to 2.3–2.8 ms.
 - **A waypoint's marker is the waypoint.** Drag it, and the next Generate Motion re-aims
   every move to and from it, joint moves included. The joints are re-solved at the marker,
   walked there from the configuration taught so they keep it, and stored in its place as

@@ -44,6 +44,15 @@ from .ik import joint_curves
 #: The frames each rig was last seen at, for the joints live IK drives.
 _history = History()
 
+#: Each rig's readings, worked out once and shared until anything they depend
+#: on can have changed. One redraw asks for them several times over -- the
+#: Joints panel, the Motion Limits header and rows, and the viewport overlay
+#: twice for every rig in every 3D view -- and orbiting the view asks again
+#: with nothing changed at all. Keyed by kind, rig, frame and frame rate, and
+#: cleared by :func:`observe`, which runs after every frame change and every
+#: depsgraph update, and by whatever changes limits or Ignore without one.
+_readings: dict = {}
+
 
 def stored_limit(pose_bone, prop: str) -> float | None:
     """The joint's limit stored under ``prop``, or None if it has none."""
@@ -163,6 +172,29 @@ def _fps(scene) -> float:
 
 def readings(rig, scene) -> list[Reading]:
     """Every speed-limited joint's speed at the current frame, over or not."""
+    return _shared(SPEED, rig, scene, _speeds)
+
+
+def acceleration_readings(rig, scene) -> list[Reading]:
+    """Every acceleration-limited joint's acceleration at the current frame, over or not.
+
+    The change of speed over the last two frames: from the joint's curve where
+    it has one and nothing else drives it, from the frames seen before where
+    live IK does.
+    """
+    return _shared(ACCELERATION, rig, scene, _accelerations)
+
+
+def _shared(kind: str, rig, scene, measure) -> list[Reading]:
+    """What ``measure`` finds for ``rig``, worked out once for its frame and frame rate."""
+    key = (kind, _key(rig), scene.frame_current, _fps(scene))
+    found = _readings.get(key)
+    if found is None:
+        found = _readings[key] = measure(rig, scene)
+    return list(found)
+
+
+def _speeds(rig, scene) -> list[Reading]:
     limited = _limited(rig, SPEED)
     if not limited:
         return []
@@ -193,13 +225,7 @@ def readings(rig, scene) -> list[Reading]:
     return result
 
 
-def acceleration_readings(rig, scene) -> list[Reading]:
-    """Every acceleration-limited joint's acceleration at the current frame, over or not.
-
-    The change of speed over the last two frames: from the joint's curve where
-    it has one and nothing else drives it, from the frames seen before where
-    live IK does.
-    """
+def _accelerations(rig, scene) -> list[Reading]:
     limited = _limited(rig, ACCELERATION)
     if not limited:
         return []
@@ -253,6 +279,9 @@ def observe(scene) -> None:
 
     A rig whose limits are ignored is skipped: nothing is read back from it.
     """
+    # Whatever changed -- the frame, a pose, a key, the solver's answer -- what
+    # is shown next is worked out again.
+    _readings.clear()
     frame = scene.frame_current
     for obj in scene.objects:
         if not builder.is_kinema_rig(obj) or ignored(obj):
@@ -270,6 +299,16 @@ def observe(scene) -> None:
 def forget() -> None:
     """Drop every rig's history: a new file, or the add-on going away."""
     _history.forget()
+    _readings.clear()
+
+
+def discard_readings() -> None:
+    """Work every rig's readings out afresh at the next ask.
+
+    For a change :func:`observe` was never told about: see
+    ``handlers.suspended``.
+    """
+    _readings.clear()
 
 
 class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
@@ -333,8 +372,10 @@ class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
                     bone[prop] = float(value)
                     loaded[kind] += 1
 
-        # The solver reads the same limits; hand it the new ones.
+        # The solver reads the same limits; hand it the new ones. And what was
+        # measured against the old ones is not what to show any more.
         manager.refresh_limits(rig)
+        _readings.clear()
 
         parts = [f"{count} {kind}" for kind, count in loaded.items() if count]
         message = f"Loaded {_listed(parts) or 'no'} limit{'s' if sum(loaded.values()) != 1 else ''}"
@@ -367,9 +408,11 @@ def _on_ignore_changed(rig, context) -> None:
 
     Nothing is recorded while a rig is ignored, so the frames it holds are from
     before -- and the animation may have changed since. A driven joint reads
-    unknown until a frame is stepped, rather than against a stale pose.
+    unknown until a frame is stepped, rather than against a stale pose. The
+    readings shared from before go with it.
     """
     _history.forget(_key(rig))
+    _readings.clear()
 
 
 def register_props() -> None:

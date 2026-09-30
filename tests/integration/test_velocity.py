@@ -285,6 +285,45 @@ class TestKeyedAcceleration:
         )
 
 
+class TestShared:
+    """A redraw asks for the readings several times over; they are worked out once."""
+
+    def test_the_readings_are_worked_out_once_a_frame(self, arm6, velocity, monkeypatch):
+        import bpy
+
+        _key(arm6, "joint1", [(1, 0.0), (2, 0.5), (3, 0.5)])
+        scene = bpy.context.scene
+        scene.frame_set(2)
+        frames = []
+        measure = velocity._speeds
+
+        def counted(rig, scene):
+            frames.append(scene.frame_current)
+            return measure(rig, scene)
+
+        monkeypatch.setattr(velocity, "_speeds", counted)
+        for _ in range(3):
+            velocity.readings(arm6, scene)
+            velocity.warnings(arm6, scene)
+        assert frames == [2]
+
+        scene.frame_set(3)
+        velocity.warnings(arm6, scene)
+        assert frames == [2, 3]
+
+    def test_an_edit_on_the_same_frame_is_measured_again(self, arm6, velocity):
+        """Re-keying the frame on screen updates the depsgraph, which clears what was shared."""
+        import bpy
+
+        _key(arm6, "joint1", [(1, 0.0), (2, 0.5)])
+        bpy.context.scene.frame_set(2)
+        assert _by_joint(velocity, arm6)["joint1"].over, "precondition: 12 rad/s"
+
+        _key(arm6, "joint1", [(2, 0.05)])
+        bpy.context.view_layer.update()
+        assert not _by_joint(velocity, arm6)["joint1"].over, "still 12 rad/s: read before the edit"
+
+
 class TestIgnore:
     def test_ignoring_silences_the_warnings(self, arm6, velocity, overlay):
         import bpy
@@ -421,6 +460,37 @@ class TestLiveIk:
             scene.frame_set(frame)
         readings = _by_joint(velocity, live)
         assert max(r.speed for r in readings.values()) < 0.05
+
+    def test_turning_the_check_back_on_reads_a_driven_joint_afresh(self, live, velocity):
+        """Unticking Ignore starts the history again, and the readings shared
+        from before go with it: a driven joint is unknown until a frame is stepped."""
+        import bpy
+
+        scene = bpy.context.scene
+        scene.frame_set(1)
+        scene.frame_set(2)
+        assert _by_joint(velocity, live)["joint2"].speed is not None, "precondition: measured"
+
+        live.kinema_ignore_velocity = True
+        live.kinema_ignore_velocity = False
+        assert _by_joint(velocity, live)["joint2"].speed is None
+
+    def test_a_bake_is_measured_afresh(self, live, velocity):
+        """Bake IK runs with the handlers suspended, and ends with the scene
+        already evaluated, so no update follows it to clear what was shared. A
+        driven joint that read unknown went on reading unknown after the bake,
+        though it now had a curve to be measured from."""
+        import bpy
+
+        scene = bpy.context.scene
+        scene.frame_set(1)
+        scene.frame_set(20)
+        assert _by_joint(velocity, live)["joint2"].speed is None, "precondition: after a jump"
+
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(
+            frame_start=1, frame_end=20, disable_live_ik=True
+        )
+        assert _by_joint(velocity, live)["joint2"].speed is not None
 
     def test_after_a_jump_a_driven_joint_is_unknown(self, live, velocity):
         import bpy
