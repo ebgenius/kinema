@@ -235,8 +235,13 @@ class KINEMA_OT_clear_compile_cache(bpy.types.Operator):
     def execute(self, context: bpy.types.Context) -> set[str]:
         # The folder whether or not the cache is ticked on: files kept from
         # before are still worth clearing. Not created just to be emptied.
-        removed = runtime.clear_compile_cache(runtime.compile_cache_folder())
-        self.report({"INFO"}, f"Kinema: removed {removed} cached files")
+        removed, left = runtime.clear_compile_cache(runtime.compile_cache_folder())
+        message = f"Kinema: removed {removed} compiled solvers"
+        if left:
+            # Open in another Blender, or in JAX here: gone next time.
+            self.report({"WARNING"}, f"{message}; {left} files in use were left")
+        else:
+            self.report({"INFO"}, message)
         return {"FINISHED"}
 
 

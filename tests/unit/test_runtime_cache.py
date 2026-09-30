@@ -75,13 +75,81 @@ def test_pruning_keeps_the_folder_under_its_ceiling_oldest_first(tmp_path):
 
 def test_clearing_removes_files_and_nothing_else(tmp_path):
     """The folder is flat and JAX's: files go, and a folder or a link found in
-    it is left alone rather than followed."""
+    it is left alone rather than followed. Solvers are counted as the button
+    counts them: an access-time file is not one."""
     (tmp_path / "jit__solve-abc-cache").write_bytes(b"x")
     (tmp_path / "jit__solve-abc-atime").write_bytes(b"y")
     (tmp_path / "stray").mkdir()
     (tmp_path / "stray" / "keep.txt").write_text("keep")
 
-    assert runtime.clear_compile_cache(str(tmp_path)) == 2
+    assert runtime.clear_compile_cache(str(tmp_path)) == (1, 0)
     assert sorted(os.listdir(tmp_path)) == ["stray"]
     assert (tmp_path / "stray" / "keep.txt").read_text() == "keep"
-    assert runtime.clear_compile_cache(None) == 0
+    assert runtime.clear_compile_cache(None) == (0, 0)
+
+
+# A cache problem must mean no cache: never a solver stack that fails to load,
+# a preferences panel that fails to draw, or a Clear that stops half-way. The
+# folder is shared with every other Blender running Kinema, and JAX writes to it.
+
+
+class _Vanished:
+    """A directory entry whose file went between listing and looking."""
+
+    name = path = "jit__solve-gone-cache"
+
+    def is_file(self, follow_symlinks=True):
+        return True
+
+    def stat(self, follow_symlinks=True):
+        raise FileNotFoundError(self.path)
+
+
+def _listing_with_a_vanished_file(real_scandir):
+    class _Listing:
+        def __init__(self, path):
+            self.inner = real_scandir(path)
+
+        def __enter__(self):
+            return iter([*self.inner.__enter__(), _Vanished()])
+
+        def __exit__(self, *exc):
+            return self.inner.__exit__(*exc)
+
+    return _Listing
+
+
+def test_a_file_that_goes_mid_listing_is_skipped(tmp_path, monkeypatch):
+    """Another Blender pruning, or JAX replacing an entry, between the listing
+    and the stat."""
+    (tmp_path / "jit__solve-kept-cache").write_bytes(b"x" * 10)
+    monkeypatch.setattr(runtime.os, "scandir", _listing_with_a_vanished_file(os.scandir))
+
+    assert runtime.compile_cache_usage(str(tmp_path)) == (1, 10)
+    assert runtime.prune_compile_cache(str(tmp_path), max_bytes=100) == 0
+
+
+def test_a_folder_that_cannot_be_read_is_empty(tmp_path, monkeypatch):
+    def refuse(path):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(runtime.os, "scandir", refuse)
+    assert runtime.compile_cache_usage(str(tmp_path)) == (0, 0)
+    assert runtime.prune_compile_cache(str(tmp_path), max_bytes=0) == 0
+    assert runtime.clear_compile_cache(str(tmp_path)) == (0, 0)
+
+
+def test_clearing_goes_on_past_a_file_in_use(tmp_path, monkeypatch):
+    """On Windows a file JAX or another Blender has open can't be deleted."""
+    for name in ("jit__solve-a-cache", "jit__solve-busy-cache", "jit__solve-c-cache"):
+        (tmp_path / name).write_bytes(b"x")
+    real_remove = os.remove
+
+    def remove(path):
+        if path.endswith("busy-cache"):
+            raise PermissionError(path)
+        real_remove(path)
+
+    monkeypatch.setattr(runtime.os, "remove", remove)
+    assert runtime.clear_compile_cache(str(tmp_path)) == (2, 1)
+    assert os.listdir(tmp_path) == ["jit__solve-busy-cache"]

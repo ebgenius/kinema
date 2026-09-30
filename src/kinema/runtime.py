@@ -121,17 +121,59 @@ def compile_cache_dir() -> str | None:
     return compile_cache_folder(create=True)
 
 
+def _session_cache_dir() -> str | None:
+    """This session's cache folder, trimmed; None when there is to be no cache.
+
+    Called while loading the solver stack, and must not take it down: a cache
+    that fails in any way leaves the session without a cache, not without
+    PyRoki. A trim that fails still leaves the cache in use.
+    """
+    try:
+        cache_dir = compile_cache_dir()
+    except Exception:  # noqa: BLE001 - no cache, never no solver
+        return None
+    try:
+        prune_compile_cache(cache_dir)
+    except Exception:  # noqa: BLE001 - housekeeping; the cache itself still works
+        pass
+    return cache_dir
+
+
+def _cache_files(path: str | None) -> list[tuple[str, str, int, float]]:
+    """``(name, path, bytes, written)`` for each file in the cache folder at ``path``.
+
+    Never raises. The folder is shared with every other Blender running
+    Kinema, and JAX writes to it mid-session, so a file can go between being
+    listed and being looked at: that file is skipped. A folder that is missing
+    or can't be read lists as empty. A cache problem must mean no cache -- not
+    a solver stack that fails to load, or a preferences panel that fails to draw.
+    """
+    if not path:
+        return []
+    files = []
+    try:
+        with os.scandir(path) as found:
+            for entry in found:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        stat = entry.stat(follow_symlinks=False)
+                        files.append((entry.name, entry.path, stat.st_size, stat.st_mtime))
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    return files
+
+
+def _is_solver(name: str) -> bool:
+    """A compiled solver, as JAX names its entries. Not a lock or an access time."""
+    return name.endswith("-cache")
+
+
 def compile_cache_usage(path: str | None) -> tuple[int, int]:
-    """``(entries, bytes)`` kept in the cache folder at ``path``."""
-    if not path or not os.path.isdir(path):
-        return 0, 0
-    entries = size = 0
-    with os.scandir(path) as found:
-        for entry in found:
-            if entry.is_file(follow_symlinks=False):
-                size += entry.stat(follow_symlinks=False).st_size
-                entries += entry.name.endswith("-cache")
-    return entries, size
+    """``(solvers, bytes)`` kept in the cache folder at ``path``. Never raises."""
+    files = _cache_files(path)
+    return sum(_is_solver(name) for name, *_ in files), sum(size for _, _, size, _ in files)
 
 
 def prune_compile_cache(path: str | None, max_bytes: int = COMPILE_CACHE_MAX_BYTES) -> int:
@@ -139,20 +181,12 @@ def prune_compile_cache(path: str | None, max_bytes: int = COMPILE_CACHE_MAX_BYT
 
     Run once per session, before JAX first uses the folder. Oldest written go
     first: JAX records no access times without the lock it would need for its
-    own cap. A file another Blender has open is left for next time.
+    own cap. A file another Blender has open is left for next time. Never raises.
     """
-    if not path or not os.path.isdir(path):
-        return 0
-    files = []
-    total = 0
-    with os.scandir(path) as found:
-        for entry in found:
-            if entry.is_file(follow_symlinks=False):
-                stat = entry.stat(follow_symlinks=False)
-                files.append((stat.st_mtime, entry.path, stat.st_size))
-                total += stat.st_size
+    files = _cache_files(path)
+    total = sum(size for _, _, size, _ in files)
     removed = 0
-    for _, file_path, size in sorted(files):
+    for _, file_path, size, _ in sorted(files, key=lambda f: f[3]):
         if total <= max_bytes:
             break
         try:
@@ -164,22 +198,25 @@ def prune_compile_cache(path: str | None, max_bytes: int = COMPILE_CACHE_MAX_BYT
     return removed
 
 
-def clear_compile_cache(path: str | None) -> int:
-    """Delete every file in the cache folder at ``path``. Returns how many.
+def clear_compile_cache(path: str | None) -> tuple[int, int]:
+    """Delete every file in the cache folder at ``path``. Never raises.
+
+    Returns ``(solvers removed, files left)``. A file JAX or another Blender has
+    open can't be deleted on Windows; it is left, and the rest still go.
 
     Files only, never folders or links: the folder is JAX's, flat, and nothing
     else of the add-on lives in it. A solver deleted here is compiled again the
     next time it is needed.
     """
-    if not path or not os.path.isdir(path):
-        return 0
-    removed = 0
-    with os.scandir(path) as found:
-        for entry in found:
-            if entry.is_file(follow_symlinks=False):
-                os.remove(entry.path)
-                removed += 1
-    return removed
+    removed = left = 0
+    for name, file_path, _, _ in _cache_files(path):
+        try:
+            os.remove(file_path)
+        except OSError:
+            left += 1
+            continue
+        removed += _is_solver(name)
+    return removed, left
 
 
 #: Vendored packages that log through loguru, and whose output Kinema silences.
@@ -254,9 +291,7 @@ def load_solver_stack(debug: bool = False) -> dict[str, ModuleType] | None:
         # `import jax` itself and cannot be got in front of, which is the reason
         # to settle this at the earliest point that exists rather than the
         # earliest that would be ideal.
-        cache_dir = compile_cache_dir()
-        prune_compile_cache(cache_dir)
-        configure_jax(jax, cache_dir)
+        configure_jax(jax, _session_cache_dir())
 
         import jax.numpy as jnp
         import jax_dataclasses as jdc

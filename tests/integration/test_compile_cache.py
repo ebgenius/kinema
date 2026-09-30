@@ -70,29 +70,64 @@ def test_an_ik_compile_is_kept_on_disk(
 ):
     """Cleared first, and solved on a fresh solver, so an entry left by an
     earlier run -- or a kernel already compiled in this process -- cannot pass
-    for this compile's."""
+    for this compile's.
+
+    JAX keeps only compiles over a second. arm6's takes about four here, but a
+    faster machine could come in under, so the thresholds are lifted for the
+    test and put back after: what is tested is that a compile lands, not how
+    long it took."""
     import bpy
 
     preferences.keep_compiled = True
     stack = runtime.load_solver_stack()
     assert stack is not None, runtime.solver_error()
     folder = runtime.compile_cache_dir()
-    assert stack["jax"].config.jax_compilation_cache_dir == folder, (
+    config = stack["jax"].config
+    assert config.jax_compilation_cache_dir == folder, (
         "the solver stack was loaded without the cache"
     )
-    runtime.clear_compile_cache(folder)
-
-    assert "FINISHED" in bpy.ops.kinema.build_robot(
-        filepath=str(fixture_dir / "arm6.urdf")
+    thresholds = (
+        config.jax_persistent_cache_min_compile_time_secs,
+        config.jax_persistent_cache_min_entry_size_bytes,
     )
-    rig = next(o for o in bpy.data.objects if o.get("kinema_rig"))
-    bpy.context.view_layer.objects.active = rig
-    rig.kinema_solver_mode = "PYROKI"
-    manager.invalidate()
     try:
+        config.update("jax_persistent_cache_min_compile_time_secs", 0)
+        config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+        runtime.clear_compile_cache(folder)
+
+        assert "FINISHED" in bpy.ops.kinema.build_robot(
+            filepath=str(fixture_dir / "arm6.urdf")
+        )
+        rig = next(o for o in bpy.data.objects if o.get("kinema_rig"))
+        bpy.context.view_layer.objects.active = rig
+        rig.kinema_solver_mode = "PYROKI"
+        manager.invalidate()
         assert "FINISHED" in bpy.ops.kinema.add_ik()  # warms the solver: the compile
         solver = manager.get_solver(rig)
         assert solver.pyroki(rig, build=False) is not None, "PyRoki did not compile"
         assert _solver_entries(folder), "the compiled IK solver was not kept"
     finally:
+        config.update("jax_persistent_cache_min_compile_time_secs", thresholds[0])
+        config.update("jax_persistent_cache_min_entry_size_bytes", thresholds[1])
         manager.invalidate()
+
+
+def test_a_cache_folder_that_fails_still_loads_pyroki(runtime, preferences, monkeypatch):
+    """Trimming the folder happens while the solver stack loads. An exception
+    from it used to fail the load, and the whole session fell back to NumPy. A
+    cache problem must mean no cache at most, and a failed trim not even that."""
+
+    def refuse(path):
+        raise PermissionError(path)
+
+    preferences.keep_compiled = True
+    monkeypatch.setattr(runtime.os, "scandir", refuse)
+    runtime.unload_solver_stack()
+    try:
+        stack = runtime.load_solver_stack()
+        assert stack is not None, runtime.solver_error()
+        assert stack["jax"].config.jax_compilation_cache_dir == runtime.compile_cache_dir()
+    finally:
+        monkeypatch.undo()
+        runtime.unload_solver_stack()
+        assert runtime.load_solver_stack() is not None
