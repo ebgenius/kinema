@@ -239,7 +239,10 @@ same tool pose up to eight different ways. **▶** restores the configuration yo
 rather than re-solving and picking a different one.
 
 Each waypoint also gets an Empty in the viewport, so you can snap it to a vertex on the part
-being worked. Dragging that Empty re-aims the move.
+being worked. The Empty is the waypoint: drag it, and the next Generate Motion re-aims every
+move to and from it, joint moves included. It also works out the waypoint's joints at the
+new place, from the configuration you taught, and keeps those in place of the taught
+joints. See [Teach a job](../tutorials/teach-a-job.md#what-happens-to-a-waypoint-you-drag).
 
 ### Joint or Linear
 
@@ -249,10 +252,6 @@ being worked. Dragging that Empty re-aims the move.
 | **Linear** | Drives the tool along the straight line between the two poses | The part of the job that has to be straight — a weld seam, a plunge, a dispensing pass |
 
 Linear needs an IK target on the rig; the panel says so if one is missing.
-
-A joint move replays the joint values it was taught with, so it cannot follow a marker you
-have since dragged somewhere else. Generating tells you which waypoints that applies to, and
-the fix is either **Update** or switching the row to **Linear**.
 
 ### What Generate Motion writes
 

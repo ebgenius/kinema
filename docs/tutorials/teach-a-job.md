@@ -119,15 +119,32 @@ configuration, **Load Joint Limits…** reads the speeds it's really run at. See
 ## 8. Change your mind
 
 - **Moved the robot to a better pose?** Highlight the row and click **Update**.
-- **Want the point somewhere else entirely?** Drag its Empty in the viewport — snap it to a
-  vertex on the part if that is what you are aiming at — and regenerate. This re-aims
-  **linear** moves. A joint move replays the joint values it was taught with and cannot
-  follow a marker, so Kinema tells you which rows that applies to; **Update** them, or switch
-  them to Linear.
+- **Want the point somewhere else?** Drag its Empty in the viewport, and regenerate. Snap it
+  to a vertex on the part if that's what you're aiming at. The Empty *is* the waypoint, so
+  every move to and from it follows, joint moves included.
 - **Wrong order?** Change the frames.
 
 Regenerating replaces the previous motion rather than stacking on it, and only across the
 frames the job covers. Animation you keyed elsewhere in the scene survives.
+
+### What happens to a waypoint you drag
+
+When you regenerate after dragging an Empty, Kinema works out the robot's joints at the
+Empty's new place.
+
+- **The same configuration.** It gets there from the joints you taught, a little at a time,
+  so the robot keeps the same elbow, wrist and turns.
+- **The taught joints are replaced.** The new joints replace the ones you taught for that
+  waypoint, just as **Update** would after posing the robot there. **Go To** then takes the
+  robot to the Empty.
+- **You're told.** Generate Motion names each waypoint it worked out again.
+
+To keep the old pose, record it as a waypoint of its own before you drag.
+
+If an Empty is out of reach, or past a joint's limit, it's refused, with its name. Move it
+back, or pose the robot there and press **Update**.
+
+Baked keys are never touched.
 
 ## 9. Hand it off
 
