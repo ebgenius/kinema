@@ -1,0 +1,237 @@
+"""Optimize Motion. Needs a real ``bpy``, and JAX for the solve.
+
+The claims worth holding onto:
+- a job over its limits comes back within them, keyed on every frame with live
+  IK off, its waypoints where they were and its linear move on its line;
+- a move without the frames to keep within its limits says about how many it
+  needs, and the move before it, with time to spare, doesn't;
+- a job generated before the waypoints changed, or never generated, is refused,
+  with nothing written;
+- held joints keep their keys;
+- Generate Motion afterwards replaces it, as it replaces its own keys;
+- a second run compiles nothing.
+
+Solving runs modal from the panel, which needs a window; these run the operator
+as a script does, which waits for the result.
+"""
+
+from __future__ import annotations
+
+import importlib
+
+import numpy as np
+import pytest
+
+from ..conftest import requires_bpy
+
+pytestmark = requires_bpy
+
+HOME = np.array([0.0, -0.6, 1.0, 0.0, 0.6, 0.0])
+OFFSETS = (
+    [0.0] * 6,
+    [0.9, 0.3, -0.3, 0.3, 0.2, 0.6],
+    [1.2, 0.45, -0.45, 0.3, 0.0, 0.6],
+    [-0.5, 0.1, 0.1, -0.2, 0.2, -0.4],
+)
+MOVES = ("JOINT", "JOINT", "LINEAR", "JOINT")
+#: Every joint's top speed (rad/s) and acceleration limit (rad/s²).
+SPEED, ACCELERATION = 1.5, 6.0
+#: Time enough for every move, with the right profile.
+ROOMY = (1, 61, 121, 181)
+#: Time enough, but only just: the last move needs joint 1 near its top speed,
+#: which smoothing alone takes it past.
+TIGHT = (1, 61, 121, 166)
+#: The last move, joint 1 turning 1.7 rad, in 30 frames: too few.
+SHORT = (1, 61, 121, 151)
+
+
+@pytest.fixture
+def builder(addon):
+    return importlib.import_module(f"{addon.__name__}.rig.builder")
+
+
+@pytest.fixture
+def modules(addon):
+    def module(name):
+        return importlib.import_module(f"{addon.__name__}.{name}")
+
+    return module
+
+
+@pytest.fixture
+def arm6(addon, fixture_dir, clean_scene, builder, modules):
+    """arm6 with live IK on NumPy, and every joint limited as SPEED and ACCELERATION say."""
+    import bpy
+
+    scene = bpy.context.scene
+    scene.render.fps, scene.render.fps_base = 30, 1.0
+    assert "FINISHED" in bpy.ops.kinema.build_robot(filepath=str(fixture_dir / "arm6.urdf"))
+    rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
+    bpy.context.view_layer.objects.active = rig
+    rig.select_set(True)
+    _set_q(builder, rig, HOME)
+    rig.kinema_solver_mode = "NUMPY"
+    assert "FINISHED" in bpy.ops.kinema.add_ik()
+    rig.kinema_ik_enabled = False
+    for pose_bone in builder.joint_bones(rig):
+        pose_bone.bone[builder.PROP_VELOCITY] = SPEED
+        pose_bone.bone[builder.PROP_ACCELERATION] = ACCELERATION
+    modules("solver.manager").refresh_limits(rig)
+    return rig
+
+
+def _set_q(builder, rig, q):
+    import bpy
+
+    for pose_bone, value in zip(builder.joint_bones(rig), q, strict=True):
+        pose_bone.rotation_euler[1] = float(value)
+    bpy.context.view_layer.update()
+
+
+def _teach(builder, rig, frames):
+    """Four waypoints at ``frames``, the third arrived at in a line."""
+    import bpy
+
+    ik_name = rig[builder.PROP_IK_BONE]
+    tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    for index, (frame, offset, move) in enumerate(zip(frames, OFFSETS, MOVES, strict=True)):
+        bpy.context.scene.frame_set(frame)
+        _set_q(builder, rig, HOME + np.array(offset))
+        rig.pose.bones[ik_name].matrix = rig.pose.bones[tcp].matrix.copy()
+        bpy.context.view_layer.update()
+        assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="ABCD"[index])
+        rig.kinema_waypoints[-1].move = move
+
+
+def _job(builder, rig, frames):
+    import bpy
+
+    _teach(builder, rig, frames)
+    assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+
+def _problems(modules, rig):
+    check = modules("rig.motion_check")
+    return {row.name: check.problems(row) for row in rig.kinema_motion_check}
+
+
+def _keys(modules, rig):
+    """Joint name -> the frames its channel is keyed on."""
+    ik = modules("ops.ik")
+    return {
+        name: sorted(int(point.co[0]) for point in curve.keyframe_points)
+        for name, curve in ik.joint_curves(rig).items()
+    }
+
+
+def _waypoint_error_mm(modules, rig):
+    """The worst distance of the tool from a waypoint's pose, at its frame, as it plays."""
+    import bpy
+
+    wp = modules("ops.waypoints")
+    worst = 0.0
+    for waypoint in rig.kinema_waypoints:
+        bpy.context.scene.frame_set(int(waypoint.frame))
+        tool = np.array(rig.pose.bones[wp._tool_bone(rig)].matrix)
+        goal = np.array(wp.pose_of(waypoint))
+        worst = max(worst, 1000.0 * float(np.linalg.norm(tool[:3, 3] - goal[:3, 3])))
+    return worst
+
+
+class TestOptimizing:
+    def test_a_job_over_its_limits_comes_back_within_them(self, arm6, builder, modules):
+        """As generated, joint 1 runs at 153% of its acceleration limit, and 113% of its speed."""
+        import bpy
+
+        _job(builder, arm6, TIGHT)
+        assert all(_problems(modules, arm6).values()), "precondition: every move flagged"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert _problems(modules, arm6) == {"B": [], "C": [], "D": []}
+        rows = {row.name: row for row in arm6.kinema_motion_check}
+        assert 0.9 < rows["D"].speed_ratio <= 1.0, "precondition: near its top speed"
+        for name, frames in _keys(modules, arm6).items():
+            assert frames == list(range(TIGHT[0], TIGHT[-1] + 1)), name
+        for frame in (TIGHT[0], 90, 140, TIGHT[-1]):
+            bpy.context.scene.frame_set(frame)
+            assert not arm6.kinema_ik_enabled, frame
+        assert _waypoint_error_mm(modules, arm6) < 0.01
+        line = next(row for row in arm6.kinema_motion_check if row.move == "LINEAR")
+        assert 0.0 <= line.line_error < 1e-5
+
+    def test_a_move_short_of_frames_says_how_many_it_needs(self, arm6, builder, modules):
+        """The last move asks joint 1 for 1.7 rad in a second: too much at 1.5 rad/s."""
+        import bpy
+
+        _job(builder, arm6, SHORT)
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+
+        rows = {row.name: row for row in arm6.kinema_motion_check}
+        assert rows["D"].frames_needed > SHORT[3] - SHORT[2]
+        assert any("needs about" in found for found in _problems(modules, arm6)["D"])
+        # The move before it meets it at a waypoint the check reports in both,
+        # but has time to spare itself.
+        assert rows["C"].frames_needed == 0
+        assert rows["B"].frames_needed == 0
+        assert _waypoint_error_mm(modules, arm6) < 0.05
+
+    def test_held_joints_keep_their_keys(self, arm6, builder, modules):
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        held = builder.joint_bones(arm6)[0]
+        held.kinema_ik_hold = True
+        before = _keys(modules, arm6)
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        after = _keys(modules, arm6)
+        assert after[held.name] == before[held.name]
+        assert after[builder.joint_bones(arm6)[1].name] != before[builder.joint_bones(arm6)[1].name]
+
+    def test_generating_again_replaces_it(self, arm6, builder, modules):
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        generated = _keys(modules, arm6)
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert _keys(modules, arm6) != generated, "precondition: optimizing keyed every frame"
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert _keys(modules, arm6) == generated
+
+    def test_a_second_run_compiles_nothing(self, arm6, builder, modules):
+        import bpy
+
+        trajectory = modules("solver.trajectory")
+        _job(builder, arm6, ROOMY)
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert len(trajectory._optimizers) == 1
+        optimizer, _ = next(iter(trajectory._optimizers.values()))
+        solve = optimizer._fn[0]
+        compiled = solve._cache_size()
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert next(iter(trajectory._optimizers.values()))[0] is optimizer
+        assert solve._cache_size() == compiled == 1
+
+
+class TestRefusing:
+    def test_a_job_never_generated_is_refused(self, arm6, builder, modules):
+        import bpy
+
+        _teach(builder, arm6, ROOMY)
+        before = _keys(modules, arm6)
+        with pytest.raises(RuntimeError, match="Generate Motion first"):
+            bpy.ops.kinema.optimize_motion()
+        assert _keys(modules, arm6) == before
+
+    def test_a_job_generated_before_the_waypoints_changed_is_refused(self, arm6, builder, modules):
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        before = _keys(modules, arm6)
+        arm6.kinema_waypoints[1].frame = 70
+        with pytest.raises(RuntimeError, match="Generate Motion again"):
+            bpy.ops.kinema.optimize_motion()
+        assert _keys(modules, arm6) == before

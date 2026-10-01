@@ -754,6 +754,10 @@ def invalidate(rig_name: str | None = None) -> None:
     reasons to invalidate -- the bones changed underneath us -- are exactly the
     reasons a compiled kernel for the old bones must not be reused.
     """
+    from . import trajectory
+
+    # Optimize Motion's kernels are compiled for the same model.
+    trajectory.forget(rig_name)
     if rig_name is None:
         _cache.clear()
         _pyroki_cache.clear()

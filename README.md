@@ -191,6 +191,32 @@ solves it, and each move gets a row listing what went wrong:
 **Check Again** plays it through after you've edited the curves by hand. Once the waypoints
 change, the panel says the check is out of date.
 
+**Optimize Motion**, under Generate Motion, solves the generated job again as one motion that
+keeps within the robot's limits. It keeps:
+- the tool at each waypoint, in the configuration taught there, and on every linear move's
+  line;
+- the job's first and last frames, with the robot at rest before and after them;
+- held joints, and joints the tool doesn't hang from, where the job has them.
+
+Everything else may change. Within each joint's range, top speed and acceleration limit, it
+takes the smoothest path it can, then keys every joint on every frame with live IK off, so
+the job plays as it was solved, and checks it again. On a KR10 R1100-2 with its own
+`joint_limits.yaml`, a four-waypoint job with joint 2 at three times its acceleration limit
+came back within every limit, solved in 0.2 s once compiled.
+
+Where a move hasn't the frames to keep within its limits, it comes out over them by as little
+as the waypoints leave room for, and its row in the Motion Check says about how many frames it
+needs. Move its waypoint later and optimize again: waypoints are never moved, and the job is
+never retimed.
+- It optimizes the job as generated, so after editing the waypoints, Generate Motion again
+  first. Generate Motion afterwards replaces it.
+- Acceleration limits come from a `joint_limits.yaml` (Load Joint Limits). Without them, it
+  keeps to the speeds and ranges.
+- From the panel it runs while Blender stays live, and Esc abandons it, writing nothing.
+- The first run for a robot and a job length compiles first, which holds Blender up for
+  seconds. JAX's compile cache keeps it for the sessions after.
+- It needs the PyRoki solver, whichever solver live IK uses.
+
 When the shot is right, **Bake IK to Keyframes** turns the whole thing into plain joint
 curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves
 bake as IK solves them.

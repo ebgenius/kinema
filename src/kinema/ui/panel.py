@@ -663,6 +663,14 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
         column.enabled = len(rig.kinema_waypoints) > 1
         column.scale_y = 1.2
         column.operator("kinema.generate_motion", text="Generate Motion", icon="TRACKING")
+        from ..ops.optimize import optimizing
+
+        if optimizing(rig):
+            column.label(text="Optimizing motion... Esc to cancel", icon="SORTTIME")
+        else:
+            column.operator(
+                "kinema.optimize_motion", text="Optimize Motion", icon="IPO_EASE_IN_OUT"
+            )
 
         # The same test the operator makes, not a truthier one: a rig whose IK
         # bone was deleted keeps the property, and checking only that would
