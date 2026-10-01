@@ -155,7 +155,7 @@ class KINEMA_OT_build_robot(Operator):
 
     def _build(self, context: bpy.types.Context) -> set[str]:
         from ..io.xacro_args import parse_args
-        from ..prefs import package_search_paths
+        from ..prefs import get_prefs, package_search_paths
 
         result = loader.load_file(
             self.filepath,
@@ -197,6 +197,12 @@ class KINEMA_OT_build_robot(Operator):
             # answers a failed reload by falling back to NumPy in silence.
             if self.xacro_args:
                 rig.armature_object[builder.PROP_XACRO_ARGS] = self.xacro_args
+
+        # The backend the preferences name: the property's own default is PyRoki,
+        # whatever they say.
+        preferences = get_prefs(context)
+        if preferences is not None and rig.armature_object is not None:
+            rig.armature_object.kinema_solver_mode = preferences.solver_backend
 
         for warning in rig.warnings[:3]:
             self.report({"WARNING"}, warning)
