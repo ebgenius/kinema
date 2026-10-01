@@ -47,7 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Graph Editor:
   - it reuses one already in the window, or splits one off the bottom third of the 3D
     viewport, keeping the Timeline, or opens one in a window of its own;
-  - the joint bones are selected with Only Show Selected on, so it lists the joint curves;
+  - the robot is made the one selected object, with only its joint bones selected, and
+    Only Show Selected is on, so it lists the joint curves and no other object's;
   - the curves are normalised and have sliders, and the sidebar is redrawn during
     playback.
 

@@ -4,8 +4,12 @@ Opening the editor needs a window, which a background Blender has none of. The
 claims checked here are the rest:
 - the joint bones are what gets selected, whatever kind of joint, and nothing
   else of the rig;
-- the Kinema view sets what the preferences say, and Blender Defaults puts back
-  what a new Graph Editor has;
+- the rig is left the one object selected, and active, unless another object is
+  in a mode of its own;
+- the Kinema view sets what the preferences say, in the window pressed in as
+  well as the editor's, and Blender Defaults puts back what a new Graph Editor
+  has;
+- only what changes the selection has an undo step;
 - the preferences' defaults are the ones used when there are no preferences,
   and Reset puts them back.
 """
@@ -66,6 +70,22 @@ def _editor():
     return space, SimpleNamespace(use_play_properties_editors=False)
 
 
+def _keyed_cube():
+    """An object with curves of its own, which Only Show Selected lists when it's selected."""
+    import bpy
+
+    cube = bpy.data.objects.new("Cube", bpy.data.meshes.new("Cube"))
+    bpy.context.scene.collection.objects.link(cube)
+    cube.keyframe_insert("location", frame=1)
+    return cube
+
+
+def _selected():
+    import bpy
+
+    return {obj.name for obj in bpy.context.view_layer.objects.selected}
+
+
 class TestJointBones:
     def test_the_joints_are_selected_and_nothing_else(self, rail6, builder, graph):
         """The rail is prismatic and still a joint; the IK target, TCP and Root are not."""
@@ -78,6 +98,48 @@ class TestJointBones:
         assert selected == {pb.name for pb in builder.joint_bones(rail6)}
         assert "rail" in selected
         assert ik_name not in selected
+
+    def test_the_robot_is_left_the_one_object_selected(self, rail6, builder, graph):
+        """Another selected object's curves would be listed beside the joints.
+
+        Measured in a window: a keyed cube selected, with a link mesh active, put
+        the cube's three curves in the list beside the seven joints'.
+        """
+        import bpy
+
+        cube = _keyed_cube()
+        link = next(obj for obj in rail6.children if obj.type == "MESH")
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(obj in (cube, link))
+        bpy.context.view_layer.objects.active = link
+        assert _selected() == {cube.name, link.name}, "precondition: the robot isn't selected"
+
+        assert graph.show_only_joints(bpy.context, rail6) == 7
+        assert _selected() == {rail6.name}
+        assert bpy.context.view_layer.objects.active == rail6
+        assert {pb.name for pb in rail6.pose.bones if pb.select} == {
+            pb.name for pb in builder.joint_bones(rail6)
+        }
+
+    def test_an_object_in_a_mode_of_its_own_is_left_as_it_is(self, rail6, graph):
+        """A link mesh being edited stays selected and active, so Tab still leaves edit mode."""
+        import bpy
+
+        link = next(obj for obj in rail6.children if obj.type == "MESH")
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(obj == link)
+        bpy.context.view_layer.objects.active = link
+        assert "FINISHED" in bpy.ops.object.mode_set(mode="EDIT")
+        try:
+            # Selected after, or it would be in edit mode with the link.
+            cube = _keyed_cube()
+            cube.select_set(True)
+            assert (link.mode, cube.mode) == ("EDIT", "OBJECT"), "precondition"
+            graph.show_only_joints(bpy.context, rail6)
+            assert _selected() == {link.name, rail6.name}, "the cube deselected, the link not"
+            assert bpy.context.view_layer.objects.active == link
+        finally:
+            bpy.ops.object.mode_set(mode="OBJECT")
 
 
 class TestSettings:
@@ -108,6 +170,57 @@ class TestSettings:
         assert (space.use_normalization, space.show_sliders) == (False, False)
         assert space.dopesheet.show_only_selected
         assert not screen.use_play_properties_editors
+
+    @pytest.mark.parametrize("follows", [True, False])
+    def test_a_new_window_and_the_one_pressed_in_both_follow_playback(
+        self, graph, monkeypatch, follows
+    ):
+        """With the editor in a window of its own, playback may be started in either window.
+
+        Blender redraws every window during playback as the screen it was started in
+        says. Measured in a window, with live IK off and only the new window's screen
+        set: played from the main window, the sidebar there drew 0 times in 47 frames.
+        And the window Blender opens becomes the context's, as faked here: measured,
+        ``context.window`` was the new one by the time the editor was set up.
+        """
+        space, opened = _editor()
+        pressed = SimpleNamespace(screen=SimpleNamespace(use_play_properties_editors=not follows))
+        context = SimpleNamespace(window=pressed)
+
+        def new_window(context):
+            context.window = SimpleNamespace(screen=opened)
+            return context.window, SimpleNamespace(spaces=SimpleNamespace(active=space))
+
+        chosen = SimpleNamespace(**vars(graph.DEFAULTS))
+        chosen.graph_open_in = "WINDOW"
+        chosen.graph_joints_only = False
+        chosen.graph_playback_sidebar = follows
+        monkeypatch.setattr(graph, "active_rig", lambda context: SimpleNamespace(name="robot"))
+        monkeypatch.setattr(graph, "settings", lambda context: chosen)
+        monkeypatch.setattr(graph, "_graph_editor", lambda window: None)
+        monkeypatch.setattr(graph, "_new_window", new_window)
+        monkeypatch.setattr(graph, "_when_drawn", lambda window: None)
+        reports = []
+        operator = SimpleNamespace(report=lambda kind, text: reports.append(text))
+
+        assert graph.KINEMA_OT_graph_editor.execute(operator, context) == {"FINISHED"}
+        assert reports == ["'robot' in a new window"], "precondition: a window was opened"
+        assert opened.use_play_properties_editors is follows
+        assert pressed.screen.use_play_properties_editors is follows
+
+
+class TestUndo:
+    def test_only_what_changes_the_selection_has_an_undo_step(self, graph):
+        """Measured in a window, with an edit made just before.
+
+        - Graph Editor with its undo step: one Ctrl+Z put the selection back and
+          kept the edit. Without the step, it took the edit too.
+        - Blender Defaults with an undo step: one Ctrl+Z changed nothing, as the
+          editor and screen it changes aren't undone.
+        """
+        assert "UNDO" in graph.KINEMA_OT_graph_editor.bl_options
+        assert "UNDO" in graph.KINEMA_OT_graph_view.bl_options
+        assert "UNDO" not in graph.KINEMA_OT_graph_defaults.bl_options
 
 
 class TestPreferences:

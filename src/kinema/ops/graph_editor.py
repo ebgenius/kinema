@@ -15,11 +15,18 @@ it won't know:
 bottom third of the 3D viewport is split off as one, and the Timeline stays.
 Or, as the preferences say, the 3D view is copied into a window of its own.
 
-**Joints only.** The joint bones are selected, and the rig's other bones
-deselected, with *Only Show Selected* on. That's the Graph Editor's own filter,
-so selecting another bone shows its curves as it always would. The rig's
-live-IK switch is a channel of the object's own and stays listed. It shows
-where a job hands the joints to IK.
+**Joints only.** *Only Show Selected* lists the curves of every selected
+object, so the rig is made the one selected, and the active one. Its joint
+bones are selected, and its other bones deselected. That's the Graph Editor's
+own filter, so selecting another bone shows its curves as it always would. The
+rig's live-IK switch is a channel of the object's own and stays listed. It
+shows where a job hands the joints to IK.
+
+**Undo.** Graph Editor and Kinema View change the selection, so each has an
+undo step: Ctrl+Z straight after puts the selection back. Without the step,
+that Ctrl+Z would take the edit before it too. The layout and the editor's
+settings stay as they are, since Blender never undoes those. Blender Defaults
+changes only those, so it has no undo step: one would hold nothing.
 
 Every setting comes from the add-on preferences. The Graph Editor's sidebar
 has a Kinema tab that puts them back, or returns the editor to Blender's own
@@ -31,7 +38,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import bpy
-from bpy.props import EnumProperty
 from bpy.types import Operator, Panel
 
 from ..rig import builder
@@ -70,6 +76,23 @@ def select_joint_bones(rig) -> int:
     for pose_bone in rig.pose.bones:
         pose_bone.select = pose_bone.name in joints
     return len(joints)
+
+
+def show_only_joints(context, rig) -> int:
+    """Leave the rig the one object selected, and active, with only its joints selected.
+
+    Another object in a mode of its own, edit or paint say, keeps its selection,
+    and stays active if it is, so that leaving the mode works as before.
+    Returns how many joints there are.
+    """
+    for obj in list(context.view_layer.objects.selected):
+        if obj != rig and obj.mode == "OBJECT":
+            obj.select_set(False)
+    rig.select_set(True)
+    active = context.view_layer.objects.active
+    if active is None or active.mode == "OBJECT":
+        context.view_layer.objects.active = rig
+    return select_joint_bones(rig)
 
 
 def apply_kinema_view(space, screen, chosen) -> None:
@@ -176,14 +199,17 @@ def _when_drawn(window) -> None:
     bpy.app.timers.register(later, first_interval=0.05)
 
 
-def set_up(rig, window, area, chosen) -> int | None:
-    """The Kinema view in ``area``, for ``rig``. Returns how many joints it shows."""
-    shown = None
-    if chosen.graph_joints_only:
-        # Only Show Selected lists the channels of selected objects only.
-        rig.select_set(True)
-        shown = select_joint_bones(rig)
+def set_up(context, rig, window, area, chosen, pressed_in) -> int | None:
+    """The Kinema view in ``area``, in ``window``, for ``rig``. Returns how many joints it shows.
+
+    ``pressed_in`` is the window the button was pressed in, which is ``window``
+    unless the editor opened in one of its own.
+    """
+    shown = show_only_joints(context, rig) if chosen.graph_joints_only else None
     apply_kinema_view(area.spaces.active, window.screen, chosen)
+    # During playback Blender redraws every window as the screen it was started
+    # in says, and that may be either.
+    pressed_in.screen.use_play_properties_editors = chosen.graph_playback_sidebar
     _when_drawn(window)
     return shown
 
@@ -195,6 +221,7 @@ class KINEMA_OT_graph_editor(Operator):
         "Show this robot's joint curves in a Graph Editor, set up as Kinema's "
         "preferences say: normalised, with sliders, the sidebar following playback"
     )
+    # UNDO for the selection it changes. See "Undo" above.
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -204,7 +231,8 @@ class KINEMA_OT_graph_editor(Operator):
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
         chosen = settings(context)
-        window = context.window
+        # Kept, as opening a window makes it the context's.
+        pressed_in = window = context.window
         area = _graph_editor(window)
         where = "the Graph Editor"
         if area is None and chosen.graph_open_in == "VIEWPORT":
@@ -218,47 +246,55 @@ class KINEMA_OT_graph_editor(Operator):
                 self.report({"ERROR"}, "Could not open a window for the Graph Editor")
                 return {"CANCELLED"}
 
-        shown = set_up(rig, window, area, chosen)
+        shown = set_up(context, rig, window, area, chosen, pressed_in)
         what = f"{shown} joint curves of '{rig.name}'" if shown is not None else f"'{rig.name}'"
         self.report({"INFO"}, f"{what} in {where}")
         return {"FINISHED"}
 
 
+def _in_graph_editor(context) -> bool:
+    return context.area is not None and context.area.ui_type == "FCURVES"
+
+
 class KINEMA_OT_graph_view(Operator):
     bl_idname = "kinema.graph_view"
-    bl_label = "Graph Editor View"
+    bl_label = "Kinema View"
     bl_description = (
-        "Set this Graph Editor up the way Kinema's preferences say, or as Blender "
-        "makes a new one"
+        "Set this Graph Editor up for the robot's joints again, as Kinema's preferences say"
     )
+    # UNDO for the selection it changes. See "Undo" above.
     bl_options = {"REGISTER", "UNDO"}
-
-    to: EnumProperty(
-        name="To",
-        items=[
-            ("KINEMA", "Kinema View", "The joint curves, set up as Kinema's preferences say"),
-            ("BLENDER", "Blender Defaults", "As Blender's startup file makes a new Graph Editor"),
-        ],
-        default="KINEMA",
-        options={"SKIP_SAVE"},
-    )
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
-        return context.area is not None and context.area.ui_type == "FCURVES"
+        return _in_graph_editor(context)
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        if self.to == "BLENDER":
-            apply_blender_defaults(context.space_data, context.screen)
-            self.report({"INFO"}, "Graph Editor back to Blender's defaults")
-            return {"FINISHED"}
         rig = active_rig(context)
         if rig is None:
             self.report({"ERROR"}, "Select a Kinema robot first")
             return {"CANCELLED"}
-        shown = set_up(rig, context.window, context.area, settings(context))
+        window = context.window
+        shown = set_up(context, rig, window, context.area, settings(context), window)
         what = f"{shown} joint curves of '{rig.name}'" if shown is not None else f"'{rig.name}'"
         self.report({"INFO"}, f"Graph Editor showing {what}")
+        return {"FINISHED"}
+
+
+class KINEMA_OT_graph_defaults(Operator):
+    bl_idname = "kinema.graph_defaults"
+    bl_label = "Blender Defaults"
+    bl_description = "Put this Graph Editor back the way Blender's startup file makes a new one"
+    # No UNDO: it changes only what Blender never undoes. See "Undo" above.
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return _in_graph_editor(context)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        apply_blender_defaults(context.space_data, context.screen)
+        self.report({"INFO"}, "Graph Editor back to Blender's defaults")
         return {"FINISHED"}
 
 
@@ -272,16 +308,18 @@ class KINEMA_PT_graph_editor(Panel):
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
-        return context.area is not None and context.area.ui_type == "FCURVES"
+        return _in_graph_editor(context)
 
     def draw(self, context: bpy.types.Context) -> None:
         column = self.layout.column(align=True)
-        for to, text, icon in (
-            ("KINEMA", "Kinema View", "GRAPH"),
-            ("BLENDER", "Blender Defaults", "LOOP_BACK"),
-        ):
-            column.operator("kinema.graph_view", text=text, icon=icon).to = to
+        column.operator("kinema.graph_view", icon="GRAPH")
+        column.operator("kinema.graph_defaults", icon="LOOP_BACK")
         self.layout.label(text="Set in Kinema's preferences", icon="PREFERENCES")
 
 
-classes = (KINEMA_OT_graph_editor, KINEMA_OT_graph_view, KINEMA_PT_graph_editor)
+classes = (
+    KINEMA_OT_graph_editor,
+    KINEMA_OT_graph_view,
+    KINEMA_OT_graph_defaults,
+    KINEMA_PT_graph_editor,
+)

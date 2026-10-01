@@ -160,12 +160,16 @@ at each waypoint. Easing them is up to you:
 - **Where.** A Graph Editor already in the window is reused. Otherwise the bottom third of
   the 3D viewport becomes one, and the Timeline stays. Or, as the preferences say, it opens
   in a window of its own.
-- **What.** The robot's joint bones are selected, and none of its other bones, with *Only
-  Show Selected* on. The editor lists the joint curves, each with a slider, plus the live-IK
-  switch where a job keys it.
+- **What.** The robot becomes the selected object, and the active one, with its joint bones
+  selected and none of its other bones. Other objects are deselected, except one being
+  edited or painted. *Only Show Selected* is on, so the editor lists the joint curves, each
+  with a slider, plus the live-IK switch where a job keys it.
 - **How.** The curves are normalised, so a rail's metres and a wrist's radians share one
   scale. The sidebar is redrawn during playback, so the joint sliders and Motion Limits
   follow the animation.
+- **Undo.** Ctrl+Z puts the selection back as it was. The editor stays as it is, since
+  Blender never undoes a change to the layout or to an editor's settings. **View › Area ›
+  Close Area** closes it.
 
 Each setting is in Kinema's preferences, with a Reset. The Graph Editor's own sidebar has a
 Kinema tab with **Kinema View**, which sets it up again, and **Blender Defaults**, which
@@ -209,8 +213,10 @@ A joint over either limit is flagged in two places:
 
 During playback, Blender redraws the sidebar only with **Timeline › Playback › Play In ›
 Properties and Sidebars** on, and it's off by default. Without it, the sliders and rows
-aren't redrawn as the animation plays, while the viewport follows every frame either way.
-**Graph Editor** turns it on for the screen it opens in.
+follow the animation only where live IK is solving it, though the viewport follows every
+frame either way. Blender reads the setting from the window playback is started in, so
+**Graph Editor** turns it on in the window it's pressed in, and in the Graph Editor's own
+window if it opens one.
 
 **Ignore Motion Limits**, in that section, turns both off for one rig: for a shot that will
 never run on a robot, or a description whose limits are placeholders. The limits stay
