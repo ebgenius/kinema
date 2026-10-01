@@ -23,6 +23,7 @@ from .ops import (
     ik,
     import_dae,
     import_robot,
+    optimize,
     pose,
     tcp,
     velocity,
@@ -36,10 +37,10 @@ from .ui import axis_preview, overlay, panel, tcp_preview
 # velocity after ik for the same reason. tcp after pose, whose Set TCP it runs.
 # external_axes after the others: it builds on all of them. graph_editor,
 # whose panel sits in the Graph Editor rather than under Kinema's, has no
-# order to keep.
+# order to keep, and optimize only adds an operator to waypoints' panel.
 _MODULES = (
     prefs, panel, import_dae, import_robot, pose, tcp, ik, attach, waypoints, velocity,
-    external_axes, graph_editor,
+    external_axes, graph_editor, optimize,
 )
 
 
@@ -63,6 +64,7 @@ def unregister() -> None:
     external_axes.forget()
     tcp.forget()
     deferral.forget()
+    optimize.forget()
     overlay.unregister_draw()
     handlers.unregister_handlers()
 

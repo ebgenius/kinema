@@ -266,7 +266,7 @@ def on_pose_settled(scene: bpy.types.Scene, depsgraph=None) -> None:
 @persistent
 def on_load_post(_dummy=None) -> None:
     """A freshly opened file shares nothing with the previous one."""
-    from .ops import deferral, external_axes, tcp, velocity
+    from .ops import deferral, external_axes, optimize, tcp, velocity
 
     _last_target.clear()
     _last_duration.clear()
@@ -276,6 +276,7 @@ def on_load_post(_dummy=None) -> None:
     external_axes.forget()
     tcp.forget()
     deferral.forget()
+    optimize.forget()
 
 
 @contextmanager
