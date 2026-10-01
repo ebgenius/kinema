@@ -9,6 +9,7 @@ claims checked here are the rest:
 - the Kinema view sets what the preferences say, in the window pressed in as
   well as the editor's, and Blender Defaults puts back what a new Graph Editor
   has;
+- the editor set up is the one framed, when a window holds two;
 - only what changes the selection has an undo step;
 - the preferences' defaults are the ones used when there are no preferences,
   and Reset puts them back.
@@ -199,7 +200,7 @@ class TestSettings:
         monkeypatch.setattr(graph, "settings", lambda context: chosen)
         monkeypatch.setattr(graph, "_graph_editor", lambda window: None)
         monkeypatch.setattr(graph, "_new_window", new_window)
-        monkeypatch.setattr(graph, "_when_drawn", lambda window: None)
+        monkeypatch.setattr(graph, "_when_drawn", lambda window, area: None)
         reports = []
         operator = SimpleNamespace(report=lambda kind, text: reports.append(text))
 
@@ -207,6 +208,32 @@ class TestSettings:
         assert reports == ["'robot' in a new window"], "precondition: a window was opened"
         assert opened.use_play_properties_editors is follows
         assert pressed.screen.use_play_properties_editors is follows
+
+
+class TestFraming:
+    def test_the_editor_set_up_is_the_one_framed(self, graph, monkeypatch):
+        """With two Graph Editors in a window, the one set up is framed, not the first.
+
+        Measured in a window: Kinema View pressed in the second editor framed the
+        first, and left the second's view as it was. Framing waits for a redraw,
+        which a background Blender never does, so the area it's handed is checked.
+        """
+        scheduled = []
+        monkeypatch.setattr(graph, "_when_drawn", lambda window, area: scheduled.append(area))
+        first, second = (
+            SimpleNamespace(ui_type="FCURVES", spaces=SimpleNamespace(active=_editor()[0]))
+            for _ in range(2)
+        )
+        window = SimpleNamespace(
+            screen=SimpleNamespace(areas=[first, second], use_play_properties_editors=False)
+        )
+        chosen = SimpleNamespace(**vars(graph.DEFAULTS))
+        chosen.graph_joints_only = False
+        assert graph._graph_editor(window) is first, "precondition: a lookup finds the first"
+
+        graph.set_up(SimpleNamespace(), None, window, second, chosen, window)
+        # By identity: the two fakes compare equal by value.
+        assert len(scheduled) == 1 and scheduled[0] is second
 
 
 class TestUndo:

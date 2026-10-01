@@ -159,11 +159,8 @@ def _new_window(context):
     return window, area
 
 
-def _open_and_frame(window) -> None:
+def _open_and_frame(window, area) -> None:
     """Expand the channels, so each joint's shows with its slider, and frame the curves."""
-    area = _graph_editor(window)
-    if area is None:
-        return
 
     def expand():
         # One level a call: only what is listed when it runs opens, so the
@@ -185,15 +182,24 @@ def _open_and_frame(window) -> None:
                 operator()
 
 
-def _when_drawn(window) -> None:
-    """:func:`_open_and_frame` once Blender has drawn the editor at its new size.
+def _when_drawn(window, area) -> None:
+    """:func:`_open_and_frame` for ``area`` once Blender has drawn it at its new size.
 
     A split-off area, or a new window, takes its size at the next redraw, and
-    framing before then fits the curves to the old one.
+    framing before then fits the curves to the old one. ``area`` is passed on,
+    not looked up again: a window can hold two Graph Editors, and the one to
+    frame is the one set up. By then it may have closed, or be another editor,
+    and is left alone.
     """
     def later():
-        if window in bpy.context.window_manager.windows[:]:
-            _open_and_frame(window)
+        # Membership first: it only compares pointers, while reading a closed
+        # area's ui_type would read freed memory.
+        if (
+            window in bpy.context.window_manager.windows[:]
+            and area in window.screen.areas[:]
+            and area.ui_type == "FCURVES"
+        ):
+            _open_and_frame(window, area)
         return None
 
     bpy.app.timers.register(later, first_interval=0.05)
@@ -210,7 +216,7 @@ def set_up(context, rig, window, area, chosen, pressed_in) -> int | None:
     # During playback Blender redraws every window as the screen it was started
     # in says, and that may be either.
     pressed_in.screen.use_play_properties_editors = chosen.graph_playback_sidebar
-    _when_drawn(window)
+    _when_drawn(window, area)
     return shown
 
 
