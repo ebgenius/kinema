@@ -374,15 +374,12 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
     job.writing = True
     write_keys(context, rig, frames, q, job.free)
 
+    rig.kinema_optimized_job = job.signature
+
     plan = spans(rig.kinema_waypoints)
     samples = wp.play_job(context, rig, plan)
     checks = wp.check_job(context, rig, plan, samples=samples)
-    if checks is not None:
-        joints, fps = wp.check_joints(rig), wp.scene_fps(context.scene)
-        for index, check in enumerate(checks):
-            check.frames_needed = motion_check.frames_needed(
-                check, samples, joints, fps, index == 0, index == len(checks) - 1
-            )
+    wp.estimate_frames_needed(context, rig, checks, samples)
     flagged = wp.store_check(rig, checks)
 
     moves = f"{len(plan)} move{'s' if len(plan) != 1 else ''}"
@@ -462,8 +459,8 @@ class KINEMA_OT_optimize_motion(Operator):
         try:
             job = prepare(context, rig)
             dispatch(job)
-        except Refused as exc:
-            self.report({"ERROR"}, str(exc))
+        except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
+            self.report({"ERROR"}, _failure(exc))
             return {"CANCELLED"}
         return self._finish(context, job)
 
@@ -503,8 +500,7 @@ class KINEMA_OT_optimize_motion(Operator):
                 dispatch(job)
             except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
                 self._end(context)
-                failed = str(exc) if isinstance(exc, Refused) else f"Optimize Motion failed: {exc}"
-                self.report({"ERROR"}, failed)
+                self.report({"ERROR"}, _failure(exc))
                 return {"CANCELLED"}
             _status(context, "Optimizing motion... Esc to cancel")
             return {"RUNNING_MODAL"}
@@ -539,6 +535,11 @@ class KINEMA_OT_optimize_motion(Operator):
         _running.discard(self._job.rig_name)
         _status(context, None)
         _redraw(context)
+
+
+def _failure(exc: Exception) -> str:
+    """What went wrong, for the user: a refusal says so itself."""
+    return str(exc) if isinstance(exc, Refused) else f"Optimize Motion failed: {exc}"
 
 
 def _status(context, text) -> None:

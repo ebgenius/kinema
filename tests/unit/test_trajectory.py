@@ -5,7 +5,8 @@ The claims checked here:
   and nothing asked of the tool there;
 - the speed and acceleration costs measure exactly what the Motion Check
   measures, so a job the solve keeps within its limits is one the check passes;
-- a move's frames-needed estimate counts only its own frames.
+- a move's frames-needed estimate counts only its own frames;
+- the limit costs are made by the jaxls the problem is, and forgetting drops them.
 """
 
 from __future__ import annotations
@@ -122,6 +123,37 @@ def _samples(values):
         check.Sample(frame=frame, q=np.array([value]), tool=tool)
         for frame, value in enumerate(values)
     ]
+
+
+class TestCostsBelongToTheirJaxls:
+    """A cost made by one jaxls module is foreign to a problem built by another."""
+
+    @staticmethod
+    def _jaxls(tag):
+        class Cost:
+            @staticmethod
+            def factory(function):
+                return (tag, function)
+
+        return type("Jaxls", (), {"Cost": Cost})()
+
+    def test_another_jaxls_gets_costs_of_its_own(self, monkeypatch):
+        monkeypatch.setattr(trajectory, "_costs", {})
+        old, new = self._jaxls("old"), self._jaxls("new")
+        assert trajectory._limit_costs(old)[0][0] == "old"
+        speed, acceleration = trajectory._limit_costs(new)
+        assert (speed[0], acceleration[0]) == ("new", "new")
+
+    def test_the_same_jaxls_keeps_them(self, monkeypatch):
+        monkeypatch.setattr(trajectory, "_costs", {})
+        jaxls = self._jaxls("one")
+        assert trajectory._limit_costs(jaxls)[0] is trajectory._limit_costs(jaxls)[0]
+
+    def test_forgetting_everything_drops_them(self, monkeypatch):
+        monkeypatch.setattr(trajectory, "_costs", {})
+        trajectory._limit_costs(self._jaxls("one"))
+        trajectory.forget()
+        assert trajectory._costs == {}
 
 
 class TestFramesNeeded:

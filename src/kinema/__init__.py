@@ -29,6 +29,7 @@ from .ops import (
     velocity,
     waypoints,
 )
+from .solver import trajectory
 from .ui import axis_preview, overlay, panel, tcp_preview
 
 # panel first: ops/pose imports helpers from it, and registration order
@@ -65,6 +66,8 @@ def unregister() -> None:
     tcp.forget()
     deferral.forget()
     optimize.forget()
+    # The compiled kernels hold JAX's memory, which unloading the stack is for.
+    trajectory.forget()
     overlay.unregister_draw()
     handlers.unregister_handlers()
 

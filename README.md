@@ -189,7 +189,8 @@ solves it, and each move gets a row listing what went wrong:
   configuration flip shows.
 
 **Check Again** plays it through after you've edited the curves by hand. Once the waypoints
-change, the panel says the check is out of date.
+change, the panel says the check is out of date. On a job Optimize Motion wrote, it also says
+how many frames a move still over a limit needs.
 
 **Optimize Motion**, under Generate Motion, solves the generated job again as one motion that
 keeps within the robot's limits. It keeps:

@@ -348,8 +348,15 @@ _costs: dict = {}
 
 
 def _limit_costs(jaxls):
-    """The two limit costs, made once: jaxls orders a problem's costs by their functions."""
-    if not _costs:
+    """The two limit costs, made once: jaxls orders a problem's costs by their functions.
+
+    Made again for another jaxls: a cost made by one module would be foreign to
+    a problem built by the other. Disabling Kinema and enabling it again keeps
+    the module it had, but nothing makes that a promise.
+    """
+    if _costs.get("jaxls") is not jaxls:
+        _costs.clear()
+        _costs["jaxls"] = jaxls
         _costs["speed"] = jaxls.Cost.factory(speed_over)
         _costs["acceleration"] = jaxls.Cost.factory(acceleration_over)
     return _costs["speed"], _costs["acceleration"]
@@ -389,9 +396,13 @@ def compiled_for(identity, link: str, frames: int) -> bool:
 
 
 def forget(rig_name: str | None = None) -> None:
-    """Drop the kept kernels: all of them, or those made for ``rig_name``."""
+    """Drop the kept kernels: all of them, or those made for ``rig_name``.
+
+    All of them takes the limit costs they were made from too.
+    """
     if rig_name is None:
         _optimizers.clear()
+        _costs.clear()
         return
     for key, (_, name) in list(_optimizers.items()):
         if name == rig_name:

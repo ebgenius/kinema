@@ -557,6 +557,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
         # What was generated, so Optimize Motion can tell when the keys no
         # longer follow the waypoints.
         rig.kinema_generated_job = job_signature(rig)
+        rig.kinema_optimized_job = ""
         context.scene.frame_set(original)
         checks = check_job(context, rig, plan)
         # Kept on the move's row too, so it is still there once the report has
@@ -1045,6 +1046,22 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
     return samples
 
 
+def estimate_frames_needed(context, rig, checks, samples) -> None:
+    """Give each move still over a limit the frames it needs, on a job Optimize Motion wrote.
+
+    Only there: on a job straight from Generate Motion, a linear move changes
+    speed at its waypoints all at once however long it takes, and the estimate
+    would mean nothing (``motion_check.frames_needed``).
+    """
+    if checks is None or rig.kinema_optimized_job != job_signature(rig):
+        return
+    joints, fps = check_joints(rig), scene_fps(context.scene)
+    for index, check in enumerate(checks):
+        check.frames_needed = motion_check.frames_needed(
+            check, samples, joints, fps, index == 0, index == len(checks) - 1
+        )
+
+
 def store_check(rig, checks) -> int:
     """Keep the findings on the rig. Returns how many moves have a problem.
 
@@ -1111,7 +1128,9 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
         except WaypointError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        checks = check_job(context, rig, plan)
+        samples = play_job(context, rig, plan)
+        checks = check_job(context, rig, plan, samples=samples)
+        estimate_frames_needed(context, rig, checks, samples)
         flagged = store_check(rig, checks)
         if checks is None:
             self.report(
@@ -1252,6 +1271,13 @@ def register_props() -> None:
         description="Fingerprint of the waypoints the last Generate Motion keyed",
         default="",
     )
+    # The same, for the job as Optimize Motion last wrote it: Check Again
+    # estimates the frames a move needs only there.
+    bpy.types.Object.kinema_optimized_job = StringProperty(
+        name="Optimized Job",
+        description="Fingerprint of the waypoints the last Optimize Motion keyed",
+        default="",
+    )
     bpy.types.Object.kinema_active_waypoint = IntProperty(
         name="Active Waypoint",
         description="Row highlighted in the Waypoints list",
@@ -1266,4 +1292,5 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_motion_check_job
     del bpy.types.Object.kinema_generated_range
     del bpy.types.Object.kinema_generated_job
+    del bpy.types.Object.kinema_optimized_job
     del bpy.types.Object.kinema_active_waypoint

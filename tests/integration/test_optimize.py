@@ -8,6 +8,7 @@ The claims worth holding onto:
 - a long job eases into a linear move and out of it within its limits;
 - a job generated before the waypoints changed, or never generated, is refused,
   with nothing written;
+- Check Again on an optimized job still says how many frames a move needs;
 - held joints keep their keys;
 - a solve that lands after the robot changed (a hold, a limit, the TCP, a held
   joint, Root) writes nothing, though scrubbing the timeline meanwhile doesn't
@@ -201,6 +202,23 @@ class TestOptimizing:
         assert problems == {"B": [], "C": [], "D": []}
         assert _waypoint_error_mm(modules, arm6) < 0.01
 
+    def test_check_again_keeps_saying_how_many_frames_it_needs(self, arm6, builder, modules):
+        """On the job Optimize Motion wrote; not on one generated afterwards."""
+        import bpy
+
+        _job(builder, arm6, SHORT)
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        needed = {row.name: row.frames_needed for row in arm6.kinema_motion_check}
+        assert needed["D"] > SHORT[3] - SHORT[2], "precondition: D short of frames"
+
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert {row.name: row.frames_needed for row in arm6.kinema_motion_check} == needed
+        assert any("needs about" in found for found in _problems(modules, arm6)["D"])
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert all(row.frames_needed == 0 for row in arm6.kinema_motion_check)
+
     def test_held_joints_keep_their_keys(self, arm6, builder, modules):
         import bpy
 
@@ -326,6 +344,24 @@ class TestWhileSolving:
         assert operator.modal(running, bpy.context, timer) == {"CANCELLED"}
         assert not optimize.optimizing(arm6)
         assert reports == [({"ERROR"}, "Optimize Motion failed: a shape JAX didn't expect")]
+
+    def test_an_unexpected_error_from_a_script_is_reported(
+        self, arm6, builder, modules, monkeypatch
+    ):
+        """As from the panel: reported as Optimize Motion failing, with nothing written."""
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, ROOMY)
+        before = _keys(modules, arm6)
+
+        def broken(job):
+            raise ValueError("a shape JAX didn't expect")
+
+        monkeypatch.setattr(optimize, "dispatch", broken)
+        with pytest.raises(RuntimeError, match="Optimize Motion failed: a shape JAX didn't expect"):
+            bpy.ops.kinema.optimize_motion()
+        assert _keys(modules, arm6) == before
 
     @pytest.mark.parametrize("fails", ["before writing", "after writing began"])
     def test_a_failure_once_keys_are_written_still_finishes(
