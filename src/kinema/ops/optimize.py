@@ -94,6 +94,9 @@ class Job:
     #: Moves the Motion Check flagged before, or None if it wasn't current.
     flagged_before: int | None
     pending: trajectory.Pending | None = None
+    #: Set once keys start being written: from then on, a failure still has to
+    #: end in an undo step, which only a finished operator gets.
+    writing: bool = False
     compile_seconds: float = 0.0
     solve_started: float = 0.0
 
@@ -160,24 +163,57 @@ _LIMIT_PROPS = (
 def model_signature(rig) -> tuple:
     """What a solve is set up from besides the waypoints, to tell whether it still holds.
 
-    The joints, which of them are held, their limits, and the TCP. Blender stays
-    live while a solve runs, so any of them can change before its result lands,
-    and keying that result would then write a motion solved for another robot.
+    The joints, which of them are held, their limits, and the TCP; and where
+    the bones the solve doesn't move are: each held joint, and Root, which
+    places the whole robot. Blender stays live while a solve runs, so any of
+    them can change before its result lands, and keying that result would then
+    write a motion solved for another robot, or for one standing elsewhere.
     """
+    bones = builder.joint_bones(rig)
     joints = tuple(
         (
             pose_bone.name,
             bool(getattr(pose_bone, "kinema_ik_hold", False)),
             tuple(_number(pose_bone.bone.get(key)) for key in _LIMIT_PROPS),
         )
-        for pose_bone in builder.joint_bones(rig)
+        for pose_bone in bones
     )
+    unmoved = [pose_bone for pose_bone in bones if getattr(pose_bone, "kinema_ik_hold", False)]
+    root = rig.pose.bones.get(builder.ROOT_BONE)
+    if root is not None:
+        unmoved.append(root)
+    placed = tuple((pose_bone.name, _placement(rig, pose_bone)) for pose_bone in unmoved)
     tcp = rig.data.bones.get(wp._tool_bone(rig))
     if tcp is None:
-        return joints, None
+        return joints, placed, None
     parent = tcp.parent.name if tcp.parent is not None else ""
     pose = tuple(_number(value) for row in tcp.matrix_local for value in row)
-    return joints, (tcp.name, parent, pose)
+    return joints, placed, (tcp.name, parent, pose)
+
+
+def _placement(rig, pose_bone) -> tuple:
+    """Where a bone the solve doesn't move is, as the solve read it.
+
+    Its keys, where it has them: playback moves it on every frame, so its pose
+    changes with the current frame while nothing the solve read did. Otherwise
+    its pose, which playback leaves where it is.
+    """
+    prefix = pose_bone.path_from_id() + "."
+    keys = tuple(
+        (curve.data_path, curve.array_index, curve.mute)
+        + tuple(
+            _number(value)
+            for point in curve.keyframe_points
+            for vector in (point.co, point.handle_left, point.handle_right)
+            for value in vector
+        )
+        for container in own_fcurve_containers(rig)
+        for curve in container
+        if curve.data_path.startswith(prefix)
+    )
+    if keys:
+        return keys
+    return tuple(_number(value) for row in pose_bone.matrix_basis for value in row)
 
 
 def _number(value) -> float | None:
@@ -335,6 +371,7 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
     q, iterations = job.pending.result()
     seconds = time.perf_counter() - job.solve_started
     frames = range(job.first, job.last + 1)
+    job.writing = True
     write_keys(context, rig, frames, q, job.free)
 
     plan = spans(rig.kinema_waypoints)
@@ -428,9 +465,7 @@ class KINEMA_OT_optimize_motion(Operator):
         except Refused as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        written, kind, message = finish(context, job)
-        self.report({kind}, message)
-        return {"FINISHED"} if written else {"CANCELLED"}
+        return self._finish(context, job)
 
     def invoke(self, context: bpy.types.Context, event) -> set[str]:
         """From the panel: solve while Blender stays live, and key the result when it lands."""
@@ -476,11 +511,20 @@ class KINEMA_OT_optimize_motion(Operator):
         if not job.pending.ready():
             return {"PASS_THROUGH"}
         self._end(context)
+        return self._finish(context, job)
+
+    def _finish(self, context, job: Job) -> set[str]:
+        """Key the result, ending in an undo step if anything was written.
+
+        Blender only makes an undo step for an operator that finishes. One that
+        fails after it has started writing keys still finishes, so Ctrl+Z puts
+        the job back, rather than cancelling with half of it written.
+        """
         try:
             written, kind, message = finish(context, job)
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, f"Optimize Motion failed: {exc}")
-            return {"CANCELLED"}
+            return {"FINISHED"} if job.writing else {"CANCELLED"}
         self.report({kind}, message)
         return {"FINISHED"} if written else {"CANCELLED"}
 

@@ -9,8 +9,10 @@ The claims worth holding onto:
 - a job generated before the waypoints changed, or never generated, is refused,
   with nothing written;
 - held joints keep their keys;
-- a solve that lands after the robot changed (a hold, a limit, the TCP) writes
-  nothing, and one that fails in an unexpected way still ends;
+- a solve that lands after the robot changed (a hold, a limit, the TCP, a held
+  joint, Root) writes nothing, though scrubbing the timeline meanwhile doesn't
+  count; one that fails in an unexpected way still ends, and once it has begun
+  writing keys it ends in an undo step;
 - Generate Motion afterwards replaces it, as it replaces its own keys;
 - a second run compiles nothing.
 
@@ -245,13 +247,24 @@ class TestWhileSolving:
 
     @pytest.mark.parametrize(
         "change",
-        ["hold", "limit", "tcp"],
+        ["hold", "limit", "tcp", "held joint dragged", "held joint's keys edited", "root posed"],
     )
     def test_a_robot_changed_meanwhile_gets_nothing_written(self, arm6, builder, modules, change):
         import bpy
 
         optimize = modules("ops.optimize")
         _job(builder, arm6, ROOMY)
+        held = builder.joint_bones(arm6)[0]
+        if change.startswith("held"):
+            held.kinema_ik_hold = True
+        if change == "held joint dragged":
+            # Placed by hand, as a rail often is: nothing keys it.
+            ik = modules("ops.ik")
+            curve = ik.joint_curves(arm6)[held.name]
+            for container in ik.own_fcurve_containers(arm6):
+                if curve in list(container):
+                    container.remove(curve)
+            assert held.name not in ik.joint_curves(arm6), "precondition: unkeyed"
         before = _keys(modules, arm6)
         job = optimize.prepare(bpy.context, arm6)
         optimize.dispatch(job)
@@ -261,17 +274,37 @@ class TestWhileSolving:
             joint.kinema_ik_hold = True
         elif change == "limit":
             joint.bone[builder.PROP_VELOCITY] = 0.5
-        else:
+        elif change == "tcp":
             tcp = arm6.data.bones[arm6.get(builder.PROP_TCP_BONE) or builder.TCP_BONE]
             bpy.context.view_layer.objects.active = arm6
             bpy.ops.object.mode_set(mode="EDIT")
             arm6.data.edit_bones[tcp.name].head.z += 0.05
             bpy.ops.object.mode_set(mode="OBJECT")
+        elif change == "held joint dragged":
+            held.rotation_euler[1] += 0.1
+        elif change == "held joint's keys edited":
+            modules("ops.ik").joint_curves(arm6)[held.name].keyframe_points[1].co.y += 0.1
+        else:
+            arm6.pose.bones[builder.ROOT_BONE].location.x += 0.05
 
         written, kind, message = optimize.finish(bpy.context, job)
         assert (written, kind) == (False, "WARNING")
         assert "nothing was written" in message
         assert _keys(modules, arm6) == before
+
+    def test_scrubbing_meanwhile_still_gets_it_written(self, arm6, builder, modules):
+        """A keyed held joint moves with the frame; the keys the solve read haven't changed."""
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, ROOMY)
+        builder.joint_bones(arm6)[0].kinema_ik_hold = True
+        job = optimize.prepare(bpy.context, arm6)
+        optimize.dispatch(job)
+        bpy.context.scene.frame_set(90)
+
+        written, _, message = optimize.finish(bpy.context, job)
+        assert written, message
 
     def test_an_unexpected_error_ends_the_solve(self, arm6, builder, modules, monkeypatch):
         """Not only a refusal: anything left running keeps the rig marked as optimizing."""
@@ -279,18 +312,8 @@ class TestWhileSolving:
 
         optimize = modules("ops.optimize")
         _job(builder, arm6, ROOMY)
-        operator = optimize.KINEMA_OT_optimize_motion
         reports = []
-        running = type(
-            "Running",
-            (),
-            {
-                "_job": optimize.prepare(bpy.context, arm6),
-                "_timer": None,
-                "_end": operator._end,
-                "report": lambda self, kind, message: reports.append((kind, message)),
-            },
-        )()
+        running = _operator(optimize, optimize.prepare(bpy.context, arm6), reports)
         # Restored afterwards, so a failure here can't leave other tests' rig busy.
         monkeypatch.setattr(optimize, "_running", {arm6.name})
 
@@ -299,9 +322,58 @@ class TestWhileSolving:
 
         monkeypatch.setattr(optimize, "dispatch", broken)
         timer = type("Event", (), {"type": "TIMER", "value": "NOTHING"})()
+        operator = optimize.KINEMA_OT_optimize_motion
         assert operator.modal(running, bpy.context, timer) == {"CANCELLED"}
         assert not optimize.optimizing(arm6)
         assert reports == [({"ERROR"}, "Optimize Motion failed: a shape JAX didn't expect")]
+
+    @pytest.mark.parametrize("fails", ["before writing", "after writing began"])
+    def test_a_failure_once_keys_are_written_still_finishes(
+        self, arm6, builder, modules, monkeypatch, fails
+    ):
+        """Only a finished operator gets an undo step, which is what puts the job back."""
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, ROOMY)
+        before = _keys(modules, arm6)
+        job = optimize.prepare(bpy.context, arm6)
+        optimize.dispatch(job)
+        reports = []
+        running = _operator(optimize, job, reports)
+
+        def broken(*args, **kwargs):
+            raise ValueError("broken")
+
+        if fails == "before writing":
+            monkeypatch.setattr(optimize, "model_signature", broken)
+        else:
+            monkeypatch.setattr(modules("ops.waypoints"), "check_job", broken)
+        result = optimize.KINEMA_OT_optimize_motion._finish(running, bpy.context, job)
+
+        assert reports == [({"ERROR"}, "Optimize Motion failed: broken")]
+        if fails == "before writing":
+            assert result == {"CANCELLED"}
+            assert _keys(modules, arm6) == before
+        else:
+            assert result == {"FINISHED"}
+            assert _keys(modules, arm6) != before, "precondition: keys were written"
+
+
+def _operator(optimize, job, reports):
+    """A stand-in for the running operator: Blender makes the real one only in a window."""
+    operator = optimize.KINEMA_OT_optimize_motion
+    return type(
+        "Running",
+        (),
+        {
+            "_job": job,
+            "_timer": None,
+            "_end": operator._end,
+            "_finish": operator._finish,
+            "report": lambda self, kind, message: reports.append((kind, message)),
+        },
+    )()
 
 
 class TestRefusing:
