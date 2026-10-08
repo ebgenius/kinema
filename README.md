@@ -199,10 +199,19 @@ keeps within the robot's limits. It keeps:
 - held joints, and joints the tool doesn't hang from, where the job has them.
 
 Everything else may change. Within each joint's range, top speed and acceleration limit, it
-takes the smoothest path it can, then keys every joint on every frame with live IK off, so
-the job plays as it was solved, and checks it again. On a KR10 R1100-2 with its own
-`joint_limits.yaml`, a four-waypoint job with joint 2 at three times its acceleration limit
-came back within every limit, solved in 0.2 s once compiled.
+takes the smoothest path it can. Then it keys every free joint on every frame with live IK
+off, so the job plays as it was solved, and checks it again. A free joint is one on the
+chain to the TCP that isn't held.
+- On a KR10 R1100-2 with its own `joint_limits.yaml`, a four-waypoint job with joint 2 at three
+  times its acceleration limit came back within every limit, solved in 0.2 s once compiled.
+- On a KR210 with moves of 100-150 frames at 24 fps, joint 3 was at 7.3 times its
+  acceleration limit where a joint move met a linear one. It came back within every limit,
+  at most 78% of one, solved in 3 s.
+
+A linear move keeps the timing Generate Motion gave it: the tool runs along the line at a
+steady speed, all the way to its ends. The joint moves either side ease into it and out of
+it, but the tool still turns from one direction to the other at the line's ends. Give the line
+more frames to make that gentler.
 
 Where a move hasn't the frames to keep within its limits, it comes out over them by as little
 as the waypoints leave room for, and its row in the Motion Check says about how many frames it
@@ -212,7 +221,9 @@ never retimed.
   first. Generate Motion afterwards replaces it.
 - Acceleration limits come from a `joint_limits.yaml` (Load Joint Limits). Without them, it
   keeps to the speeds and ranges.
-- From the panel it runs while Blender stays live, and Esc abandons it, writing nothing.
+- From the panel it runs while Blender stays live, and Esc abandons it, writing nothing. If the
+  waypoints or the robot change before it finishes (a held joint, a limit, the TCP), it
+  writes nothing either.
 - The first run for a robot and a job length compiles first, which holds Blender up for
   seconds. JAX's compile cache keeps it for the sessions after.
 - It needs the PyRoki solver, whichever solver live IK uses.

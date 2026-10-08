@@ -47,8 +47,12 @@ class TestPadding:
         assert trajectory.bucket(trajectory.BUCKETS[-1]) == trajectory.BUCKETS[-1]
 
     def test_a_job_too_long_for_every_bucket_is_refused(self):
-        with pytest.raises(base.SolverError, match="too long"):
-            trajectory.bucket(trajectory.BUCKETS[-1] + 1)
+        """In the job's own frames: the rest frames either side are the solver's."""
+        rest = 2 * trajectory.REST_FRAMES
+        most = trajectory.BUCKETS[-1] - rest
+        expected = f"a job of {most + 1} frames .* the most is {most}"
+        with pytest.raises(base.SolverError, match=expected):
+            trajectory.bucket(most + 1 + rest)
 
     def test_the_robot_rests_either_side_of_the_job(self):
         """Held at its first and last values, pinned, and nothing asked of the tool."""

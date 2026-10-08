@@ -2,8 +2,9 @@
 
 Under Generate Motion in the Waypoints panel. It plays the job as Generate
 Motion keyed it, solves every frame of it at once (``solver/trajectory.py``),
-and keys the result: every joint on every frame, with live IK keyed off. Then
-it checks the job again, so the Motion Check shows what now plays.
+and keys the result: every free joint on every frame, with live IK keyed off.
+A free joint is one on the chain to the TCP that isn't held. Then it checks
+the job again, so the Motion Check shows what now plays.
 
 **What it keeps.** The tool at each waypoint, in the configuration taught
 there, and on each linear move's line. The first and last frames exactly, with
@@ -12,7 +13,10 @@ joints the tool doesn't hang from, such as a gripper's, stay as the job has
 them.
 
 **What it changes.** The rest, within each joint's range, top speed and
-acceleration limit, as smoothly as those leave room for. A move that can't
+acceleration limit, as smoothly as those leave room for. Not a linear move's
+timing: the line's targets are where Generate Motion put the tool on each
+frame, so it still runs along the line at a steady speed, and the joint moves
+either side ease into it and out of it. A move that can't
 keep within its limits in the frames it has comes out as close as it gets,
 and the Motion Check says about how many frames it needs.
 
@@ -77,6 +81,8 @@ class Job:
     identity: object
     #: The waypoints as they were read, to check they haven't changed since.
     signature: str
+    #: The robot as it was read, likewise: see :func:`model_signature`.
+    model: tuple
     first: int
     last: int
     problem: trajectory.Problem
@@ -134,6 +140,7 @@ def prepare(context, rig) -> Job:
         rig_name=rig.name,
         identity=manager.rig_identity(rig),
         signature=signature,
+        model=model_signature(rig),
         first=first,
         last=last,
         problem=problem,
@@ -142,6 +149,39 @@ def prepare(context, rig) -> Job:
         free=free,
         flagged_before=flagged_before,
     )
+
+
+#: The bone properties a joint's limits are read from.
+_LIMIT_PROPS = (
+    builder.PROP_LOWER, builder.PROP_UPPER, builder.PROP_VELOCITY, builder.PROP_ACCELERATION
+)
+
+
+def model_signature(rig) -> tuple:
+    """What a solve is set up from besides the waypoints, to tell whether it still holds.
+
+    The joints, which of them are held, their limits, and the TCP. Blender stays
+    live while a solve runs, so any of them can change before its result lands,
+    and keying that result would then write a motion solved for another robot.
+    """
+    joints = tuple(
+        (
+            pose_bone.name,
+            bool(getattr(pose_bone, "kinema_ik_hold", False)),
+            tuple(_number(pose_bone.bone.get(key)) for key in _LIMIT_PROPS),
+        )
+        for pose_bone in builder.joint_bones(rig)
+    )
+    tcp = rig.data.bones.get(wp._tool_bone(rig))
+    if tcp is None:
+        return joints, None
+    parent = tcp.parent.name if tcp.parent is not None else ""
+    pose = tuple(_number(value) for row in tcp.matrix_local for value in row)
+    return joints, (tcp.name, parent, pose)
+
+
+def _number(value) -> float | None:
+    return None if value is None else round(float(value), 9)
 
 
 def _model(rig):
@@ -286,10 +326,11 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
         or not builder.is_kinema_rig(rig)
         or manager.rig_identity(rig) != job.identity
         or wp.job_signature(rig) != job.signature
+        or model_signature(rig) != job.model
     ):
         return (
             False, "WARNING",
-            "The job changed while it was being optimized, so nothing was written",
+            "The job or the robot changed while it was being optimized, so nothing was written",
         )
     q, iterations = job.pending.result()
     seconds = time.perf_counter() - job.solve_started
@@ -369,7 +410,7 @@ class KINEMA_OT_optimize_motion(Operator):
     bl_description = (
         "Solve the generated job again as one smooth motion within every joint's "
         "range, speed and acceleration limits, keeping the waypoints and the lines. "
-        "Keys every joint on every frame"
+        "Keys every free joint, on the chain to the TCP and not held, on every frame"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -420,19 +461,26 @@ class KINEMA_OT_optimize_motion(Operator):
             return {"CANCELLED"}
         if event.type != "TIMER":
             return {"PASS_THROUGH"}
+        # Whatever goes wrong, the operator ends: left running, it would keep the
+        # rig marked as optimizing, and the button gone, until the file reloads.
         if job.pending is None:
             try:
                 dispatch(job)
-            except Refused as exc:
+            except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
                 self._end(context)
-                self.report({"ERROR"}, str(exc))
+                failed = str(exc) if isinstance(exc, Refused) else f"Optimize Motion failed: {exc}"
+                self.report({"ERROR"}, failed)
                 return {"CANCELLED"}
             _status(context, "Optimizing motion... Esc to cancel")
             return {"RUNNING_MODAL"}
         if not job.pending.ready():
             return {"PASS_THROUGH"}
         self._end(context)
-        written, kind, message = finish(context, job)
+        try:
+            written, kind, message = finish(context, job)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, f"Optimize Motion failed: {exc}")
+            return {"CANCELLED"}
         self.report({kind}, message)
         return {"FINISHED"} if written else {"CANCELLED"}
 

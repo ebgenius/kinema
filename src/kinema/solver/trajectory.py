@@ -38,6 +38,19 @@ As costs:
   as the waypoints leave room for, with the waypoints within hundredths of a
   millimetre, and the Motion Check says by how much.
 
+**Each step is solved closely enough to reach across a move.** Conjugate
+gradient takes each step inexactly, stopping by default once it has cut its
+residual to 1% of where it started. The pose costs dominate that residual, so
+it stops once the waypoints are met. What eases a joint move into a linear
+one is spread thinly over every frame of the move, and is all still in the
+last 1%. So it was never taken: the steps shrank until jaxls took the solve
+as finished, with the joint over its limit where the move meets the line. On
+a KR210's 400-frame job at 24 fps, joint 3 was left at 3.3 times its
+acceleration limit, a move with 150 frames was said to need 244, and the
+waypoints were 0.2 mm out. At :data:`STEP_TOLERANCE` every move was within its
+limits, at 26-78% of one, with the waypoints within 0.002 mm, in 3.2 s where
+the inexact steps took 0.3.
+
 **One compile per robot and length.** A job is padded to the next of
 :data:`BUCKETS`, with the padding held still, so jobs of 90 and 121 frames share
 a kernel, and an edit to the waypoints only changes the arrays. A kernel holds
@@ -90,17 +103,25 @@ UNLIMITED = 1.0e4
 RANGE_WEIGHT = 1000.0
 #: Iterations at most. A job that has not settled by then is returned as it is.
 MAX_ITERATIONS = 100
+#: How far conjugate gradient cuts its residual for each step, at most, against
+#: jaxls's 1e-2: see the module's docstring. Measured on arm6, with 150-frame
+#: moves at 24 fps either side of a linear one: a joint was left at 2.6 times
+#: its acceleration limit at 1e-2, 1.4 at 1e-3 and 1.6 at 1e-4. At 1e-5 every
+#: move was within its limits, as an exact (dense) step has them; 1e-6 only
+#: took three times as long.
+STEP_TOLERANCE = 1e-5
 #: Compiled kernels kept, the most recently used.
 KEEP = 1
 
 
 def bucket(frames: int) -> int:
-    """The padded length for a problem of ``frames`` frames."""
+    """The padded length for a problem of ``frames`` frames, its rest frames included."""
     for size in BUCKETS:
         if frames <= size:
             return size
+    # The user's job is what they know the length of: the rest frames are ours.
     raise SolverError(
-        f"a job of {frames} frames is too long to optimise; the most is "
+        f"a job of {frames - 2 * REST_FRAMES} frames is too long to optimise; the most is "
         f"{BUCKETS[-1] - 2 * REST_FRAMES}"
     )
 
@@ -258,7 +279,7 @@ class Optimizer:
             problem = jaxls.LeastSquaresProblem(costs=costs, variables=[joint(ids)])
             solution, summary = problem.analyze().solve(
                 initial_vals=jaxls.VarValues.make([joint(ids).with_value(q_init)]),
-                linear_solver="conjugate_gradient",
+                linear_solver=jaxls.ConjugateGradientConfig(tolerance_max=STEP_TOLERANCE),
                 termination=jaxls.TerminationConfig(max_iterations=MAX_ITERATIONS),
                 verbose=self.verbose,
                 return_summary=True,

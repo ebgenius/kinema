@@ -5,9 +5,12 @@ The claims worth holding onto:
   IK off, its waypoints where they were and its linear move on its line;
 - a move without the frames to keep within its limits says about how many it
   needs, and the move before it, with time to spare, doesn't;
+- a long job eases into a linear move and out of it within its limits;
 - a job generated before the waypoints changed, or never generated, is refused,
   with nothing written;
 - held joints keep their keys;
+- a solve that lands after the robot changed (a hold, a limit, the TCP) writes
+  nothing, and one that fails in an unexpected way still ends;
 - Generate Motion afterwards replaces it, as it replaces its own keys;
 - a second run compiles nothing.
 
@@ -43,6 +46,11 @@ ROOMY = (1, 61, 121, 181)
 TIGHT = (1, 61, 121, 166)
 #: The last move, joint 1 turning 1.7 rad, in 30 frames: too few.
 SHORT = (1, 61, 121, 151)
+#: 150-frame moves at 24 fps, under acceleration limits of LONG_ACCELERATION:
+#: the joints are only over where a joint move meets the line, which arrives
+#: and leaves at full speed.
+LONG = (1, 151, 301, 451)
+LONG_ACCELERATION = 0.5
 
 
 @pytest.fixture
@@ -175,6 +183,22 @@ class TestOptimizing:
         assert rows["B"].frames_needed == 0
         assert _waypoint_error_mm(modules, arm6) < 0.05
 
+    def test_a_long_job_eases_into_its_line_and_out_of_it(self, arm6, builder, modules):
+        """Easing in is spread thinly over a move's 150 frames, which an inexact step never took."""
+        import bpy
+
+        bpy.context.scene.render.fps = 24
+        for pose_bone in builder.joint_bones(arm6):
+            pose_bone.bone[builder.PROP_ACCELERATION] = LONG_ACCELERATION
+        modules("solver.manager").refresh_limits(arm6)
+        _job(builder, arm6, LONG)
+        assert _problems(modules, arm6)["B"], "precondition: over where B meets the line"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        problems = _problems(modules, arm6)
+        assert problems == {"B": [], "C": [], "D": []}
+        assert _waypoint_error_mm(modules, arm6) < 0.01
+
     def test_held_joints_keep_their_keys(self, arm6, builder, modules):
         import bpy
 
@@ -214,6 +238,70 @@ class TestOptimizing:
         assert "FINISHED" in bpy.ops.kinema.optimize_motion()
         assert next(iter(trajectory._optimizers.values()))[0] is optimizer
         assert solve._cache_size() == compiled == 1
+
+
+class TestWhileSolving:
+    """Blender stays live while a solve runs, so the rig can change before it lands."""
+
+    @pytest.mark.parametrize(
+        "change",
+        ["hold", "limit", "tcp"],
+    )
+    def test_a_robot_changed_meanwhile_gets_nothing_written(self, arm6, builder, modules, change):
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, ROOMY)
+        before = _keys(modules, arm6)
+        job = optimize.prepare(bpy.context, arm6)
+        optimize.dispatch(job)
+
+        joint = builder.joint_bones(arm6)[2]
+        if change == "hold":
+            joint.kinema_ik_hold = True
+        elif change == "limit":
+            joint.bone[builder.PROP_VELOCITY] = 0.5
+        else:
+            tcp = arm6.data.bones[arm6.get(builder.PROP_TCP_BONE) or builder.TCP_BONE]
+            bpy.context.view_layer.objects.active = arm6
+            bpy.ops.object.mode_set(mode="EDIT")
+            arm6.data.edit_bones[tcp.name].head.z += 0.05
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        written, kind, message = optimize.finish(bpy.context, job)
+        assert (written, kind) == (False, "WARNING")
+        assert "nothing was written" in message
+        assert _keys(modules, arm6) == before
+
+    def test_an_unexpected_error_ends_the_solve(self, arm6, builder, modules, monkeypatch):
+        """Not only a refusal: anything left running keeps the rig marked as optimizing."""
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, ROOMY)
+        operator = optimize.KINEMA_OT_optimize_motion
+        reports = []
+        running = type(
+            "Running",
+            (),
+            {
+                "_job": optimize.prepare(bpy.context, arm6),
+                "_timer": None,
+                "_end": operator._end,
+                "report": lambda self, kind, message: reports.append((kind, message)),
+            },
+        )()
+        # Restored afterwards, so a failure here can't leave other tests' rig busy.
+        monkeypatch.setattr(optimize, "_running", {arm6.name})
+
+        def broken(job):
+            raise ValueError("a shape JAX didn't expect")
+
+        monkeypatch.setattr(optimize, "dispatch", broken)
+        timer = type("Event", (), {"type": "TIMER", "value": "NOTHING"})()
+        assert operator.modal(running, bpy.context, timer) == {"CANCELLED"}
+        assert not optimize.optimizing(arm6)
+        assert reports == [({"ERROR"}, "Optimize Motion failed: a shape JAX didn't expect")]
 
 
 class TestRefusing:
