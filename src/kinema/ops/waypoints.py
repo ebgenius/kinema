@@ -554,6 +554,10 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 rig.keyframe_insert(data_path="kinema_ik_enabled", frame=owned[1])
             _set_linear_interpolation(rig, ik_name)
         rig.kinema_generated_range = owned
+        # What was generated, so Optimize Motion can tell when the keys no
+        # longer follow the waypoints.
+        rig.kinema_generated_job = job_signature(rig)
+        rig.kinema_optimized_job = ""
         context.scene.frame_set(original)
         checks = check_job(context, rig, plan)
         # Kept on the move's row too, so it is still there once the report has
@@ -948,18 +952,43 @@ class KinemaMoveCheck(PropertyGroup):
     turn_note: StringProperty(name="Turn Kept")
     jump_prismatic: BoolProperty(name="Jump Is Linear")
     jump_frame: IntProperty(name="Jump Frame")
+    frames_needed: IntProperty(name="Frames Needed")
 
 
-def check_job(context, rig, plan) -> list[motion_check.MoveCheck]:
+def check_job(context, rig, plan, samples=None) -> list[motion_check.MoveCheck] | None:
     """Play the job once, the way playback does, and measure every move.
 
-    Each frame is set with the handlers live, so live IK solves it with the
-    rig's own backend, from the rig's own keys -- whatever playback would
-    show, including a compile if the solver needs one.
+    ``samples`` is the job already played by :func:`play_job`, to measure that
+    instead of playing it again.
     """
-    scene = context.scene
-    bones = builder.joint_bones(rig)
-    joints = [
+    if samples is None:
+        samples = play_job(context, rig, plan)
+    if samples is None:
+        # Taught with a TCP that has since been deleted: there is nothing to
+        # measure a line against. None, not an empty list, so that no caller
+        # can mistake a job it could not measure for one with nothing wrong.
+        return None
+    joints = check_joints(rig)
+    fps = scene_fps(context.scene)
+    return [
+        motion_check.check_move(
+            span.end.name,
+            span.move,
+            span.start_frame,
+            span.end_frame,
+            np.array(pose_of(span.start), dtype=float),
+            np.array(pose_of(span.end), dtype=float),
+            samples,
+            joints,
+            fps,
+        )
+        for span in plan
+    ]
+
+
+def check_joints(rig) -> list[motion_check.Joint]:
+    """The rig's joints as the check measures them, in rig order, with their limits."""
+    return [
         motion_check.Joint(
             name=pose_bone.name,
             prismatic=pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute")
@@ -969,13 +998,26 @@ def check_job(context, rig, plan) -> list[motion_check.MoveCheck]:
             velocity=limit_of(pose_bone),
             acceleration=acceleration_limit_of(pose_bone),
         )
-        for pose_bone in bones
+        for pose_bone in builder.joint_bones(rig)
     ]
+
+
+def scene_fps(scene) -> float:
+    return scene.render.fps / scene.render.fps_base
+
+
+def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
+    """Every frame of the job as playback shows it, and one either side.
+
+    Each frame is set with the handlers live, so live IK solves it with the
+    rig's own backend, from the rig's own keys -- whatever playback would
+    show, including a compile if the solver needs one. None for a rig with no
+    TCP to read the tool from.
+    """
+    scene = context.scene
+    bones = builder.joint_bones(rig)
     tool = _tool_bone(rig)
     if tool not in rig.pose.bones:
-        # Taught with a TCP that has since been deleted: there is nothing to
-        # measure a line against. None, not an empty list, so that no caller
-        # can mistake a job it could not measure for one with nothing wrong.
         return None
     first, last = plan[0].start_frame, plan[-1].end_frame
 
@@ -1001,22 +1043,23 @@ def check_job(context, rig, plan) -> list[motion_check.MoveCheck]:
     finally:
         window.progress_end()
         scene.frame_set(original)
+    return samples
 
-    fps = scene.render.fps / scene.render.fps_base
-    return [
-        motion_check.check_move(
-            span.end.name,
-            span.move,
-            span.start_frame,
-            span.end_frame,
-            np.array(pose_of(span.start), dtype=float),
-            np.array(pose_of(span.end), dtype=float),
-            samples,
-            joints,
-            fps,
+
+def estimate_frames_needed(context, rig, checks, samples) -> None:
+    """Give each move still over a limit the frames it needs, on a job Optimize Motion wrote.
+
+    Only there: on a job straight from Generate Motion, a linear move changes
+    speed at its waypoints all at once however long it takes, and the estimate
+    would mean nothing (``motion_check.frames_needed``).
+    """
+    if checks is None or rig.kinema_optimized_job != job_signature(rig):
+        return
+    joints, fps = check_joints(rig), scene_fps(context.scene)
+    for index, check in enumerate(checks):
+        check.frames_needed = motion_check.frames_needed(
+            check, samples, joints, fps, index == 0, index == len(checks) - 1
         )
-        for span in plan
-    ]
 
 
 def store_check(rig, checks) -> int:
@@ -1085,7 +1128,9 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
         except WaypointError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        checks = check_job(context, rig, plan)
+        samples = play_job(context, rig, plan)
+        checks = check_job(context, rig, plan, samples=samples)
+        estimate_frames_needed(context, rig, checks, samples)
         flagged = store_check(rig, checks)
         if checks is None:
             self.report(
@@ -1220,6 +1265,19 @@ def register_props() -> None:
         size=2,
         default=(0, -1),
     )
+    # The waypoints that range was generated from, as job_signature() saw them.
+    bpy.types.Object.kinema_generated_job = StringProperty(
+        name="Generated Job",
+        description="Fingerprint of the waypoints the last Generate Motion keyed",
+        default="",
+    )
+    # The same, for the job as Optimize Motion last wrote it: Check Again
+    # estimates the frames a move needs only there.
+    bpy.types.Object.kinema_optimized_job = StringProperty(
+        name="Optimized Job",
+        description="Fingerprint of the waypoints the last Optimize Motion keyed",
+        default="",
+    )
     bpy.types.Object.kinema_active_waypoint = IntProperty(
         name="Active Waypoint",
         description="Row highlighted in the Waypoints list",
@@ -1233,4 +1291,6 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_motion_check
     del bpy.types.Object.kinema_motion_check_job
     del bpy.types.Object.kinema_generated_range
+    del bpy.types.Object.kinema_generated_job
+    del bpy.types.Object.kinema_optimized_job
     del bpy.types.Object.kinema_active_waypoint

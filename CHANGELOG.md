@@ -54,6 +54,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Each of these is a preference, with a Reset. A Kinema tab in the Graph Editor's sidebar
   sets the view up again, or puts back Blender's defaults.
+- **Optimize Motion**, under Generate Motion (#45). It solves the generated job again as one
+  motion within every joint's range, top speed and acceleration limit. It keeps the
+  waypoints, the configuration taught at each and every linear move's line. It keys every free
+  joint, on the chain to the TCP and not held, on every frame with live IK off.
+  - A move without the frames to keep within its limits comes out over them by as little as
+    the waypoints allow, and the Motion Check says about how many frames it needs.
+  - It runs while Blender stays live, and Esc abandons it. The first run for a robot and a
+    job length compiles first, for seconds. If the waypoints or the robot change while it
+    runs, it writes nothing.
+  - A linear move keeps its steady speed along the line; the joint moves either side ease into
+    it and out of it.
+  - Measured on a KR10 R1100-2 with its own `joint_limits.yaml`: a job with joint 2 at three
+    times its acceleration limit came back within every limit, solved in 0.2 s once
+    compiled.
 
 ### Changed
 

@@ -104,6 +104,10 @@ class MoveCheck:
     #: taught a whole turn from where the line arrives keeps the turn it
     #: arrives with, and this says which joint and by how much.
     turn_note: str = ""
+    #: Set by Optimize Motion from this check: about how many frames the move
+    #: needs to keep within its limits, where it can't in those it has. 0 when
+    #: not worked out. See :func:`frames_needed`.
+    frames_needed: int = 0
 
 
 def check_move(
@@ -221,6 +225,9 @@ def problems(check) -> list[str]:
         found.append(
             f"{check.accel_joint} at {accel_ratio * 100:.0f}% of its acceleration limit"
         )
+    needed = getattr(check, "frames_needed", 0)
+    if needed and needed > check.end_frame - check.start_frame:
+        found.append(f"needs about {needed} frames, has {check.end_frame - check.start_frame}")
     threshold = JUMP_PRISMATIC if check.jump_prismatic else JUMP_REVOLUTE
     if check.jump > threshold:
         amount = (
@@ -230,6 +237,34 @@ def problems(check) -> list[str]:
         )
         found.append(f"{check.jump_joint} jumps {amount} at frame {check.jump_frame}")
     return found
+
+
+def frames_needed(check, samples, joints, fps, starts_job: bool, ends_job: bool) -> int:
+    """About how many frames a move needs to keep within its speed and acceleration limits.
+
+    The move slowed down evenly: its speeds fall with the time it takes, and its
+    accelerations with the square of it. That holds for a path that keeps its
+    shape, so it's a fair estimate for a move solved smooth, as Optimize Motion
+    solves it, and none for a job straight from Generate Motion. There, a
+    linear move changes speed at its waypoints all at once, however long it
+    takes.
+
+    Only the move's own frames count. A waypoint between two moves is where
+    the faster one's speed takes over, and the check reports it in both; a move
+    with time to spare would be asked for frames it doesn't need. Its first and
+    last frames count where they start or end the job, which only this move
+    can start or stop. 0 for a move already within its limits.
+    """
+    frames = check.end_frame - check.start_frame
+    first = check.start_frame if starts_job else check.start_frame + 1
+    last = check.end_frame if ends_job else check.end_frame - 1
+    own = [sample for sample in samples if first <= sample.frame <= last]
+    inner, _ = _hardest_acceleration(samples, first, last, joints, fps) if own else (0.0, "")
+    scale = max(check.speed_ratio, math.sqrt(inner))
+    if frames <= 0 or scale <= 1.0 + SPEED_TOLERANCE:
+        return 0
+    # Less a hair, so a ratio of 1.5 read back as 1.5000001 asks for 30 frames, not 31.
+    return math.ceil(frames * scale - 1e-6)
 
 
 # --------------------------------------------------------------------------
