@@ -139,19 +139,75 @@ def _surface(mesh, matrix: np.ndarray) -> np.ndarray:
 
 
 def source_signature(rig) -> str:
-    """A fingerprint of the meshes the capsules are fitted to, where they sit on their bones."""
+    """A fingerprint of the meshes the capsules are fitted to: their shapes, and where
+    they sit on their bones.
+
+    The vertices themselves, not only how many: a mesh reshaped in Edit Mode
+    keeps its count and its transform, and the capsules would no longer bound it.
+    """
     digest = hashlib.sha1()
     for bone, objects in sorted(link_meshes(rig).items()):
-        pose_bone = rig.pose.bones[bone]
-        to_bone = (rig.matrix_world @ pose_bone.matrix).inverted_safe()
         for obj in sorted(objects, key=lambda o: o.name):
-            placed = to_bone @ obj.matrix_world
-            size = len(obj.data.vertices) if obj.type == "MESH" else len(
-                obj.instance_collection.all_objects
-            )
-            digest.update(f"{bone}|{obj.name}|{size}|".encode())
-            digest.update(np.round(np.array(placed), 6).tobytes())
+            digest.update(f"{bone}|{obj.name}|".encode())
+            # Where it sits on the bone, from what puts it there and nothing
+            # posed: read off the posed bone, float32 differs in the sixth
+            # decimal from one pose to the next, and playing the job would read
+            # as a change.
+            placed = obj.matrix_parent_inverse @ obj.matrix_basis
+            digest.update(np.round(np.array(placed), 5).tobytes())
+            if obj.type == "MESH":
+                _hash_mesh(digest, obj)
+            else:
+                for part in sorted(obj.instance_collection.all_objects, key=lambda o: o.name):
+                    digest.update(f"{part.name}|".encode())
+                    digest.update(np.round(np.array(part.matrix_world), 6).tobytes())
+                    if part.type == "MESH":
+                        _hash_mesh(digest, part)
     return digest.hexdigest()
+
+
+def _hash_mesh(digest, obj) -> None:
+    digest.update(_mesh_digest(obj.data))
+
+
+#: Bumped whenever Blender reports a mesh's geometry has changed, by
+#: :func:`note_updates`. Hashing every vertex of a robot takes about 10 ms, and
+#: the panel asks on every redraw, through playback too; a mesh's hash is only
+#: worked out again once some mesh has changed.
+_generation = 0
+#: Mesh name -> (the generation it was hashed in, its hash).
+_mesh_hashes: dict[str, tuple[int, bytes]] = {}
+
+
+def _mesh_digest(mesh) -> bytes:
+    cached = _mesh_hashes.get(mesh.name)
+    if cached is not None and cached[0] == _generation:
+        return cached[1]
+    flat = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", flat)
+    # To a tenth of a millimetre: float noise in a mesh untouched isn't a change.
+    found = hashlib.sha1(np.round(flat, 4).tobytes()).digest()
+    _mesh_hashes[mesh.name] = (_generation, found)
+    return found
+
+
+def note_updates(depsgraph) -> None:
+    """A depsgraph update: whether any mesh's geometry changed in it.
+
+    Moving, posing and playing don't change a mesh's geometry, only where it is.
+    """
+    global _generation
+    for update in depsgraph.updates:
+        if update.is_updated_geometry and isinstance(update.id, bpy.types.Mesh):
+            _generation += 1
+            return
+
+
+def forget() -> None:
+    """A new file: its meshes share names, not shapes, with the last one's."""
+    global _generation
+    _generation += 1
+    _mesh_hashes.clear()
 
 
 def capsules_of(rig) -> list[geometry.Capsule]:
@@ -175,6 +231,23 @@ def capsule_ends(rig, capsules) -> tuple[np.ndarray, np.ndarray]:
     a = np.array([placed[c.bone][:3, :3] @ c.a + placed[c.bone][:3, 3] for c in capsules])
     b = np.array([placed[c.bone][:3, :3] @ c.b + placed[c.bone][:3, 3] for c in capsules])
     return a, b
+
+
+def closest_approach(rig):
+    """The stored check's closest approach to an obstacle over the job, if it is current.
+
+    None when no move was measured, or when the waypoints have changed since the
+    check: then it describes another job.
+    """
+    from .waypoints import job_signature
+
+    if rig.kinema_motion_check_job != job_signature(rig):
+        return None
+    return min(
+        (check for check in rig.kinema_motion_check if check.clearance_obstacle),
+        key=lambda check: check.clearance,
+        default=None,
+    )
 
 
 def capsules_stale(rig) -> bool:
@@ -262,19 +335,38 @@ def obstacle_of(obj) -> geometry.Obstacle:
     """``obj`` as the shape its Obstacle setting makes it."""
     kind = getattr(obj, "kinema_obstacle_shape", geometry.KIND_BOX)
     world = obj.matrix_world
-    location, rotation, scale = world.decompose()
+    location, rotation, _ = world.decompose()
+    linear = np.array(world.to_3x3())
     turned = np.eye(4)
     turned[:3, :3] = np.array(rotation.to_matrix())
     if kind == geometry.KIND_FLOOR:
+        # The plane its own X and Y span, however a parent has sheared them.
+        normal = np.cross(linear[:, 0], linear[:, 1])
+        if np.linalg.norm(normal) > 0.0:
+            turned[:3, :3] = _frame_with_z(normal / np.linalg.norm(normal))
         turned[:3, 3] = location
         return geometry.Obstacle(obj.name, kind, turned, np.zeros(3))
     low, high = _local_bounds(obj)
+    local_half = (high - low) / 2.0
     centre = np.array(world @ _vector((low + high) / 2.0))
-    half = (high - low) / 2.0 * np.abs(np.array(scale))
     turned[:3, 3] = centre
     if kind == geometry.KIND_SPHERE:
-        return geometry.Obstacle(obj.name, kind, turned, np.array([float(half.max())]))
+        # As far as its own surface reaches, however it is stretched.
+        radius = float(np.linalg.norm(linear, 2) * local_half.max())
+        return geometry.Obstacle(obj.name, kind, turned, np.array([radius]))
+    # Square to its rotation, wide enough for every corner of what it is: a
+    # parent scaled unevenly and turned shears the box, and the shear has to be
+    # inside the box measured, not cut off.
+    in_frame = np.array(rotation.to_matrix()).T @ linear
+    half = np.abs(in_frame) @ local_half
     return geometry.Obstacle(obj.name, geometry.KIND_BOX, turned, half)
+
+
+def _frame_with_z(z: np.ndarray) -> np.ndarray:
+    helper = np.array([1.0, 0.0, 0.0]) if abs(z[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    x = np.cross(helper, z)
+    x /= np.linalg.norm(x)
+    return np.column_stack([x, np.cross(z, x), z])
 
 
 def _local_bounds(obj) -> tuple[np.ndarray, np.ndarray]:

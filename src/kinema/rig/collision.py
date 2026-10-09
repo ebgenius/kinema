@@ -10,7 +10,7 @@ narrowest cylinder around it (trimesh's ``minimum_cylinder``, the fit PyRoki's
 ``Capsule.from_trimesh`` uses), capped at each end. More capsules fit tighter
 and cost more in every solve; it takes the fewest that come within
 :data:`SLACK` of the tightest of up to :data:`MAX_PARTS`. On that KR210: 3 on
-the forearm (368 mm at most), 13 on the whole arm.
+the forearm (341 mm at most), 10 on the whole arm.
 
 Each capsule is kept in its bone's frame, as the segment between two points
 and a radius. Blender places the bone on every frame, so the capsules move

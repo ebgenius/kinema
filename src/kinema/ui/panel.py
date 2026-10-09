@@ -788,11 +788,7 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
         if active is not None and active in objects:
             layout.prop(active, "kinema_obstacle_shape", text=active.name)
 
-        closest = min(
-            (check for check in rig.kinema_motion_check if check.clearance_obstacle),
-            key=lambda check: check.clearance,
-            default=None,
-        )
+        closest = collision.closest_approach(rig)
         if closest is not None:
             layout.separator()
             layout.label(

@@ -141,6 +141,26 @@ class TestCapsules:
         _fit(arm6)
         assert not collision.capsules_stale(arm6)
 
+    def test_posing_the_arm_is_no_change(self, arm6, builder, modules):
+        """Playing the job moves every mesh, and changes none of them."""
+        collision = modules("ops.collision")
+        _fit(arm6)
+        for q in (TURNED, HOME * 0.5, TURNED * -0.7):
+            _set_q(builder, arm6, q)
+            assert not collision.capsules_stale(arm6)
+
+    def test_reshaping_a_mesh_makes_them_stale(self, arm6, modules):
+        """As Edit Mode does: the same vertices, as many, one of them moved."""
+        import bpy
+
+        collision = modules("ops.collision")
+        _fit(arm6)
+        mesh = next(iter(collision.link_meshes(arm6).values()))[0].data
+        mesh.vertices[0].co.x += 0.05
+        mesh.update()
+        bpy.context.view_layer.update()
+        assert collision.capsules_stale(arm6)
+
 
 class TestWhatALinkIs:
     @staticmethod
@@ -233,6 +253,35 @@ class TestObstacles:
         assert found["Ground"].kind == "FLOOR"
         np.testing.assert_allclose(found["Ground"].matrix[:3, 2], (0.0, 0.0, 1.0), atol=1e-6)
 
+    @pytest.mark.parametrize("shape", ["BOX", "SPHERE"])
+    def test_a_sheared_obstacle_is_inside_what_is_measured(self, arm6, modules, shape):
+        """Turned under a parent scaled unevenly, a cube is no longer a box: all of it counts."""
+        import bpy
+        from mathutils import Vector
+
+        collision, geometry = modules("ops.collision"), modules("rig.collision")
+        parent = bpy.data.objects.new("Stretch", None)
+        bpy.context.scene.collection.objects.link(parent)
+        parent.scale = (2.0, 1.0, 1.0)
+        turned = (0.0, 0.0, 0.785)
+        cube = _obstacle("Sheared", (0.0, 0.0, 0.0), size=1.0, shape=shape, rotation=turned)
+        cube.parent = parent
+        bpy.context.view_layer.update()
+        (obstacle,) = collision.obstacles(bpy.context)
+        world = np.array([cube.matrix_world @ v.co for v in cube.data.vertices])
+        if shape == "BOX":
+            local = (world - obstacle.matrix[:3, 3]) @ obstacle.matrix[:3, :3]
+            assert geometry.box_sdf(local, obstacle.size).max() <= 1e-6
+        else:
+            # The ball inside the cube, stretched: furthest along the stretch,
+            # which runs between the cube's own axes.
+            directions = np.random.default_rng(0).normal(size=(2000, 3))
+            directions /= np.linalg.norm(directions, axis=1)[:, None]
+            centre = Vector(obstacle.matrix[:3, 3])
+            reach = [(cube.matrix_world @ Vector(d) - centre).length for d in directions]
+            assert max(reach) <= float(obstacle.size[0]) + 1e-6
+            assert max(reach) > 1.95, "precondition: stretched to 2 across the cube's axes"
+
     def test_removing_one_keeps_it_in_the_scene(self, arm6, modules):
         import bpy
 
@@ -273,14 +322,19 @@ class TestChecking:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
 
     def _halfway(self, arm6, builder, modules, frame=16):
-        """Where the middle of the first capsule is on ``frame``."""
+        """The capsule furthest down the arm, and where its middle is on ``frame``.
+
+        The forearm's: no other link's capsule reaches its middle.
+        """
         import bpy
 
         collision = modules("ops.collision")
         bpy.context.scene.frame_set(frame)
         capsules = collision.capsules_of(arm6)
+        order = [pose_bone.name for pose_bone in builder.joint_bones(arm6)]
+        index = max(range(len(capsules)), key=lambda i: order.index(capsules[i].bone))
         a, b = collision.capsule_ends(arm6, capsules)
-        return capsules[0], (a[0] + b[0]) / 2.0
+        return capsules[index], (a[index] + b[index]) / 2.0
 
     def test_a_link_hitting_an_obstacle_is_named_with_the_frame(self, arm6, builder, modules):
         import bpy
@@ -293,11 +347,14 @@ class TestChecking:
         assert "FINISHED" in bpy.ops.kinema.check_motion()
 
         row = arm6.kinema_motion_check[0]
-        assert row.clearance_obstacle == "Post"
-        assert row.clearance < -capsule.radius
-        assert row.clearance_bone == capsule.bone or row.clearance < 0.0
-        problems = modules("rig.motion_check").problems(row)
-        assert any("hits Post by" in found and "at frame" in found for found in problems)
+        # Deepest where the capsule's axis runs through the post's centre.
+        assert (row.clearance_obstacle, row.clearance_bone, row.clearance_frame) == (
+            "Post", capsule.bone, 16
+        )
+        assert row.clearance == pytest.approx(-(capsule.radius + 0.02), abs=1e-4)
+        depth = (capsule.radius + 0.02) * 1000
+        expected = f"{capsule.bone} hits Post by {depth:.0f} mm at frame 16"
+        assert expected in modules("rig.motion_check").problems(row)
 
     def test_a_job_clear_of_everything_passes(self, arm6, builder, modules):
         import bpy
@@ -319,6 +376,22 @@ class TestChecking:
         bpy.context.view_layer.objects.active = arm6
         assert "FINISHED" in bpy.ops.kinema.check_motion()
         assert arm6.kinema_motion_check[0].clearance_obstacle == ""
+
+
+class TestThePanel:
+    def test_the_closest_approach_is_shown_only_for_the_job_checked(self, arm6, builder, modules):
+        import bpy
+
+        collision = modules("ops.collision")
+        TestChecking()._job(arm6, builder, modules)
+        _fit(arm6)
+        _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert collision.closest_approach(arm6).clearance_obstacle == "FarAway"
+
+        arm6.kinema_waypoints[1].frame = 41
+        assert collision.closest_approach(arm6) is None
 
 
 class TestOverlay:
