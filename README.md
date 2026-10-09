@@ -306,6 +306,42 @@ kind by kind:
 MJCF has no velocity or acceleration limits, so an MJCF rig only gets them from such a file.
 Its effort limits come from each joint's `actuatorfrcrange`.
 
+## Checking for collisions
+
+The Motion Check also measures how close the robot comes to what stands in its way, on every
+frame of the job. Both sides are simple shapes, so the distances are exact and quick. The
+**Collision** panel sets them up.
+
+**The robot is a set of capsules.** **Fit Capsules** fits them round the meshes on each joint
+bone, and on the TCP for an attached tool:
+- a link's imported collision meshes where it has them, otherwise what the link shows;
+- each link split into up to four capsules, the fewest that come close to the tightest fit,
+  so an L-shaped link isn't one fat capsule. On a KR210 the forearm gets three, at most
+  341 mm in radius where one would be 824 mm, and the whole arm ten, fitted in 5.5 s;
+- every point of the meshes inside them;
+- not the base, which stands on whatever floor there is.
+
+They are kept on the rig and move with it, however the job plays. After changing a link's
+meshes or tool, the panel says so: **Fit Again**.
+
+**Obstacles are the objects in the *Kinema Obstacles* collection.** **Add Selected** puts the
+selected objects there. Each is measured as one of three shapes, chosen in the panel:
+- **Box**, the default: the object's own bounds, turned and placed as it stands. Tight for
+  anything modelled along its own axes;
+- **Sphere**: a ball the size of its largest half-extent;
+- **Floor**: everything below the plane through its origin, square to its Z axis.
+
+A complicated fixture is a few of them. Obstacles are read on every frame, so one that moves
+is measured where it is.
+
+**The check** names, for each move, the link that came closest, to which obstacle, and on
+which frame. A link reaching into an obstacle is flagged: "joint_3 hits Fixture by 40 mm at
+frame 134". The panel shows the closest approach over the whole job. **Show Collision
+Shapes** draws the capsules and obstacles as the check sees them, red where they touch on the
+current frame. That's the way to see a capsule that fits its link badly.
+
+Self-collision, and steering Optimize Motion clear of obstacles, are still to come.
+
 ## Choosing how the arm reaches
 
 A six-axis arm can put its tool in one place up to eight different ways — elbow bent one way

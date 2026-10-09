@@ -68,6 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Measured on a KR10 R1100-2 with its own `joint_limits.yaml`: a job with joint 2 at three
     times its acceleration limit came back within every limit, solved in 0.2 s once
     compiled.
+- **Collision checking**, in a new Collision panel. The Motion Check measures how close the
+  robot comes to the obstacles on every frame, and flags a link that hits one, with the frame.
+  - **Fit Capsules** fits up to four capsules round each link's meshes: its collision meshes,
+    or what it shows, an attached tool included. On a KR210, ten for the arm, the forearm's
+    341 mm in radius at most, where one capsule would be 824 mm.
+  - Obstacles are the objects in a *Kinema Obstacles* collection, each a box, a sphere or a
+    floor.
+  - **Show Collision Shapes** draws what the check measures, red where it touches.
 
 ### Changed
 

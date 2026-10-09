@@ -13,7 +13,9 @@ line per move:
   waypoint at each end included, where a move keyed LINEAR changes speed at
   once;
 * the largest jump any joint made between two frames, which is how a
-  configuration flip shows up.
+  configuration flip shows up;
+* where the robot came closest to an obstacle, or into it: which capsule's
+  bone, which obstacle, on which frame (``rig/collision.py``).
 
 Deliberately free of ``bpy``, like ``rig/velocity.py``. Stepping the frames and
 reading the rig live in ``ops/waypoints.py``.
@@ -30,6 +32,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import collision
 from .velocity import TOLERANCE as SPEED_TOLERANCE
 from .velocity import acceleration
 from .waypoints import MOVE_LINEAR
@@ -75,6 +78,10 @@ class Sample:
     q: np.ndarray
     #: Tool pose in rig space, 4x4.
     tool: np.ndarray
+    #: The robot's capsules' ends in world space, (C, 2, 3); None with none fitted.
+    segments: np.ndarray | None = None
+    #: The obstacles as they stood on this frame, in world space.
+    obstacles: tuple = ()
 
 
 @dataclass
@@ -108,6 +115,13 @@ class MoveCheck:
     #: needs to keep within its limits, where it can't in those it has. 0 when
     #: not worked out. See :func:`frames_needed`.
     frames_needed: int = 0
+    #: The least clearance between the robot and an obstacle, in metres:
+    #: negative where it reached into one. Only measured with capsules and
+    #: obstacles both there, which an empty obstacle name says it wasn't.
+    clearance: float = 0.0
+    clearance_bone: str = ""
+    clearance_obstacle: str = ""
+    clearance_frame: int = 0
 
 
 def check_move(
@@ -120,10 +134,13 @@ def check_move(
     samples: list[Sample],
     joints: list[Joint],
     fps: float,
+    capsules: tuple = (),
 ) -> MoveCheck:
     """Findings for the move from ``start_frame`` to ``end_frame``, both inclusive.
 
     ``samples`` may cover more than the move; only its own frames are read.
+    ``capsules`` are the robot's, in the order of each sample's segments: what
+    the clearance is measured with.
     """
     own = sorted(
         (s for s in samples if start_frame <= s.frame <= end_frame),
@@ -172,7 +189,26 @@ def check_move(
     result.accel_ratio, result.accel_joint = _hardest_acceleration(
         samples, start_frame, end_frame, joints, fps
     )
+    _closest_approach(result, own, capsules)
     return result
+
+
+def _closest_approach(result: MoveCheck, own: list[Sample], capsules) -> None:
+    """Where the robot came closest to an obstacle over the move's own frames."""
+    radii = np.array([capsule.radius for capsule in capsules], dtype=float)
+    for sample in own:
+        if sample.segments is None or not len(radii) or not sample.obstacles:
+            continue
+        found = collision.clearances(
+            sample.segments[:, 0], sample.segments[:, 1], radii, list(sample.obstacles)
+        )
+        which = np.unravel_index(int(np.argmin(found)), found.shape)
+        least = float(found[which])
+        if not result.clearance_obstacle or least < result.clearance:
+            result.clearance = least
+            result.clearance_bone = capsules[which[0]].bone
+            result.clearance_obstacle = sample.obstacles[which[1]].name
+            result.clearance_frame = int(sample.frame)
 
 
 def _hardest_acceleration(samples, start_frame, end_frame, joints, fps) -> tuple[float, str]:
@@ -228,6 +264,15 @@ def problems(check) -> list[str]:
     needed = getattr(check, "frames_needed", 0)
     if needed and needed > check.end_frame - check.start_frame:
         found.append(f"needs about {needed} frames, has {check.end_frame - check.start_frame}")
+    if getattr(check, "clearance_obstacle", "") and check.clearance < 0.0:
+        depth = -check.clearance * 1000
+        found.append(
+            f"{check.clearance_bone} hits {check.clearance_obstacle} by "
+            f"{depth:.0f} mm at frame {check.clearance_frame}"
+            if depth >= 10
+            else f"{check.clearance_bone} hits {check.clearance_obstacle} by "
+            f"{depth:.1f} mm at frame {check.clearance_frame}"
+        )
     threshold = JUMP_PRISMATIC if check.jump_prismatic else JUMP_REVOLUTE
     if check.jump > threshold:
         amount = (
