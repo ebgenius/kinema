@@ -143,7 +143,7 @@ def prepare(context, rig) -> Job:
         rig_name=rig.name,
         identity=manager.rig_identity(rig),
         signature=signature,
-        model=model_signature(rig),
+        model=model_signature(rig, context.scene),
         first=first,
         last=last,
         problem=problem,
@@ -160,14 +160,16 @@ _LIMIT_PROPS = (
 )
 
 
-def model_signature(rig) -> tuple:
+def model_signature(rig, scene) -> tuple:
     """What a solve is set up from besides the waypoints, to tell whether it still holds.
 
-    The joints, which of them are held, their limits, and the TCP; and where
-    the bones the solve doesn't move are: each held joint, and Root, which
-    places the whole robot. Blender stays live while a solve runs, so any of
-    them can change before its result lands, and keying that result would then
-    write a motion solved for another robot, or for one standing elsewhere.
+    The joints, which of them are held, their limits, and the TCP; where the
+    bones the solve doesn't move are: each held joint, and Root, which places
+    the whole robot; and the frame rate, which every speed and acceleration is
+    measured by. Blender stays live while a solve runs, so any of them can
+    change before its result lands, and keying that result would then write a
+    motion solved for another robot, for one standing elsewhere, or for frames
+    of another length.
     """
     bones = builder.joint_bones(rig)
     joints = tuple(
@@ -183,12 +185,13 @@ def model_signature(rig) -> tuple:
     if root is not None:
         unmoved.append(root)
     placed = tuple((pose_bone.name, _placement(rig, pose_bone)) for pose_bone in unmoved)
+    fps = _number(wp.scene_fps(scene))
     tcp = rig.data.bones.get(wp._tool_bone(rig))
     if tcp is None:
-        return joints, placed, None
+        return joints, placed, fps, None
     parent = tcp.parent.name if tcp.parent is not None else ""
     pose = tuple(_number(value) for row in tcp.matrix_local for value in row)
-    return joints, placed, (tcp.name, parent, pose)
+    return joints, placed, fps, (tcp.name, parent, pose)
 
 
 def _placement(rig, pose_bone) -> tuple:
@@ -362,7 +365,7 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
         or not builder.is_kinema_rig(rig)
         or manager.rig_identity(rig) != job.identity
         or wp.job_signature(rig) != job.signature
-        or model_signature(rig) != job.model
+        or model_signature(rig, context.scene) != job.model
     ):
         return (
             False, "WARNING",

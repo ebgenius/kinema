@@ -11,7 +11,7 @@ The claims worth holding onto:
 - Check Again on an optimized job still says how many frames a move needs;
 - held joints keep their keys;
 - a solve that lands after the robot changed (a hold, a limit, the TCP, a held
-  joint, Root) writes nothing, though scrubbing the timeline meanwhile doesn't
+  joint, Root) or the frame rate did writes nothing, though scrubbing the timeline meanwhile doesn't
   count; one that fails in an unexpected way still ends, and once it has begun
   writing keys it ends in an undo step;
 - Generate Motion afterwards replaces it, as it replaces its own keys;
@@ -265,7 +265,15 @@ class TestWhileSolving:
 
     @pytest.mark.parametrize(
         "change",
-        ["hold", "limit", "tcp", "held joint dragged", "held joint's keys edited", "root posed"],
+        [
+            "hold",
+            "limit",
+            "tcp",
+            "held joint dragged",
+            "held joint's keys edited",
+            "root posed",
+            "frame rate",
+        ],
     )
     def test_a_robot_changed_meanwhile_gets_nothing_written(self, arm6, builder, modules, change):
         import bpy
@@ -302,8 +310,10 @@ class TestWhileSolving:
             held.rotation_euler[1] += 0.1
         elif change == "held joint's keys edited":
             modules("ops.ik").joint_curves(arm6)[held.name].keyframe_points[1].co.y += 0.1
-        else:
+        elif change == "root posed":
             arm6.pose.bones[builder.ROOT_BONE].location.x += 0.05
+        else:
+            bpy.context.scene.render.fps = 24
 
         written, kind, message = optimize.finish(bpy.context, job)
         assert (written, kind) == (False, "WARNING")

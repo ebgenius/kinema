@@ -224,8 +224,8 @@ never retimed.
   keeps to the speeds and ranges.
 - From the panel it runs while Blender stays live, and Esc abandons it, writing nothing. If the
   waypoints or the robot change before it finishes, it writes nothing either: a joint held or
-  released, a held joint moved or its keys edited, a limit, the TCP, or Root's pose. Scrubbing
-  the timeline meanwhile is fine.
+  released, a held joint moved or its keys edited, a limit, the TCP, Root's pose, or the frame
+  rate. Scrubbing the timeline meanwhile is fine.
 - The first run for a robot and a job length compiles first, which holds Blender up for
   seconds. JAX's compile cache keeps it for the sessions after.
 - It needs the PyRoki solver, whichever solver live IK uses.
