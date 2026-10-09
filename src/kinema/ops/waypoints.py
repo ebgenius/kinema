@@ -83,6 +83,7 @@ from ..rig.waypoints import MOVE_JOINT, MOVE_LINEAR, WaypointError, spans
 from ..solver import branches, manager, numpy_backend
 from ..solver.chain import chain_from_rig
 from ..ui.panel import active_rig
+from . import collision as collision_ops
 from .ik import key_joint_value, own_fcurve_containers
 from .velocity import acceleration_limit_of, joint_value, limit_of
 
@@ -953,6 +954,10 @@ class KinemaMoveCheck(PropertyGroup):
     jump_prismatic: BoolProperty(name="Jump Is Linear")
     jump_frame: IntProperty(name="Jump Frame")
     frames_needed: IntProperty(name="Frames Needed")
+    clearance: FloatProperty(name="Clearance", unit="LENGTH")
+    clearance_bone: StringProperty(name="Closest Link")
+    clearance_obstacle: StringProperty(name="Closest Obstacle")
+    clearance_frame: IntProperty(name="Closest Frame")
 
 
 def check_job(context, rig, plan, samples=None) -> list[motion_check.MoveCheck] | None:
@@ -970,6 +975,7 @@ def check_job(context, rig, plan, samples=None) -> list[motion_check.MoveCheck] 
         return None
     joints = check_joints(rig)
     fps = scene_fps(context.scene)
+    capsules = tuple(collision_ops.capsules_of(rig))
     return [
         motion_check.check_move(
             span.end.name,
@@ -981,6 +987,7 @@ def check_job(context, rig, plan, samples=None) -> list[motion_check.MoveCheck] 
             samples,
             joints,
             fps,
+            capsules,
         )
         for span in plan
     ]
@@ -1026,17 +1033,28 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
     # sets off or stops at speed changes it all at once.
     samples = []
     original = scene.frame_current
+    # Where the robot is against the obstacles is read as it plays too, where
+    # there are both capsules and obstacles to measure.
+    capsules = collision_ops.capsules_of(rig)
+    measured = bool(capsules) and bool(collision_ops.obstacle_objects(scene))
     window = context.window_manager
     window.progress_begin(first - 1, last + 1)
     try:
         for frame in range(first - 1, last + 2):
             scene.frame_set(frame)
             context.view_layer.update()
+            segments, obstacles = None, ()
+            if measured:
+                a, b = collision_ops.capsule_ends(rig, capsules)
+                segments = np.stack([a, b], axis=1)
+                obstacles = tuple(collision_ops.obstacles(context))
             samples.append(
                 motion_check.Sample(
                     frame=frame,
                     q=np.array([joint_value(pose_bone) for pose_bone in bones]),
                     tool=np.array(rig.pose.bones[tool].matrix, dtype=float),
+                    segments=segments,
+                    obstacles=obstacles,
                 )
             )
             window.progress_update(frame)
