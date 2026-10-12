@@ -83,6 +83,14 @@ class KinemaSceneProps(PropertyGroup):
         ),
         default=False,
     )
+    show_collision: BoolProperty(
+        name="Show Collision Shapes",
+        description=(
+            "Draw the robot's capsules and the obstacles as the Motion Check measures "
+            "them, red where they touch"
+        ),
+        default=True,
+    )
     # Blender reads properties from a class's own __annotations__ and does not
     # walk base classes, so the shared definitions are merged in rather than
     # inherited. Same trick the import operators use.
@@ -699,6 +707,7 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         return rig is not None and len(rig.kinema_waypoints) > 1
 
     def draw(self, context: bpy.types.Context) -> None:
+        from ..ops import collision
         from ..ops.waypoints import job_signature
         from ..rig.motion_check import problems
 
@@ -717,6 +726,10 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         # findings about a job since edited from passing as current.
         if rig.kinema_motion_check_job != job_signature(rig):
             layout.label(text="The waypoints have changed since this check", icon="ERROR")
+        elif not collision.check_measured_this(rig, context.scene):
+            layout.label(
+                text="The obstacles or capsules have changed since this check", icon="ERROR"
+            )
 
         column = layout.column(align=True)
         for check in checks:
@@ -731,6 +744,67 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
                 row = column.row()
                 row.separator(factor=2.0)
                 row.label(text=problem)
+
+
+class KINEMA_PT_collision(KinemaPanelBase, Panel):
+    """The robot's capsules and the obstacles the Motion Check measures it against."""
+
+    bl_idname = "KINEMA_PT_collision"
+    bl_parent_id = "KINEMA_PT_main"
+    bl_label = "Collision"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from ..ops import collision
+
+        layout = self.layout
+        rig = active_rig(context)
+        capsules = rig.kinema_capsules
+
+        layout.label(text="Robot")
+        layout.operator(
+            "kinema.fit_capsules",
+            text="Fit Again" if len(capsules) else "Fit Capsules",
+            icon="MESH_CAPSULE",
+        )
+        if not len(capsules):
+            layout.label(text="Fit capsules round the links to check them", icon="INFO")
+        else:
+            links = len({capsule.bone for capsule in capsules})
+            layout.label(text=f"{len(capsules)} capsules on {links} links")
+            if collision.capsules_stale(rig):
+                layout.label(text="The meshes have changed since: fit again", icon="ERROR")
+
+        layout.separator()
+        layout.label(text="Obstacles")
+        row = layout.row(align=True)
+        row.operator("kinema.add_obstacles", icon="ADD")
+        row.operator("kinema.remove_obstacles", icon="REMOVE")
+        objects = collision.obstacle_objects(context.scene)
+        if not objects:
+            layout.label(text="Add the objects in the robot's way", icon="INFO")
+        else:
+            layout.label(text=f"{len(objects)} obstacle{'s' if len(objects) != 1 else ''}")
+        active = context.active_object
+        if active is not None and active in objects:
+            layout.prop(active, "kinema_obstacle_shape", text=active.name)
+
+        closest = collision.closest_approach(rig, context.scene)
+        if len(rig.kinema_motion_check) and not collision.check_measured_this(rig, context.scene):
+            layout.separator()
+            layout.label(text="Changed since the last check: Check Again", icon="ERROR")
+        elif closest is not None:
+            layout.separator()
+            layout.label(
+                text=f"Closest: {closest.clearance * 1000:.0f} mm, {closest.clearance_bone} "
+                f"to {closest.clearance_obstacle} at frame {closest.clearance_frame}",
+                icon="ERROR" if closest.clearance < 0.0 else "CHECKMARK",
+            )
+        layout.prop(context.scene.kinema, "show_collision")
 
 
 class KINEMA_PT_external_axes(KinemaPanelBase, Panel):
@@ -1140,6 +1214,7 @@ classes = (
     KINEMA_PT_bones,
     KINEMA_PT_waypoints,
     KINEMA_PT_motion_check,
+    KINEMA_PT_collision,
     KINEMA_PT_external_axes,
     KINEMA_PT_tcp,
     KINEMA_PT_ik,
