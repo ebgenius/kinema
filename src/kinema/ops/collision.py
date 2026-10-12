@@ -271,9 +271,15 @@ def collision_state(rig, scene) -> str:
     or capsules since fitted again, isn't shown as current. An object something
     animates is fingerprinted by its keys, not by where the current frame has
     put it: scrubbing changes nothing the check measured.
+
+    Empty with neither capsules nor obstacles: there is nothing to measure,
+    and a check stored before this fingerprint existed matches it.
     """
+    objects = sorted(obstacle_objects(scene), key=lambda o: o.name)
+    if not len(rig.kinema_capsules) and not objects:
+        return ""
     digest = hashlib.sha1(rig.kinema_capsules_source.encode())
-    for obj in sorted(obstacle_objects(scene), key=lambda o: o.name):
+    for obj in objects:
         digest.update(f"|{obj.name}|{obj.type}|{obj.kinema_obstacle_shape}|".encode())
         digest.update(np.round(np.array([tuple(c) for c in obj.bound_box]), 6).tobytes())
         if obj.type == "MESH":

@@ -434,6 +434,18 @@ class TestThePanel:
         arm6.kinema_waypoints[1].frame = 41
         assert collision.closest_approach(arm6, scene) is None
 
+    def test_a_check_with_nothing_to_measure_is_never_out_of_date(self, arm6, builder, modules):
+        """Nor one stored before checks kept a fingerprint of what they measured."""
+        import bpy
+
+        collision = modules("ops.collision")
+        TestChecking()._job(arm6, builder, modules)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert collision.check_measured_this(arm6, bpy.context.scene)
+        arm6.kinema_motion_check_collision = ""
+        assert collision.check_measured_this(arm6, bpy.context.scene)
+
     @pytest.mark.parametrize("change", ["moved", "removed", "refitted", "scrubbed"])
     def test_the_closest_approach_goes_with_what_was_measured(
         self, arm6, builder, modules, change
