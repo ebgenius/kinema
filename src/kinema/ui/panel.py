@@ -31,6 +31,9 @@ from ..rig import builder
 from ..rig.waypoints import MOVE_LINEAR
 
 CATEGORY = "Kinema"
+#: The tab teaching, checking and fixing a job is on. Half of what was one tab
+#: to scroll through: setting the robot up, and posing it, stay on Kinema.
+JOB_CATEGORY = "Kinema Job"
 
 
 def active_rig(context: bpy.types.Context) -> bpy.types.Object | None:
@@ -162,6 +165,21 @@ class KinemaPanelBase:
     bl_category = CATEGORY
 
 
+class JobPanelBase(KinemaPanelBase):
+    """A panel on the Kinema Job tab."""
+
+    bl_category = JOB_CATEGORY
+
+
+def _draw_robot_row(layout, rig) -> None:
+    """Which robot the panels below are about: its name and how many joints it has."""
+    row = layout.row()
+    row.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
+    sub = row.row()
+    sub.alignment = "RIGHT"
+    sub.label(text=f"{len(builder.joint_bones(rig))} DoF")
+
+
 class KINEMA_PT_main(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_main"
     bl_label = "Kinema"
@@ -193,12 +211,7 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
             return
 
         layout.separator()
-        row = layout.row()
-        row.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
-        count = len(builder.joint_bones(rig))
-        sub = row.row()
-        sub.alignment = "RIGHT"
-        sub.label(text=f"{count} DoF")
+        _draw_robot_row(layout, rig)
 
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
@@ -273,14 +286,31 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
             sub.label(text="", icon=icon)
 
 
-class KINEMA_PT_motion_limits(KinemaPanelBase, Panel):
+class KINEMA_PT_job(JobPanelBase, Panel):
+    """The Kinema Job tab: which robot the job below is taught to."""
+
+    bl_idname = "KINEMA_PT_job"
+    bl_label = "Job"
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        rig = active_rig(context)
+        if rig is None:
+            box = layout.box()
+            box.label(text="No robot selected", icon="INFO")
+            box.label(text="Select a rig, or import one on the Kinema tab.")
+            return
+        _draw_robot_row(layout, rig)
+
+
+class KINEMA_PT_motion_limits(JobPanelBase, Panel):
     """Each joint's speed and acceleration at this frame, against its limits.
 
     Each kind of limit has a sub-panel of its own; this holds what they share.
     """
 
     bl_idname = "KINEMA_PT_motion_limits"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_parent_id = "KINEMA_PT_job"
     bl_label = "Motion Limits"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -352,7 +382,7 @@ def _draw_checked(layout, context, kind: str, *, missing: tuple[str, ...], unkno
         layout.label(text=unknown, icon="INFO")
 
 
-class KINEMA_PT_motion_speed(KinemaPanelBase, Panel):
+class KINEMA_PT_motion_speed(JobPanelBase, Panel):
     """Each joint's speed at this frame, against its velocity limit."""
 
     bl_idname = "KINEMA_PT_motion_speed"
@@ -373,7 +403,7 @@ class KINEMA_PT_motion_speed(KinemaPanelBase, Panel):
         )
 
 
-class KINEMA_PT_motion_acceleration(KinemaPanelBase, Panel):
+class KINEMA_PT_motion_acceleration(JobPanelBase, Panel):
     """Each joint's acceleration at this frame, against its acceleration limit."""
 
     bl_idname = "KINEMA_PT_motion_acceleration"
@@ -396,7 +426,7 @@ class KINEMA_PT_motion_acceleration(KinemaPanelBase, Panel):
         )
 
 
-class KINEMA_PT_motion_unchecked(KinemaPanelBase, Panel):
+class KINEMA_PT_motion_unchecked(JobPanelBase, Panel):
     """Jerk and effort limits: kept on each joint and listed, not checked.
 
     Why neither is checked is in ``rig/velocity.py``.
@@ -653,9 +683,9 @@ class KINEMA_UL_waypoints(UIList):
         return flags, order
 
 
-class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
+class KINEMA_PT_waypoints(JobPanelBase, Panel):
     bl_idname = "KINEMA_PT_waypoints"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_parent_id = "KINEMA_PT_job"
     bl_label = "Waypoints"
 
     @classmethod
@@ -703,7 +733,7 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
             layout.label(text="Linear moves need an IK target", icon="ERROR")
 
 
-class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
+class KINEMA_PT_motion_check(JobPanelBase, Panel):
     """What the last motion check found, one move per row.
 
     Read from the rig rather than measured here: measuring means playing the job
@@ -759,11 +789,11 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
                 row.label(text=problem)
 
 
-class KINEMA_PT_collision(KinemaPanelBase, Panel):
+class KINEMA_PT_collision(JobPanelBase, Panel):
     """The robot's capsules and the obstacles the Motion Check measures it against."""
 
     bl_idname = "KINEMA_PT_collision"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_parent_id = "KINEMA_PT_job"
     bl_label = "Collision"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -1220,18 +1250,19 @@ classes = (
     KINEMA_UL_waypoints,
     KINEMA_PT_main,
     KINEMA_PT_joints,
-    KINEMA_PT_motion_limits,
-    KINEMA_PT_motion_speed,
-    KINEMA_PT_motion_acceleration,
-    KINEMA_PT_motion_unchecked,
     KINEMA_PT_bones,
-    KINEMA_PT_waypoints,
-    KINEMA_PT_motion_check,
-    KINEMA_PT_collision,
     KINEMA_PT_external_axes,
     KINEMA_PT_tcp,
     KINEMA_PT_ik,
     KINEMA_PT_status,
+    KINEMA_PT_job,
+    KINEMA_PT_waypoints,
+    KINEMA_PT_motion_check,
+    KINEMA_PT_motion_limits,
+    KINEMA_PT_motion_speed,
+    KINEMA_PT_motion_acceleration,
+    KINEMA_PT_motion_unchecked,
+    KINEMA_PT_collision,
 )
 
 
