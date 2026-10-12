@@ -83,6 +83,18 @@ class KinemaSceneProps(PropertyGroup):
         ),
         default=False,
     )
+    section: EnumProperty(
+        name="Section",
+        description="Which part of Kinema the tab shows",
+        items=(
+            ("POSE", "Pose", "Joints, bones and IK: posing the robot", "ARMATURE_DATA", 0),
+            ("JOB", "Job", "Waypoints, motion limits and obstacles: teaching a job",
+             "ANIM", 1),
+            ("SETUP", "Setup", "Import, the tool, external axes and the solver",
+             "PREFERENCES", 2),
+        ),
+        default="POSE",
+    )
     show_collision: BoolProperty(
         name="Show Collision Shapes",
         description=(
@@ -168,24 +180,16 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
-
-        column = layout.column(align=True)
-        column.scale_y = 1.2
-        column.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
-
-        header, body = layout.panel("kinema_find_robot", default_closed=True)
-        header.label(text="Find a Robot")
-        if body is not None:
-            _draw_catalog(body, context)
-
-        header, body = layout.panel("kinema_import_options", default_closed=True)
-        header.label(text="Import Options")
-        if body is not None:
-            body.use_property_split = True
-            for name in SETTING_NAMES:
-                body.prop(context.scene.kinema, name)
-
         rig = active_rig(context)
+        props = context.scene.kinema
+
+        if rig is not None:
+            row = layout.row()
+            row.scale_y = 1.3
+            row.prop(props, "section", expand=True)
+        # Importing is setting up: with a robot selected, it waits in Setup.
+        if rig is None or props.section == "SETUP":
+            _draw_import(layout, context)
         if rig is None:
             box = layout.box()
             box.label(text="No robot selected", icon="INFO")
@@ -199,6 +203,25 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
         sub = row.row()
         sub.alignment = "RIGHT"
         sub.label(text=f"{count} DoF")
+
+
+def _draw_import(layout, context) -> None:
+    """Importing a robot: the file, the catalogue, and the settings an import uses."""
+    column = layout.column(align=True)
+    column.scale_y = 1.2
+    column.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
+
+    header, body = layout.panel("kinema_find_robot", default_closed=True)
+    header.label(text="Find a Robot")
+    if body is not None:
+        _draw_catalog(body, context)
+
+    header, body = layout.panel("kinema_import_options", default_closed=True)
+    header.label(text="Import Options")
+    if body is not None:
+        body.use_property_split = True
+        for name in SETTING_NAMES:
+            body.prop(context.scene.kinema, name)
 
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
@@ -1214,19 +1237,51 @@ class KINEMA_PT_status(KinemaPanelBase, Panel):
         layout.operator("kinema.check_dependencies", text="Re-check", icon="FILE_REFRESH")
 
 
+#: The section of the Kinema tab each of its panels is in; a subpanel goes with
+#: its panel. One section at a time is a third as much to scroll through.
+SECTIONS = {
+    KINEMA_PT_joints: "POSE",
+    KINEMA_PT_bones: "POSE",
+    KINEMA_PT_ik: "POSE",
+    KINEMA_PT_waypoints: "JOB",
+    KINEMA_PT_motion_limits: "JOB",
+    KINEMA_PT_collision: "JOB",
+    KINEMA_PT_tcp: "SETUP",
+    KINEMA_PT_external_axes: "SETUP",
+    KINEMA_PT_status: "SETUP",
+}
+
+
+def _only_in(section: str, cls) -> None:
+    """Show ``cls`` only while the tab shows ``section``, and then as its own poll says."""
+    own = cls.__dict__.get("poll")
+
+    def poll(klass, context) -> bool:
+        props = getattr(context.scene, "kinema", None)
+        if props is not None and props.section != section:
+            return False
+        return own.__func__(klass, context) if own is not None else True
+
+    cls.poll = classmethod(poll)
+
+
+for _cls, _section in SECTIONS.items():
+    _only_in(_section, _cls)
+
+
 classes = (
     KinemaSceneProps,
     KINEMA_UL_bones,
     KINEMA_UL_waypoints,
     KINEMA_PT_main,
     KINEMA_PT_joints,
+    KINEMA_PT_bones,
+    KINEMA_PT_waypoints,
+    KINEMA_PT_motion_check,
     KINEMA_PT_motion_limits,
     KINEMA_PT_motion_speed,
     KINEMA_PT_motion_acceleration,
     KINEMA_PT_motion_unchecked,
-    KINEMA_PT_bones,
-    KINEMA_PT_waypoints,
-    KINEMA_PT_motion_check,
     KINEMA_PT_collision,
     KINEMA_PT_external_axes,
     KINEMA_PT_tcp,
