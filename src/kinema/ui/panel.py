@@ -707,6 +707,7 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         return rig is not None and len(rig.kinema_waypoints) > 1
 
     def draw(self, context: bpy.types.Context) -> None:
+        from ..ops import collision
         from ..ops.waypoints import job_signature
         from ..rig.motion_check import problems
 
@@ -725,6 +726,10 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         # findings about a job since edited from passing as current.
         if rig.kinema_motion_check_job != job_signature(rig):
             layout.label(text="The waypoints have changed since this check", icon="ERROR")
+        elif not collision.check_measured_this(rig, context.scene):
+            layout.label(
+                text="The obstacles or capsules have changed since this check", icon="ERROR"
+            )
 
         column = layout.column(align=True)
         for check in checks:
@@ -788,8 +793,11 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
         if active is not None and active in objects:
             layout.prop(active, "kinema_obstacle_shape", text=active.name)
 
-        closest = collision.closest_approach(rig)
-        if closest is not None:
+        closest = collision.closest_approach(rig, context.scene)
+        if len(rig.kinema_motion_check) and not collision.check_measured_this(rig, context.scene):
+            layout.separator()
+            layout.label(text="Changed since the last check: Check Again", icon="ERROR")
+        elif closest is not None:
             layout.separator()
             layout.label(
                 text=f"Closest: {closest.clearance * 1000:.0f} mm, {closest.clearance_bone} "

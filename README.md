@@ -328,7 +328,8 @@ meshes or tool, the panel says so: **Fit Again**.
 selected objects there. Each is measured as one of three shapes, chosen in the panel:
 - **Box**, the default: the object's own bounds, turned and placed as it stands. Tight for
   anything modelled along its own axes;
-- **Sphere**: a ball the size of its largest half-extent;
+- **Sphere**: the smallest ball about its centre that holds all of it: a ball, stretched or
+  not, is measured as the ball it is;
 - **Floor**: everything below the plane through its origin, square to its Z axis.
 
 A complicated fixture is a few of them. Obstacles are read on every frame, so one that moves
@@ -336,7 +337,8 @@ is measured where it is.
 
 **The check** names, for each move, the link that came closest, to which obstacle, and on
 which frame. A link reaching into an obstacle is flagged: "joint_3 hits Fixture by 40 mm at
-frame 134". The panel shows the closest approach over the whole job. **Show Collision
+frame 134". The panel shows the closest approach over the whole job, until the waypoints,
+the obstacles or the capsules change, when it asks for Check Again. **Show Collision
 Shapes** draws the capsules and obstacles as the check sees them, red where they touch on the
 current frame. That's the way to see a capsule that fits its link badly.
 

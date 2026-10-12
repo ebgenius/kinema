@@ -42,7 +42,7 @@ OBSTACLES = "Kinema Obstacles"
 
 SHAPES = (
     (geometry.KIND_BOX, "Box", "Its own bounds, placed where it stands"),
-    (geometry.KIND_SPHERE, "Sphere", "A ball the size of its largest half-extent"),
+    (geometry.KIND_SPHERE, "Sphere", "The smallest ball about its centre that holds it"),
     (
         geometry.KIND_FLOOR,
         "Floor",
@@ -158,6 +158,9 @@ def source_signature(rig) -> str:
             if obj.type == "MESH":
                 _hash_mesh(digest, obj)
             else:
+                # Where the collection is instanced from moves all of it.
+                offset = obj.instance_collection.instance_offset
+                digest.update(np.round(np.array(offset), 6).tobytes())
                 for part in sorted(obj.instance_collection.all_objects, key=lambda o: o.name):
                     digest.update(f"{part.name}|".encode())
                     digest.update(np.round(np.array(part.matrix_world), 6).tobytes())
@@ -167,7 +170,15 @@ def source_signature(rig) -> str:
 
 
 def _hash_mesh(digest, obj) -> None:
-    digest.update(_mesh_digest(obj.data))
+    """A mesh object's shape as the fit reads it: with its modifiers, where they apply.
+
+    The fit reads what Blender evaluates, modifiers included, for an object it
+    evaluates; a hidden one, it reads unmodified. So does this.
+    """
+    if obj.visible_get() and any(modifier.show_viewport for modifier in obj.modifiers):
+        digest.update(_evaluated_digest(obj))
+    else:
+        digest.update(_mesh_digest(obj.data))
 
 
 #: Bumped whenever Blender reports a mesh's geometry has changed, by
@@ -191,10 +202,29 @@ def _mesh_digest(mesh) -> bytes:
     return found
 
 
+def _evaluated_digest(obj) -> bytes:
+    key = f"evaluated|{obj.name}"
+    cached = _mesh_hashes.get(key)
+    if cached is not None and cached[0] == _generation:
+        return cached[1]
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    mesh = evaluated.to_mesh()
+    try:
+        flat = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+        mesh.vertices.foreach_get("co", flat)
+    finally:
+        evaluated.to_mesh_clear()
+    found = hashlib.sha1(np.round(flat, 4).tobytes()).digest()
+    _mesh_hashes[key] = (_generation, found)
+    return found
+
+
 def note_updates(depsgraph) -> None:
     """A depsgraph update: whether any mesh's geometry changed in it.
 
-    Moving, posing and playing don't change a mesh's geometry, only where it is.
+    A mesh reshaped, or its object's modifiers changed: Blender reports either
+    as the mesh's geometry updated. Moving, posing and playing don't change a
+    mesh's geometry, only where it is.
     """
     global _generation
     for update in depsgraph.updates:
@@ -233,15 +263,66 @@ def capsule_ends(rig, capsules) -> tuple[np.ndarray, np.ndarray]:
     return a, b
 
 
-def closest_approach(rig):
+def collision_state(rig, scene) -> str:
+    """A fingerprint of what a check measures the robot's clearance by.
+
+    The capsules as fitted, and every obstacle: its shape and where it stands.
+    Stored with a check, so a clearance measured against obstacles since moved,
+    or capsules since fitted again, isn't shown as current. An object something
+    animates is fingerprinted by its keys, not by where the current frame has
+    put it: scrubbing changes nothing the check measured.
+    """
+    digest = hashlib.sha1(rig.kinema_capsules_source.encode())
+    for obj in sorted(obstacle_objects(scene), key=lambda o: o.name):
+        digest.update(f"|{obj.name}|{obj.type}|{obj.kinema_obstacle_shape}|".encode())
+        digest.update(np.round(np.array([tuple(c) for c in obj.bound_box]), 6).tobytes())
+        if obj.type == "MESH":
+            _hash_mesh(digest, obj)
+        link = obj
+        while link is not None:
+            digest.update(f"{link.name}|".encode())
+            digest.update(np.round(np.array(link.matrix_parent_inverse), 6).tobytes())
+            keys = _keys(link)
+            if keys:
+                digest.update(keys)
+            else:
+                digest.update(np.round(np.array(link.matrix_basis), 6).tobytes())
+            link = link.parent
+    return digest.hexdigest()
+
+
+def _keys(obj) -> bytes:
+    """An object's animation, as its keyframes: empty when nothing animates it."""
+    data = obj.animation_data
+    if data is None or data.action is None:
+        return b""
+    from .ik import own_fcurve_containers
+
+    values = [
+        (point.co[0], point.co[1], *point.handle_left, *point.handle_right)
+        for container in own_fcurve_containers(obj)
+        for curve in container
+        for point in curve.keyframe_points
+    ]
+    return np.round(np.array(values, dtype=float), 6).tobytes() if values else b""
+
+
+def check_measured_this(rig, scene) -> bool:
+    """Whether the stored check measured the capsules and obstacles there now."""
+    return rig.kinema_motion_check_collision == collision_state(rig, scene)
+
+
+def closest_approach(rig, scene):
     """The stored check's closest approach to an obstacle over the job, if it is current.
 
-    None when no move was measured, or when the waypoints have changed since the
-    check: then it describes another job.
+    None when no move was measured, or when the waypoints, the obstacles or the
+    capsules have changed since the check: then it describes something else.
     """
     from .waypoints import job_signature
 
     if rig.kinema_motion_check_job != job_signature(rig):
+        return None
+    if not check_measured_this(rig, scene):
         return None
     return min(
         (check for check in rig.kinema_motion_check if check.clearance_obstacle),
@@ -351,8 +432,7 @@ def obstacle_of(obj) -> geometry.Obstacle:
     centre = np.array(world @ _vector((low + high) / 2.0))
     turned[:3, 3] = centre
     if kind == geometry.KIND_SPHERE:
-        # As far as its own surface reaches, however it is stretched.
-        radius = float(np.linalg.norm(linear, 2) * local_half.max())
+        radius = _reach(obj, centre, low, high)
         return geometry.Obstacle(obj.name, kind, turned, np.array([radius]))
     # Square to its rotation, wide enough for every corner of what it is: a
     # parent scaled unevenly and turned shears the box, and the shear has to be
@@ -360,6 +440,30 @@ def obstacle_of(obj) -> geometry.Obstacle:
     in_frame = np.array(rotation.to_matrix()).T @ linear
     half = np.abs(in_frame) @ local_half
     return geometry.Obstacle(obj.name, geometry.KIND_BOX, turned, half)
+
+
+def _reach(obj, centre: np.ndarray, low: np.ndarray, high: np.ndarray) -> float:
+    """How far from ``centre`` any of ``obj`` reaches, as it stands: a sphere's radius.
+
+    Its vertices, so a ball, stretched or not, is measured as the ball it is,
+    and anything else is held whole. Without vertices, its bounds' corners.
+    """
+    world = np.array(obj.matrix_world)
+    if obj.type == "MESH":
+        mesh = obj.to_mesh()
+        try:
+            flat = np.empty(len(mesh.vertices) * 3)
+            mesh.vertices.foreach_get("co", flat)
+        finally:
+            obj.to_mesh_clear()
+        points = flat.reshape(-1, 3)
+    else:
+        xs, ys, zs = zip(low, high, strict=True)
+        points = np.array([(x, y, z) for x in xs for y in ys for z in zs])
+    if not len(points):
+        return 0.0
+    placed = points @ world[:3, :3].T + world[:3, 3]
+    return float(np.linalg.norm(placed - centre, axis=1).max())
 
 
 def _frame_with_z(z: np.ndarray) -> np.ndarray:
@@ -454,6 +558,12 @@ def register_props() -> None:
         description="Fingerprint of the meshes the capsules were fitted to",
         default="",
     )
+    # What a stored check measured the robot's clearance by: see collision_state().
+    bpy.types.Object.kinema_motion_check_collision = StringProperty(
+        name="Checked Collision",
+        description="Fingerprint of the capsules and obstacles the last check measured",
+        default="",
+    )
     bpy.types.Object.kinema_obstacle_shape = EnumProperty(
         name="Obstacle Shape",
         description="What the Motion Check measures this obstacle as",
@@ -465,6 +575,7 @@ def register_props() -> None:
 def unregister_props() -> None:
     del bpy.types.Object.kinema_capsules
     del bpy.types.Object.kinema_capsules_source
+    del bpy.types.Object.kinema_motion_check_collision
     del bpy.types.Object.kinema_obstacle_shape
 
 

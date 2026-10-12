@@ -1090,6 +1090,9 @@ def store_check(rig, checks) -> int:
     """
     rig.kinema_motion_check.clear()
     rig.kinema_motion_check_job = job_signature(rig) if checks is not None else ""
+    rig.kinema_motion_check_collision = (
+        collision_ops.collision_state(rig, bpy.context.scene) if checks is not None else ""
+    )
     for check in checks or ():
         item = rig.kinema_motion_check.add()
         for field in motion_check.MoveCheck.__dataclass_fields__:

@@ -229,6 +229,27 @@ class TestWhatALinkIs:
         ]
         assert max(lengths) >= 0.3
 
+        # Moving where the collection is instanced from moves the tool.
+        assert not collision.capsules_stale(arm6)
+        tool.instance_offset = (0.0, 0.0, 0.1)
+        bpy.context.view_layer.update()
+        assert collision.capsules_stale(arm6)
+
+    def test_changing_a_link_s_modifiers_makes_them_stale(self, arm6, modules):
+        """The fit reads a link as its modifiers leave it."""
+        import bpy
+
+        collision = modules("ops.collision")
+        link = next(iter(collision.link_meshes(arm6).values()))[0]
+        array = link.modifiers.new("Twice", "ARRAY")
+        array.count = 2
+        bpy.context.view_layer.update()
+        _fit(arm6)
+        assert not collision.capsules_stale(arm6)
+        array.count = 3
+        bpy.context.view_layer.update()
+        assert collision.capsules_stale(arm6)
+
 
 class TestObstacles:
     def test_a_box_is_its_own_bounds_where_it_stands(self, arm6, modules):
@@ -249,7 +270,9 @@ class TestObstacles:
         _obstacle("Ball", (0.0, 1.0, 0.5), size=0.2, shape="SPHERE")
         _obstacle("Ground", (0.0, 0.0, -0.1), shape="FLOOR")
         found = {obstacle.name: obstacle for obstacle in collision.obstacles(bpy.context)}
-        assert found["Ball"].kind == "SPHERE" and float(found["Ball"].size[0]) == pytest.approx(0.2)
+        # A cube taken for a ball: held whole, to its corners.
+        assert found["Ball"].kind == "SPHERE"
+        assert float(found["Ball"].size[0]) == pytest.approx(0.2 * np.sqrt(3.0))
         assert found["Ground"].kind == "FLOOR"
         np.testing.assert_allclose(found["Ground"].matrix[:3, 2], (0.0, 0.0, 1.0), atol=1e-6)
 
@@ -257,7 +280,6 @@ class TestObstacles:
     def test_a_sheared_obstacle_is_inside_what_is_measured(self, arm6, modules, shape):
         """Turned under a parent scaled unevenly, a cube is no longer a box: all of it counts."""
         import bpy
-        from mathutils import Vector
 
         collision, geometry = modules("ops.collision"), modules("rig.collision")
         parent = bpy.data.objects.new("Stretch", None)
@@ -273,14 +295,32 @@ class TestObstacles:
             local = (world - obstacle.matrix[:3, 3]) @ obstacle.matrix[:3, :3]
             assert geometry.box_sdf(local, obstacle.size).max() <= 1e-6
         else:
-            # The ball inside the cube, stretched: furthest along the stretch,
-            # which runs between the cube's own axes.
-            directions = np.random.default_rng(0).normal(size=(2000, 3))
-            directions /= np.linalg.norm(directions, axis=1)[:, None]
-            centre = Vector(obstacle.matrix[:3, 3])
-            reach = [(cube.matrix_world @ Vector(d) - centre).length for d in directions]
-            assert max(reach) <= float(obstacle.size[0]) + 1e-6
-            assert max(reach) > 1.95, "precondition: stretched to 2 across the cube's axes"
+            # Its corners, as it stands: further than any ball inside it reaches.
+            reach = np.linalg.norm(world - obstacle.matrix[:3, 3], axis=1)
+            assert reach.max() <= float(obstacle.size[0]) + 1e-6
+            assert reach.max() > 2.4, "precondition: corners stretched past 2"
+
+    def test_a_ball_is_measured_as_the_ball_it_is(self, arm6, modules):
+        """Not as the box it fits in, whose corners reach 1.7 times as far."""
+        import bpy
+
+        collision = modules("ops.collision")
+        directions = np.random.default_rng(1).normal(size=(400, 3))
+        directions /= np.linalg.norm(directions, axis=1)[:, None]
+        mesh = bpy.data.meshes.new("Ball")
+        mesh.from_pydata([tuple(d) for d in directions], [], [])
+        ball = bpy.data.objects.new("Ball", mesh)
+        bpy.context.scene.collection.objects.link(ball)
+        ball.scale = (0.3, 0.3, 0.3)
+        ball.kinema_obstacle_shape = "SPHERE"
+        for other in bpy.context.selected_objects:
+            other.select_set(False)
+        ball.select_set(True)
+        bpy.context.view_layer.objects.active = ball
+        assert "FINISHED" in bpy.ops.kinema.add_obstacles()
+        bpy.context.view_layer.update()
+        (obstacle,) = collision.obstacles(bpy.context)
+        assert float(obstacle.size[0]) == pytest.approx(0.3, abs=0.01)
 
     def test_removing_one_keeps_it_in_the_scene(self, arm6, modules):
         import bpy
@@ -388,10 +428,48 @@ class TestThePanel:
         _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
         bpy.context.view_layer.objects.active = arm6
         assert "FINISHED" in bpy.ops.kinema.check_motion()
-        assert collision.closest_approach(arm6).clearance_obstacle == "FarAway"
+        scene = bpy.context.scene
+        assert collision.closest_approach(arm6, scene).clearance_obstacle == "FarAway"
 
         arm6.kinema_waypoints[1].frame = 41
-        assert collision.closest_approach(arm6) is None
+        assert collision.closest_approach(arm6, scene) is None
+
+    @pytest.mark.parametrize("change", ["moved", "removed", "refitted", "scrubbed"])
+    def test_the_closest_approach_goes_with_what_was_measured(
+        self, arm6, builder, modules, change
+    ):
+        """Obstacles since moved or removed, or capsules since fitted again, weren't checked."""
+        import bpy
+
+        collision = modules("ops.collision")
+        TestChecking()._job(arm6, builder, modules)
+        _fit(arm6)
+        far = _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
+        if change == "scrubbed":
+            # It moves through the job: where the current frame puts it is no change.
+            far.keyframe_insert("location", frame=1)
+            far.location.x = 6.0
+            far.keyframe_insert("location", frame=31)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        scene = bpy.context.scene
+        if change == "moved":
+            far.location.x = 4.0
+        elif change == "removed":
+            for obj in bpy.context.selected_objects:
+                obj.select_set(False)
+            far.select_set(True)
+            assert "FINISHED" in bpy.ops.kinema.remove_obstacles()
+        elif change == "refitted":
+            arm6.kinema_capsules_source = "fitted again"
+        else:
+            scene.frame_set(20)
+        bpy.context.view_layer.update()
+        found = collision.closest_approach(arm6, scene)
+        if change == "scrubbed":
+            assert found is not None and found.clearance_obstacle == "FarAway"
+        else:
+            assert found is None
 
 
 class TestOverlay:
