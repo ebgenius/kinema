@@ -145,6 +145,17 @@ def _draw_catalog(layout, context: bpy.types.Context) -> None:
     box.operator("kinema.open_catalog_repo", text="Open Repository", icon="URL")
 
 
+def whole_list(count: int) -> dict:
+    """``template_list`` sizes for a list that shows every row it has.
+
+    A list holding more rows than it shows scrolls itself under the mouse
+    wheel, and the sidebar stops dead wherever the pointer crosses it. Shown
+    whole, it has nothing to scroll, and the wheel scrolls the sidebar.
+    """
+    rows = max(count, 1)
+    return {"rows": rows, "maxrows": rows}
+
+
 class KinemaPanelBase:
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -562,9 +573,11 @@ class KINEMA_PT_bones(KinemaPanelBase, Panel):
         layout = self.layout
         rig = active_rig(context)
 
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        shown = sum(1 for pose_bone in rig.pose.bones if pose_bone.name != ik_name)
         layout.template_list(
             "KINEMA_UL_bones", "", rig.pose, "bones", rig, "kinema_active_bone_index",
-            rows=6,
+            **whole_list(shown),
         )
 
         pose_bone = active_bone(rig)
@@ -664,7 +677,7 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
 
         layout.template_list(
             "KINEMA_UL_waypoints", "", rig, "kinema_waypoints",
-            rig, "kinema_active_waypoint", rows=4,
+            rig, "kinema_active_waypoint", **whole_list(len(rig.kinema_waypoints)),
         )
 
         column = layout.column()
