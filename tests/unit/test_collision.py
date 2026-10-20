@@ -110,6 +110,25 @@ class TestFitting:
         np.testing.assert_array_equal(first, again)
         assert len(first) > 1000
 
+    def test_a_disc_s_capsule_runs_through_it_not_across_it(self):
+        """The narrowest cylinder round a disc is square to it; the crude fit lies along it."""
+        random = np.random.default_rng(3)
+        angle = random.uniform(0.0, 2.0 * math.pi, 3000)
+        radius = np.sqrt(random.uniform(0.0, 1.0, 3000)) * 0.5
+        height = random.uniform(-0.05, 0.05, 3000)
+        points = np.c_[radius * np.cos(angle), radius * np.sin(angle), height]
+        ((a, b, _),) = collision.fit(points, max_parts=1)
+        axis = (b - a) / np.linalg.norm(b - a)
+        assert abs(axis[2]) > 0.99
+
+    def test_without_trimesh_fitting_fails_rather_than_degrading(self, monkeypatch):
+        """Every capsule would quietly take the crude fit instead."""
+        import sys
+
+        monkeypatch.setitem(sys.modules, "trimesh", None)
+        with pytest.raises(ImportError):
+            collision.fit(_cylinder_points(0.1, 1.0))
+
     def test_no_points_no_capsules(self):
         assert collision.fit(np.zeros((0, 3))) == []
 

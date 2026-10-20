@@ -235,6 +235,25 @@ class TestWhatALinkIs:
         bpy.context.view_layer.update()
         assert collision.capsules_stale(arm6)
 
+    def test_a_modifier_following_another_object_makes_them_stale(self, arm6, modules):
+        """The link's mesh isn't touched: only what its object evaluates to changes."""
+        import bpy
+
+        collision = modules("ops.collision")
+        link = next(iter(collision.link_meshes(arm6).values()))[0]
+        handle = bpy.data.objects.new("Offset", None)
+        bpy.context.scene.collection.objects.link(handle)
+        array = link.modifiers.new("Follow", "ARRAY")
+        array.use_relative_offset, array.use_object_offset = False, True
+        array.offset_object = handle
+        handle.location = (0.1, 0.0, 0.0)
+        bpy.context.view_layer.update()
+        _fit(arm6)
+        assert not collision.capsules_stale(arm6)
+        handle.location = (0.3, 0.0, 0.0)
+        bpy.context.view_layer.update()
+        assert collision.capsules_stale(arm6)
+
     def test_changing_a_link_s_modifiers_makes_them_stale(self, arm6, modules):
         """The fit reads a link as its modifiers leave it."""
         import bpy
@@ -446,7 +465,13 @@ class TestThePanel:
         arm6.kinema_motion_check_collision = ""
         assert collision.check_measured_this(arm6, bpy.context.scene)
 
-    @pytest.mark.parametrize("change", ["moved", "removed", "refitted", "scrubbed"])
+    @pytest.mark.parametrize(
+        "change",
+        [
+            "moved", "removed", "refitted", "scrubbed", "scaled while animated", "constrained",
+            "capsules stale",
+        ],
+    )
     def test_the_closest_approach_goes_with_what_was_measured(
         self, arm6, builder, modules, change
     ):
@@ -457,7 +482,7 @@ class TestThePanel:
         TestChecking()._job(arm6, builder, modules)
         _fit(arm6)
         far = _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
-        if change == "scrubbed":
+        if change in ("scrubbed", "scaled while animated"):
             # It moves through the job: where the current frame puts it is no change.
             far.keyframe_insert("location", frame=1)
             far.location.x = 6.0
@@ -474,6 +499,14 @@ class TestThePanel:
             assert "FINISHED" in bpy.ops.kinema.remove_obstacles()
         elif change == "refitted":
             arm6.kinema_capsules_source = "fitted again"
+        elif change == "scaled while animated":
+            # Only its location is keyed: its size is set by hand.
+            far.scale = (40.0, 40.0, 40.0)
+        elif change == "constrained":
+            far.constraints.new("COPY_LOCATION").target = arm6
+        elif change == "capsules stale":
+            mesh_object = next(iter(collision.link_meshes(arm6).values()))[0]
+            mesh_object.location.x += 0.05
         else:
             scene.frame_set(20)
         bpy.context.view_layer.update()

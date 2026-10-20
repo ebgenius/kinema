@@ -222,13 +222,24 @@ def _evaluated_digest(obj) -> bytes:
 def note_updates(depsgraph) -> None:
     """A depsgraph update: whether any mesh's geometry changed in it.
 
-    A mesh reshaped, or its object's modifiers changed: Blender reports either
-    as the mesh's geometry updated. Moving, posing and playing don't change a
+    A mesh reshaped, or what its object's modifiers make of it: Blender reports
+    a modifier's own change as the mesh updated, and one following another
+    object as the object updated. Moving, posing and playing don't change a
     mesh's geometry, only where it is.
     """
     global _generation
     for update in depsgraph.updates:
-        if update.is_updated_geometry and isinstance(update.id, bpy.types.Mesh):
+        if not update.is_updated_geometry:
+            continue
+        # The object too: a modifier that follows another object changes what
+        # the object evaluates to when that object moves, and the mesh itself
+        # isn't touched.
+        changed = update.id
+        if isinstance(changed, bpy.types.Mesh) or (
+            isinstance(changed, bpy.types.Object)
+            and changed.type == "MESH"
+            and len(changed.modifiers)
+        ):
             _generation += 1
             return
 
@@ -288,13 +299,69 @@ def collision_state(rig, scene) -> str:
         while link is not None:
             digest.update(f"{link.name}|".encode())
             digest.update(np.round(np.array(link.matrix_parent_inverse), 6).tobytes())
-            keys = _keys(link)
-            if keys:
-                digest.update(keys)
-            else:
-                digest.update(np.round(np.array(link.matrix_basis), 6).tobytes())
+            digest.update(_keys(link))
+            digest.update(_unkeyed_transform(link))
+            digest.update(_drivers_and_constraints(link))
             link = link.parent
     return digest.hexdigest()
+
+
+#: The transform channels an object's matrix_basis is made from, and how many
+#: values each has.
+_TRANSFORM = (
+    ("location", 3), ("rotation_euler", 3), ("rotation_quaternion", 4),
+    ("rotation_axis_angle", 4), ("scale", 3), ("delta_location", 3),
+    ("delta_rotation_euler", 3), ("delta_rotation_quaternion", 4), ("delta_scale", 3),
+)
+
+
+def _unkeyed_transform(obj) -> bytes:
+    """Every transform channel nothing keys, by its value.
+
+    Keys usually cover some channels only, a moving obstacle's location, say;
+    its scale and turn are set by hand, and changing them changes what it
+    covers. A keyed channel is in its keys instead: where the current frame has
+    put it is no change.
+    """
+    from .ik import own_fcurve_containers
+
+    keyed = {
+        (curve.data_path, curve.array_index)
+        for container in own_fcurve_containers(obj)
+        for curve in container
+    }
+    values = [obj.rotation_mode]
+    for path, size in _TRANSFORM:
+        for index in range(size):
+            if (path, index) not in keyed:
+                values.append(f"{path}[{index}]={round(getattr(obj, path)[index], 6)}")
+    return "|".join(values).encode()
+
+
+def _drivers_and_constraints(obj) -> bytes:
+    """What drives an object or constrains it, by its settings.
+
+    Not what they read: a constraint follows its target and a driver its
+    inputs, and those are fingerprinted only where they are obstacles
+    themselves. Moving the target of an obstacle's constraint is not seen.
+    """
+    parts = []
+    data = obj.animation_data
+    for driver in (data.drivers if data is not None else ()):
+        targets = [
+            (variable.name, target.id.name if target.id else "", target.data_path)
+            for variable in driver.driver.variables
+            for target in variable.targets
+        ]
+        parts.append(f"{driver.data_path}[{driver.array_index}]:{driver.driver.expression}:{targets}")
+    for constraint in obj.constraints:
+        target = getattr(constraint, "target", None)
+        parts.append(
+            f"{constraint.name}:{constraint.type}:{constraint.mute}:"
+            f"{round(constraint.influence, 6)}:{target.name if target else ''}:"
+            f"{getattr(constraint, 'subtarget', '')}"
+        )
+    return "|".join(parts).encode()
 
 
 def _keys(obj) -> bytes:
@@ -323,12 +390,14 @@ def closest_approach(rig, scene):
 
     None when no move was measured, or when the waypoints, the obstacles or the
     capsules have changed since the check: then it describes something else.
+    None too while the capsules are stale: measured with capsules that no
+    longer fit the robot, it isn't the robot's clearance.
     """
     from .waypoints import job_signature
 
     if rig.kinema_motion_check_job != job_signature(rig):
         return None
-    if not check_measured_this(rig, scene):
+    if not check_measured_this(rig, scene) or capsules_stale(rig):
         return None
     return min(
         (check for check in rig.kinema_motion_check if check.clearance_obstacle),
@@ -370,6 +439,9 @@ class KINEMA_OT_fit_capsules(Operator):
                 points = bone_points(context, rig, bone, objects)
                 fitted += [(bone, a, b, radius) for a, b, radius in geometry.fit(points)]
                 window.progress_update(done + 1)
+        except ImportError as exc:
+            self.report({"ERROR"}, f"Fit Capsules needs trimesh, which didn't load: {exc}")
+            return {"CANCELLED"}
         finally:
             window.progress_end()
         rig.kinema_capsules.clear()

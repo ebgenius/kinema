@@ -193,11 +193,18 @@ def _clusters(points: np.ndarray, parts: int) -> list | None:
 
 
 def _capsule(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-    """The capsule on the narrowest cylinder around ``points``."""
+    """The capsule on the narrowest cylinder around ``points``.
+
+    trimesh is imported outside the fallback: without it every capsule would
+    quietly take the crude fit below, so a missing trimesh has to fail loudly.
+    Only geometry with no volume falls back: a hull of flat or collinear points
+    fails to diagonalise, which numpy reports as a LinAlgError.
+    """
+    import trimesh
+    from scipy.spatial import QhullError
+
     if len(points) >= 4:
         try:
-            import trimesh
-
             hull = trimesh.convex.convex_hull(points)
             if hull.volume > 1e-12:
                 cylinder = trimesh.bounds.minimum_cylinder(hull)
@@ -206,7 +213,7 @@ def _capsule(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
                 a = transform @ np.array([0.0, 0.0, -half, 1.0])
                 b = transform @ np.array([0.0, 0.0, half, 1.0])
                 return a[:3], b[:3], float(cylinder["radius"])
-        except Exception:  # noqa: BLE001 - flat or degenerate: fall through
+        except (np.linalg.LinAlgError, QhullError, ValueError):
             pass
     return _segment_around(points)
 
