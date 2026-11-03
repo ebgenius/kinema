@@ -306,6 +306,57 @@ kind by kind:
 MJCF has no velocity or acceleration limits, so an MJCF rig only gets them from such a file.
 Its effort limits come from each joint's `actuatorfrcrange`.
 
+## Checking for collisions
+
+The Motion Check also measures how close the robot comes to what stands in its way, on every
+frame of the job. Both sides are simple shapes, so the distances are exact and quick. The
+**Collision** panel sets them up.
+
+**The robot is a set of capsules.** **Fit Capsules** fits them round the meshes on each joint
+bone, and on the TCP for an attached tool:
+- a link's imported collision meshes where it has them, otherwise what the link shows, and
+  either way whatever was added to it, an attached tool;
+- each link split into up to four capsules, the fewest that come close to the tightest fit,
+  so an L-shaped link isn't one fat capsule. On a KR210 the forearm gets three, at most
+  490 mm in radius where one would be 824 mm, and the whole arm eleven, fitted in 4 s. The
+  same meshes give the same capsules in any pose;
+- every point of the meshes inside them;
+- not the base, which stands on whatever floor there is.
+
+They are kept on the rig and move with it, however the job plays, and scale with it: a robot
+scaled unevenly gets the widest of its scales. After changing a link's meshes, faces, shape keys or tool,
+the panel says so: **Fit Again**. The **×** beside it clears them, and with them all the
+collision work Kinema does for the robot as it moves.
+
+Capsules ride rigidly on their bones, so a link mesh that also moves on its bone, by a
+constraint, a driver or keys, or changes shape as the job plays, by animated shape keys or
+modifiers, can't be held by them. Nor can an attached collection with anything like that inside
+it. **Fit Capsules** names it and fits nothing until what moves it is removed or applied.
+
+**Obstacles are the objects in the scene's *Kinema Obstacles* collection,** directly in it:
+not those in a collection inside it, which the panel counts. **Add Selected** puts the
+selected objects there, and **Remove Selected** takes them out, leaving them in the scene. Each
+scene has its own. The robot is never one, nor anything riding on it. Selecting them leaves the
+robot in the panels: in Object Mode they keep the robot they last showed, marked *Not
+selected*. Each is measured as one of three shapes, chosen in the panel:
+- **Box**, the default: the object's own bounds, turned and placed as it stands. Tight for
+  anything modelled along its own axes;
+- **Sphere**: the smallest ball about its centre that holds all of it: a ball, stretched or
+  not, is measured as the ball it is;
+- **Floor**: everything below the plane through its origin, square to its Z axis.
+
+A complicated fixture is a few of them. Obstacles are read on every frame, so one that moves
+is measured where it is.
+
+**The check** names, for each move, the link that came closest, to which obstacle, and on
+which frame. A link reaching into an obstacle is flagged: "joint_3 hits Fixture by 40 mm at
+frame 134". The panel shows the closest approach over the whole job, until the waypoints,
+the obstacles, the capsules or where the robot stands change, when it asks for Check Again. **Show Collision
+Shapes** draws the capsules and obstacles as the check sees them, red where they touch on the
+current frame. That's the way to see a capsule that fits its link badly.
+
+Self-collision, and steering Optimize Motion clear of obstacles, are still to come.
+
 ## Choosing how the arm reaches
 
 A six-axis arm can put its tool in one place up to eight different ways — elbow bent one way

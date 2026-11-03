@@ -33,22 +33,66 @@ from ..rig.waypoints import MOVE_LINEAR
 CATEGORY = "Kinema"
 
 
+#: The robot each scene's panels last showed, by scene and object name.
+_shown: dict[str, str] = {}
+
+
 def active_rig(context: bpy.types.Context) -> bpy.types.Object | None:
     """The Kinema rig the panel should act on.
 
     Accepts the active object if it is a rig, otherwise the armature that owns
     the active object -- so selecting a link mesh still shows its robot's
-    controls rather than an empty panel.
+    controls rather than an empty panel -- otherwise a selected rig.
+
+    With no robot selected, the one the panels last showed, so selecting a
+    fixture to make it an obstacle doesn't take the panels away; or the
+    scene's only robot. In Object Mode only: editing another object is
+    something else.
     """
     obj = context.object
+    rig = None
     if builder.is_kinema_rig(obj):
-        return obj
-    if obj is not None and builder.is_kinema_rig(obj.parent):
-        return obj.parent
-    for candidate in context.selected_objects:
-        if builder.is_kinema_rig(candidate):
-            return candidate
-    return None
+        rig = obj
+    elif obj is not None and builder.is_kinema_rig(obj.parent):
+        rig = obj.parent
+    else:
+        rig = next(
+            (candidate for candidate in context.selected_objects
+             if builder.is_kinema_rig(candidate)),
+            None,
+        )
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return rig
+    if rig is not None:
+        _shown[scene.name] = rig.name
+        return rig
+    if context.mode != "OBJECT":
+        return None
+    return _last_shown(scene)
+
+
+def forget() -> None:
+    """A new file: its robots and scenes share names, not identities, with the last one's."""
+    _shown.clear()
+
+
+def _last_shown(scene) -> bpy.types.Object | None:
+    """The robot ``scene``'s panels last showed, or its only one, if it can be seen."""
+    last = scene.objects.get(_shown.get(scene.name, ""))
+    if builder.is_kinema_rig(last) and last.visible_get():
+        return last
+    rigs = [
+        obj for obj in scene.objects
+        if builder.is_kinema_rig(obj) and obj.visible_get()
+    ]
+    return rigs[0] if len(rigs) == 1 else None
+
+
+def is_selected(context: bpy.types.Context, rig: bpy.types.Object) -> bool:
+    """Whether the panels show ``rig`` because it, or something on it, is selected."""
+    obj = context.object
+    return rig == obj or (obj is not None and rig == obj.parent) or rig in context.selected_objects
 
 
 class KinemaSceneProps(PropertyGroup):
@@ -82,6 +126,19 @@ class KinemaSceneProps(PropertyGroup):
             "supported. Off, only the recommended entry for each robot shows"
         ),
         default=False,
+    )
+    show_collision: BoolProperty(
+        name="Show Collision Shapes",
+        description=(
+            "Draw the robot's capsules and the obstacles as the Motion Check measures "
+            "them, red where they touch"
+        ),
+        default=True,
+    )
+    obstacles: PointerProperty(
+        name="Obstacles",
+        description="The collection whose objects the Motion Check measures the robot against",
+        type=bpy.types.Collection,
     )
     # Blender reads properties from a class's own __annotations__ and does not
     # walk base classes, so the shared definitions are merged in rather than
@@ -180,6 +237,10 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
         sub = row.row()
         sub.alignment = "RIGHT"
         sub.label(text=f"{count} DoF")
+        if not is_selected(context, rig):
+            # Kept while something else is selected: say so, so the panels
+            # aren't read as the selected object's.
+            layout.label(text="Not selected: the robot last shown", icon="RESTRICT_SELECT_ON")
 
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
@@ -682,6 +743,23 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
             layout.label(text="Linear moves need an IK target", icon="ERROR")
 
 
+def check_outdated(rig, scene) -> str:
+    """Why the stored Motion Check no longer describes the job, or "" while it does."""
+    from ..ops import collision
+    from ..ops.waypoints import job_signature
+
+    # A handful of waypoints hashed per redraw; cheap, and it keeps findings
+    # about a job since edited from passing as current.
+    if rig.kinema_motion_check_job != job_signature(rig):
+        return "The waypoints have changed since this check"
+    if not collision.check_measured_this(rig, scene):
+        return "The obstacles or capsules have changed since this check"
+    if collision.capsules_stale(rig):
+        # Its clearances were measured with capsules that no longer fit the links.
+        return "The meshes have changed since the capsules: Fit Again, then Check Again"
+    return ""
+
+
 class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
     """What the last motion check found, one move per row.
 
@@ -699,7 +777,6 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         return rig is not None and len(rig.kinema_waypoints) > 1
 
     def draw(self, context: bpy.types.Context) -> None:
-        from ..ops.waypoints import job_signature
         from ..rig.motion_check import problems
 
         layout = self.layout
@@ -713,10 +790,9 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         if not len(checks):
             layout.label(text="Generate Motion checks the job too", icon="INFO")
             return
-        # A handful of waypoints hashed per redraw; cheap, and it keeps
-        # findings about a job since edited from passing as current.
-        if rig.kinema_motion_check_job != job_signature(rig):
-            layout.label(text="The waypoints have changed since this check", icon="ERROR")
+        outdated = check_outdated(rig, context.scene)
+        if outdated:
+            layout.label(text=outdated, icon="ERROR")
 
         column = layout.column(align=True)
         for check in checks:
@@ -731,6 +807,75 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
                 row = column.row()
                 row.separator(factor=2.0)
                 row.label(text=problem)
+
+
+class KINEMA_PT_collision(KinemaPanelBase, Panel):
+    """The robot's capsules and the obstacles the Motion Check measures it against."""
+
+    bl_idname = "KINEMA_PT_collision"
+    bl_parent_id = "KINEMA_PT_main"
+    bl_label = "Collision"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from ..ops import collision
+
+        layout = self.layout
+        rig = active_rig(context)
+        capsules = rig.kinema_capsules
+
+        layout.label(text="Robot")
+        row = layout.row(align=True)
+        row.operator(
+            "kinema.fit_capsules",
+            text="Fit Again" if len(capsules) else "Fit Capsules",
+            icon="MESH_CAPSULE",
+        )
+        if not len(capsules):
+            layout.label(text="Fit capsules round the links to check them", icon="INFO")
+        else:
+            row.operator("kinema.clear_capsules", text="", icon="X")
+            links = len({capsule.bone for capsule in capsules})
+            layout.label(text=f"{len(capsules)} capsules on {links} links")
+            if collision.capsules_stale(rig):
+                layout.label(text="The meshes have changed since: fit again", icon="ERROR")
+
+        layout.separator()
+        layout.label(text="Obstacles")
+        row = layout.row(align=True)
+        row.operator("kinema.add_obstacles", icon="ADD")
+        row.operator("kinema.remove_obstacles", icon="REMOVE")
+        objects = collision.obstacle_objects(context.scene)
+        if not objects:
+            layout.label(text="Add the objects in the robot's way", icon="INFO")
+        else:
+            layout.label(text=f"{len(objects)} obstacle{'s' if len(objects) != 1 else ''}")
+        nested = collision.nested_objects(context.scene)
+        if nested:
+            layout.label(
+                text=f"{nested} in collections inside it aren't measured: add them",
+                icon="ERROR",
+            )
+        active = context.active_object
+        if active is not None and active in objects:
+            layout.prop(active, "kinema_obstacle_shape", text=active.name)
+
+        closest = collision.closest_approach(rig, context.scene)
+        if len(rig.kinema_motion_check) and not collision.check_measured_this(rig, context.scene):
+            layout.separator()
+            layout.label(text="Changed since the last check: Check Again", icon="ERROR")
+        elif closest is not None:
+            layout.separator()
+            layout.label(
+                text=f"Closest: {closest.clearance * 1000:.0f} mm, {closest.clearance_bone} "
+                f"to {closest.clearance_obstacle} at frame {closest.clearance_frame}",
+                icon="ERROR" if closest.clearance < 0.0 else "CHECKMARK",
+            )
+        layout.prop(context.scene.kinema, "show_collision")
 
 
 class KINEMA_PT_external_axes(KinemaPanelBase, Panel):
@@ -1140,6 +1285,7 @@ classes = (
     KINEMA_PT_bones,
     KINEMA_PT_waypoints,
     KINEMA_PT_motion_check,
+    KINEMA_PT_collision,
     KINEMA_PT_external_axes,
     KINEMA_PT_tcp,
     KINEMA_PT_ik,

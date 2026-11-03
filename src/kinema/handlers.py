@@ -264,9 +264,36 @@ def on_pose_settled(scene: bpy.types.Scene, depsgraph=None) -> None:
 
 
 @persistent
+def on_geometry_changed(scene: bpy.types.Scene, depsgraph=None) -> None:
+    """Tell the collision fingerprints when a mesh may have been reshaped."""
+    if depsgraph is None:
+        return
+    from .ops import collision
+
+    collision.note_updates(depsgraph)
+
+
+@persistent
+def on_scene_moved(*_args) -> None:
+    """A frame set: what the panels worked out for the scene may not hold."""
+    from .ops import collision
+
+    collision.note_change()
+
+
+@persistent
+def on_undone(*_args) -> None:
+    """An undo or a redo: any mesh may be back to a shape it had, unreported."""
+    from .ops import collision
+
+    collision.note_undo()
+
+
+@persistent
 def on_load_post(_dummy=None) -> None:
     """A freshly opened file shares nothing with the previous one."""
-    from .ops import deferral, external_axes, optimize, tcp, velocity
+    from .ops import collision, deferral, external_axes, optimize, tcp, velocity
+    from .ui import collision_overlay, panel
 
     _last_target.clear()
     _last_duration.clear()
@@ -277,6 +304,9 @@ def on_load_post(_dummy=None) -> None:
     tcp.forget()
     deferral.forget()
     optimize.forget()
+    collision.forget()
+    collision_overlay.forget()
+    panel.forget()
 
 
 @contextmanager
@@ -334,6 +364,10 @@ _HANDLERS = (
     (bpy.app.handlers.load_post, on_load_post),
     (bpy.app.handlers.depsgraph_update_post, on_pose_settled),
     (bpy.app.handlers.frame_change_post, on_pose_settled),
+    (bpy.app.handlers.depsgraph_update_post, on_geometry_changed),
+    (bpy.app.handlers.frame_change_post, on_scene_moved),
+    (bpy.app.handlers.undo_post, on_undone),
+    (bpy.app.handlers.redo_post, on_undone),
 )
 
 

@@ -17,6 +17,7 @@ import bpy
 from . import handlers, prefs, runtime
 from .ops import (
     attach,
+    collision,
     deferral,
     external_axes,
     graph_editor,
@@ -30,7 +31,7 @@ from .ops import (
     waypoints,
 )
 from .solver import trajectory
-from .ui import axis_preview, overlay, panel, tcp_preview
+from .ui import axis_preview, collision_overlay, overlay, panel, tcp_preview
 
 # panel first: ops/pose imports helpers from it, and registration order
 # decides which classes exist when Blender resolves parent panels. waypoints
@@ -40,8 +41,8 @@ from .ui import axis_preview, overlay, panel, tcp_preview
 # whose panel sits in the Graph Editor rather than under Kinema's, has no
 # order to keep, and optimize only adds an operator to waypoints' panel.
 _MODULES = (
-    prefs, panel, import_dae, import_robot, pose, tcp, ik, attach, waypoints, velocity,
-    external_axes, graph_editor, optimize,
+    prefs, panel, import_dae, import_robot, pose, tcp, ik, attach, collision, waypoints,
+    velocity, external_axes, graph_editor, optimize,
 )
 
 
@@ -56,6 +57,7 @@ def register() -> None:
 
     handlers.register_handlers()
     overlay.register_draw()
+    collision_overlay.register_draw()
 
 
 def unregister() -> None:
@@ -69,6 +71,7 @@ def unregister() -> None:
     # The compiled kernels hold JAX's memory, which unloading the stack is for.
     trajectory.forget()
     overlay.unregister_draw()
+    collision_overlay.unregister_draw()
     handlers.unregister_handlers()
 
     for module in reversed(_MODULES):
