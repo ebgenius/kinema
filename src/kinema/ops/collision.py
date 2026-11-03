@@ -70,10 +70,12 @@ def link_meshes(rig) -> dict[str, list]:
     The joint bones, and the TCP, which carries a tool attached to it. Not Root:
     the base stands where it stands, on the floor it would always be touching.
 
-    The imported collision meshes, where the bone has them: they are the
-    description's own envelope. Otherwise what the link shows. And either way
-    whatever else rides on it, not imported with the link: a tool attached, a
-    collection attached as its instance.
+    For each link on the bone, its imported collision meshes where it has
+    them: they are the description's own envelope. Otherwise what it shows.
+    Per link, not per bone: links behind fixed joints ride on the bone of the
+    joint before them, and one with no collision meshes is still there. And
+    whatever else rides on the bone, not imported with a link: a tool
+    attached, a collection attached as its instance.
     """
     bones = {pose_bone.name for pose_bone in builder.joint_bones(rig)}
     tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
@@ -87,12 +89,17 @@ def link_meshes(rig) -> dict[str, list]:
         if obj.type != "MESH" and not (instances and obj.instance_collection is not None):
             continue
         kind = obj.get(builder.PROP_GEOMETRY_KIND, "")
-        found.setdefault(obj.parent_bone, {}).setdefault(kind, []).append(obj)
-    imported = (builder.KIND_VISUAL, builder.KIND_COLLISION)
+        if kind not in (builder.KIND_VISUAL, builder.KIND_COLLISION):
+            kind, link = "", ""
+        else:
+            link = obj.get(builder.PROP_LINK_NAME, "")
+        found.setdefault(obj.parent_bone, {}).setdefault(link, {}).setdefault(kind, []).append(obj)
     chosen = {}
-    for bone, kinds in found.items():
-        added = [obj for kind, objects in kinds.items() if kind not in imported for obj in objects]
-        envelope = kinds.get(builder.KIND_COLLISION) or kinds.get(builder.KIND_VISUAL, [])
+    for bone, links in found.items():
+        envelope, added = [], []
+        for _link, kinds in sorted(links.items(), key=lambda item: item[0]):
+            added += kinds.get("", [])
+            envelope += kinds.get(builder.KIND_COLLISION) or kinds.get(builder.KIND_VISUAL, [])
         chosen[bone] = envelope + added
     return chosen
 
@@ -149,10 +156,11 @@ def bone_points(context, rig, bone_name: str, objects) -> np.ndarray:
 def _on_bone(rig, obj) -> np.ndarray | None:
     """Where ``obj`` sits in its bone's frame, from what puts it there and nothing posed.
 
-    Blender hangs a child of a bone from the bone's tail. None where something
-    else moves it as well, a constraint: then only where it stands says.
+    Blender hangs a child of a bone from the bone's tail. None where a
+    constraint moves it as well: then only where it stands says. A muted one
+    moves nothing.
     """
-    if obj.parent != rig or obj.parent_type != "BONE" or len(obj.constraints):
+    if obj.parent != rig or obj.parent_type != "BONE" or _constrained(obj):
         return None
     bone = rig.data.bones.get(obj.parent_bone)
     if bone is None:
@@ -187,8 +195,11 @@ def source_signature(rig) -> str:
     """
     digest = hashlib.sha1()
     for bone, objects in sorted(link_meshes(rig).items()):
+        # A child of a bone hangs from its tail: a bone made longer moves it.
+        rest = rig.data.bones.get(bone)
+        digest.update(f"{bone}|{round(rest.length, 6) if rest else ''}|".encode())
         for obj in sorted(objects, key=lambda o: o.name):
-            digest.update(f"{bone}|{obj.name}|".encode())
+            digest.update(f"{obj.name}|{_what_moves(obj)}|".encode())
             # Where it sits on the bone, from what puts it there and nothing
             # posed: read off the posed bone, float32 differs in the sixth
             # decimal from one pose to the next, and playing the job would read
@@ -205,12 +216,32 @@ def source_signature(rig) -> str:
                 # Where the collection is instanced from moves all of it.
                 offset = obj.instance_collection.instance_offset
                 digest.update(np.round(np.array(offset), 6).tobytes())
-                for part in sorted(obj.instance_collection.all_objects, key=lambda o: o.name):
+                for part in sorted(_parts(obj.instance_collection), key=lambda o: o.name):
                     digest.update(f"{part.name}|".encode())
                     digest.update(np.round(np.array(part.matrix_world), 6).tobytes())
+                    digest.update(_keys(part))
+                    digest.update(_drivers_and_constraints(part))
                     if part.type == "MESH":
-                        _hash_mesh(digest, part)
+                        # Shown only through the instance, so never visible
+                        # itself: read as the instance shows it.
+                        if _deformed(part):
+                            digest.update(_evaluated_digest(part))
+                        else:
+                            digest.update(_mesh_digest(part.data))
     return digest.hexdigest()
+
+
+def _parts(collection, seen=None) -> list:
+    """Every object ``collection`` instances, through collections it instances in turn."""
+    seen = set() if seen is None else seen
+    if collection.name in seen:
+        return []
+    seen.add(collection.name)
+    found = list(collection.all_objects)
+    for obj in list(found):
+        if obj.instance_type == "COLLECTION" and obj.instance_collection is not None:
+            found += _parts(obj.instance_collection, seen)
+    return found
 
 
 def moving_on_bone(rig) -> list[tuple[str, str]]:
@@ -218,7 +249,8 @@ def moving_on_bone(rig) -> list[tuple[str, str]]:
 
     Capsules ride rigidly on their bone, so they can't hold one of these: a
     constraint, a driver or keys on its transform puts it somewhere else from
-    one pose or frame to the next.
+    one pose or frame to the next, and animated shape keys or modifiers
+    reshape it. An attached collection moves if anything in it does.
     """
     found = []
     for objects in link_meshes(rig).values():
@@ -230,7 +262,23 @@ def moving_on_bone(rig) -> list[tuple[str, str]]:
 
 
 def _what_moves(obj) -> str:
-    if any(not constraint.mute for constraint in obj.constraints):
+    why = _moved_by(obj) or _reshaped_by(obj)
+    if why or obj.instance_type != "COLLECTION" or obj.instance_collection is None:
+        return why
+    for part in sorted(_parts(obj.instance_collection), key=lambda o: o.name):
+        why = _moved_by(part) or _reshaped_by(part)
+        if why:
+            return f"{why}, on {part.name}"
+    return ""
+
+
+def _constrained(obj) -> bool:
+    return any(not constraint.mute for constraint in obj.constraints)
+
+
+def _moved_by(obj) -> str:
+    """What moves ``obj`` from one pose or frame to the next, or ""."""
+    if _constrained(obj):
         return "a constraint"
     data = obj.animation_data
     if data is not None and any(
@@ -242,6 +290,42 @@ def _what_moves(obj) -> str:
     ):
         return "keys"
     return ""
+
+
+def _reshaped_by(obj) -> str:
+    """What reshapes ``obj`` from one frame to the next, or "": the fit reads one frame."""
+    keys = getattr(getattr(obj, "data", None), "shape_keys", None)
+    if keys is not None and _animated(keys):
+        return "animated shape keys"
+    if _animated(obj, "modifiers["):
+        return "animated modifiers"
+    if obj.type == "MESH" and _animated(obj.data):
+        return "an animated mesh"
+    return ""
+
+
+def _animated(block, prefix: str = "") -> bool:
+    """Whether keys, a strip or a driver play on ``block``'s paths starting ``prefix``."""
+    from .ik import _iter_fcurve_containers
+
+    data = getattr(block, "animation_data", None)
+    if data is None:
+        return False
+    if any(not d.mute and d.data_path.startswith(prefix) for d in data.drivers):
+        return True
+    actions = [data.action] if data.action is not None else []
+    if data.use_nla:
+        actions += [
+            strip.action
+            for track in data.nla_tracks if not track.mute
+            for strip in track.strips if not strip.mute and strip.action is not None
+        ]
+    return any(
+        not curve.mute and curve.data_path.startswith(prefix)
+        for action in actions
+        for container in _iter_fcurve_containers(action)
+        for curve in container
+    )
 
 
 def _hash_mesh(digest, obj) -> None:
@@ -423,6 +507,12 @@ def collision_state(rig, scene) -> str:
     # The robot's own placement: moved, every capsule is somewhere else. Its
     # pose is the job's, in the waypoints' fingerprint.
     _placement(digest, rig)
+    # Where its bones rest: Set TCP moves the TCP's, and the tool's capsules
+    # with it. Not their pose, which is the job's.
+    for bone in rig.data.bones:
+        parent = bone.parent.name if bone.parent else ""
+        digest.update(f"{bone.name}|{parent}|{round(bone.length, 6)}|".encode())
+        digest.update(np.round(np.array(bone.matrix_local), 6).tobytes())
     for obj in objects:
         digest.update(f"|{obj.name}|{obj.type}|{obj.kinema_obstacle_shape}|".encode())
         # The bounds it's measured by: an empty's are its display size.

@@ -329,8 +329,9 @@ the panel says so: **Fit Again**. The **×** beside it clears them, and with the
 collision work Kinema does for the robot as it moves.
 
 Capsules ride rigidly on their bones, so a link mesh that also moves on its bone, by a
-constraint, a driver or keys, can't be held by them. **Fit Capsules** names it and fits nothing
-until what moves it is removed or applied.
+constraint, a driver or keys, or changes shape as the job plays, by animated shape keys or
+modifiers, can't be held by them. Nor can an attached collection with anything like that inside
+it. **Fit Capsules** names it and fits nothing until what moves it is removed or applied.
 
 **Obstacles are the objects in the scene's *Kinema Obstacles* collection,** directly in it:
 not those in a collection inside it, which the panel counts. **Add Selected** puts the

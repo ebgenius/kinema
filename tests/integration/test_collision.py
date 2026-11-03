@@ -146,9 +146,16 @@ class TestCapsules:
             _set_q(builder, arm6, q)
             assert not collision.capsules_stale(arm6)
 
-    def test_the_same_meshes_fit_the_same_in_any_pose(self, arm6, builder, modules):
-        """Fitted in the bone's frame: where the arm stands changes nothing, to the bit."""
+    @pytest.mark.parametrize("muted", [False, True])
+    def test_the_same_meshes_fit_the_same_in_any_pose(self, arm6, builder, modules, muted):
+        """Fitted in the bone's frame: where the arm stands changes nothing, to the bit.
+
+        A muted constraint on a link moves nothing, and changes nothing either.
+        """
         collision = modules("ops.collision")
+        if muted:
+            for objects in collision.link_meshes(arm6).values():
+                objects[0].constraints.new("COPY_LOCATION").mute = True
         fitted = []
         for q in (HOME, TURNED):
             _set_q(builder, arm6, q)
@@ -253,7 +260,9 @@ class TestCapsules:
         handlers.on_undone(bpy.context.scene)
         assert not collision.capsules_stale(arm6)
 
-    @pytest.mark.parametrize("what", ["a constraint", "a driver", "keys"])
+    @pytest.mark.parametrize(
+        "what", ["a constraint", "a driver", "keys", "animated shape keys", "animated modifiers"]
+    )
     def test_a_link_that_moves_on_its_bone_can_t_be_fitted(self, arm6, modules, what):
         """Capsules ride rigidly on their bone: they can't hold what moves on it."""
         import bpy
@@ -270,6 +279,12 @@ class TestCapsules:
             muted.mute = False
         elif what == "a driver":
             link.driver_add("location", 0).driver.expression = "0.2"
+        elif what == "animated shape keys":
+            link.shape_key_add(name="Basis")
+            link.shape_key_add(name="Bulge").keyframe_insert("value", frame=1)
+        elif what == "animated modifiers":
+            link.modifiers.new("Twice", "ARRAY")
+            link.keyframe_insert('modifiers["Twice"].count', frame=1)
         else:
             link.keyframe_insert("location", frame=1)
         bpy.context.view_layer.update()
@@ -338,18 +353,109 @@ class TestWhatALinkIs:
         bone, (shown,) = next(iter(collision.link_meshes(arm6).items()))
         hull = self._on_bone(arm6, bone, "Hull", size=0.3)
         hull[builder.PROP_GEOMETRY_KIND] = builder.KIND_COLLISION
+        hull[builder.PROP_LINK_NAME] = shown[builder.PROP_LINK_NAME]
         hull.hide_viewport = True
         assert collision.link_meshes(arm6)[bone] == [hull]
         _fit(arm6)
         radius = max(c.radius for c in collision.capsules_of(arm6) if c.bone == bone)
         assert radius >= 0.3, "fitted to the hidden 0.6 m cube, not the link's own mesh"
 
+    def test_collision_meshes_stand_for_their_own_link_only(self, arm6, builder, modules):
+        """A link behind a fixed joint rides the same bone, and may have none of its own."""
+        collision = modules("ops.collision")
+        bone, shown = next(iter(collision.link_meshes(arm6).items()))
+        parts = {}
+        for name, link, kind in (
+            ("A.hull", "link_a", builder.KIND_COLLISION),
+            ("A.shown", "link_a", builder.KIND_VISUAL),
+            ("B.shown", "link_b", builder.KIND_VISUAL),
+        ):
+            parts[name] = self._on_bone(arm6, bone, name, size=0.05)
+            parts[name][builder.PROP_LINK_NAME] = link
+            parts[name][builder.PROP_GEOMETRY_KIND] = kind
+        read = collision.link_meshes(arm6)[bone]
+        assert parts["A.hull"] in read and parts["B.shown"] in read
+        assert parts["A.shown"] not in read
+        assert all(obj in read for obj in shown)
+
+    def test_a_longer_bone_makes_them_stale(self, arm6, modules):
+        """Its meshes hang from its tail: made longer in Edit Mode, they move with it."""
+        import bpy
+
+        collision = modules("ops.collision")
+        bone = next(iter(collision.link_meshes(arm6)))
+        _fit(arm6)
+        bpy.context.view_layer.objects.active = arm6
+        bpy.ops.object.mode_set(mode="EDIT")
+        try:
+            arm6.data.edit_bones[bone].length *= 1.5
+        finally:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.context.view_layer.update()
+        assert collision.capsules_stale(arm6)
+
+    @staticmethod
+    def _attached_collection(rig, builder, modifier=False):
+        """A tool collection, not in the scene, attached to the last joint as an instance."""
+        import bpy
+        from mathutils import Matrix
+
+        tool = bpy.data.collections.new("Tool")
+        mesh = bpy.data.meshes.new("Tip")
+        side = (-0.02, 0.02)
+        corners = [(x, y, z) for x in (0.0, 0.3) for y in side for z in side]
+        mesh.from_pydata(corners, [], CUBE_FACES)
+        tip = bpy.data.objects.new("Tip", mesh)
+        tool.objects.link(tip)
+        if modifier:
+            tip.modifiers.new("Twice", "ARRAY").count = 2
+        bone = builder.joint_bones(rig)[-1].name
+        empty = bpy.data.objects.new("Tool.instance", None)
+        empty.instance_type, empty.instance_collection = "COLLECTION", tool
+        bpy.context.scene.collection.objects.link(empty)
+        empty.parent, empty.parent_type, empty.parent_bone = rig, "BONE", bone
+        empty.matrix_parent_inverse = Matrix.Translation(
+            (0.0, -rig.pose.bones[bone].bone.length, 0.0)
+        )
+        bpy.context.view_layer.update()
+        return tool, tip, empty
+
+    def test_a_moving_part_of_an_attached_collection_can_t_be_fitted(
+        self, arm6, builder, modules
+    ):
+        """A finger keyed inside a gripper moves on the bone as much as the gripper would."""
+        import bpy
+
+        collision = modules("ops.collision")
+        _fit(arm6)
+        _tool, tip, empty = self._attached_collection(arm6, builder)
+        tip.keyframe_insert("location", frame=1)
+        bpy.context.view_layer.update()
+        assert collision.moving_on_bone(arm6) == [(empty.name, "keys, on Tip")]
+        bpy.context.view_layer.objects.active = arm6
+        with pytest.raises(RuntimeError, match="Tip"):
+            bpy.ops.kinema.fit_capsules()
+
+    def test_a_part_s_modifiers_changed_makes_them_stale(self, arm6, builder, modules):
+        """Shown only through the instance, it's read as the instance shows it."""
+        import bpy
+
+        collision = modules("ops.collision")
+        _tool, tip, _empty = self._attached_collection(arm6, builder, modifier=True)
+        assert not tip.visible_get()
+        _fit(arm6)
+        assert not collision.capsules_stale(arm6)
+        tip.modifiers["Twice"].count = 3
+        bpy.context.view_layer.update()
+        assert collision.capsules_stale(arm6)
+
     def test_a_tool_attached_beside_collision_meshes_is_kept(self, arm6, builder, modules):
         """The collision meshes stand for what was imported, not for what was added."""
         collision = modules("ops.collision")
-        bone, _ = next(iter(collision.link_meshes(arm6).items()))
+        bone, (shown,) = next(iter(collision.link_meshes(arm6).items()))
         hull = self._on_bone(arm6, bone, "Hull", size=0.3)
         hull[builder.PROP_GEOMETRY_KIND] = builder.KIND_COLLISION
+        hull[builder.PROP_LINK_NAME] = shown[builder.PROP_LINK_NAME]
         tool = self._on_bone(arm6, bone, "Gripper", size=0.04, offset=(0.0, 0.0, 0.8))
         assert collision.link_meshes(arm6)[bone] == [hull, tool]
         _fit(arm6)
@@ -881,6 +987,34 @@ class TestThePanel:
             assert collision.obstacle_objects(first) == [crate]
         finally:
             bpy.data.scenes.remove(other)
+
+    def test_moving_the_tcp_outdates_the_check(self, arm6, builder, modules):
+        """Set TCP moves where the TCP's bone rests, and the tool's capsules with it."""
+        import bpy
+
+        collision, waypoints = modules("ops.collision"), modules("ops.waypoints")
+        TestChecking()._job(arm6, builder, modules)
+        tcp = arm6.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+        TestWhatALinkIs._on_bone(arm6, tcp, "Gripper", size=0.04)
+        _fit(arm6)
+        _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        scene = bpy.context.scene
+        job = waypoints.job_signature(arm6)
+        assert collision.check_measured_this(arm6, scene)
+        bpy.context.view_layer.objects.active = arm6
+        bpy.ops.object.mode_set(mode="EDIT")
+        try:
+            edit = arm6.data.edit_bones[tcp]
+            edit.head.x += 0.05
+            edit.tail.x += 0.05
+        finally:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.context.view_layer.update()
+        assert waypoints.job_signature(arm6) == job
+        assert not collision.check_measured_this(arm6, scene)
+        assert collision.closest_approach(arm6, scene) is None
 
     def test_resizing_an_empty_obstacle_outdates_the_check(self, arm6, builder, modules):
         """An empty is measured by its display size, which its bounds don't follow."""
