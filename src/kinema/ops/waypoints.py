@@ -1043,9 +1043,9 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
         for frame in range(first - 1, last + 2):
             scene.frame_set(frame)
             context.view_layer.update()
-            segments, obstacles = None, ()
+            segments, radii, obstacles = None, None, ()
             if measured:
-                a, b = collision_ops.capsule_ends(rig, capsules)
+                a, b, radii = collision_ops.capsule_ends(rig, capsules)
                 segments = np.stack([a, b], axis=1)
                 obstacles = tuple(collision_ops.obstacles(context))
             samples.append(
@@ -1054,6 +1054,7 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
                     q=np.array([joint_value(pose_bone) for pose_bone in bones]),
                     tool=np.array(rig.pose.bones[tool].matrix, dtype=float),
                     segments=segments,
+                    radii=radii,
                     obstacles=obstacles,
                 )
             )

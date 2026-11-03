@@ -8,10 +8,11 @@ meshes they came from, so the panel can say when the meshes have changed
 since.
 
 **Obstacles** are the objects in the scene's *Kinema Obstacles* collection,
-one per scene. Each is a box by default, its own bounds placed where it
-stands; or a sphere, the smallest ball about its centre that holds it; or a
-floor, everything below the plane through its origin square to its Z axis.
-Read on every frame, so one that moves is measured where it is.
+one per scene, directly: not those in a collection inside it. Each is a box
+by default, its own bounds placed where it stands; or a sphere, the smallest
+ball about its centre that holds it; or a floor, everything below the plane
+through its origin square to its Z axis. Read on every frame, so one that
+moves is measured where it is.
 
 The Motion Check measures every capsule against every obstacle on every frame
 of the job, and says where a link comes closest, or hits.
@@ -70,8 +71,9 @@ def link_meshes(rig) -> dict[str, list]:
     the base stands where it stands, on the floor it would always be touching.
 
     The imported collision meshes, where the bone has them: they are the
-    description's own envelope. Otherwise everything else on it, what the link
-    shows and any tool attached, a collection attached as its instance.
+    description's own envelope. Otherwise what the link shows. And either way
+    whatever else rides on it, not imported with the link: a tool attached, a
+    collection attached as its instance.
     """
     bones = {pose_bone.name for pose_bone in builder.joint_bones(rig)}
     tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
@@ -86,19 +88,25 @@ def link_meshes(rig) -> dict[str, list]:
             continue
         kind = obj.get(builder.PROP_GEOMETRY_KIND, "")
         found.setdefault(obj.parent_bone, {}).setdefault(kind, []).append(obj)
+    imported = (builder.KIND_VISUAL, builder.KIND_COLLISION)
     chosen = {}
     for bone, kinds in found.items():
-        others = [
-            obj for kind, objects in kinds.items() if kind != builder.KIND_COLLISION
-            for obj in objects
-        ]
-        chosen[bone] = kinds.get(builder.KIND_COLLISION) or others
+        added = [obj for kind, objects in kinds.items() if kind not in imported for obj in objects]
+        envelope = kinds.get(builder.KIND_COLLISION) or kinds.get(builder.KIND_VISUAL, [])
+        chosen[bone] = envelope + added
     return chosen
 
 
 def bone_points(context, rig, bone_name: str, objects) -> np.ndarray:
     """``objects`` as points in the bone's own frame: their vertices, as evaluated,
-    and points spread over their faces (``rig/collision.py``)."""
+    and points spread over their faces (``rig/collision.py``).
+
+    Placed on the bone from what puts them there, not through the posed bone:
+    Blender keeps posed matrices in single precision, and going out to the
+    world and back moves every point by micrometres that differ from one pose
+    to the next. Enough to change how many capsules a link gets, so the same
+    meshes fitted in two poses came out differently.
+    """
     depsgraph = context.evaluated_depsgraph_get()
     to_bone = np.linalg.inv(np.array(rig.matrix_world @ rig.pose.bones[bone_name].matrix))
     wanted = {obj.name: obj for obj in objects}
@@ -113,17 +121,49 @@ def bone_points(context, rig, bone_name: str, objects) -> np.ndarray:
         seen.add(owner.original.name)
         if instance.object.type != "MESH":
             continue
+        placed = _on_bone(rig, owner.original)
+        if placed is None:
+            matrix = to_bone @ np.array(instance.matrix_world)
+        elif instance.is_instance:
+            # The collection's objects where they stand in it, less its offset.
+            local = np.array(instance.object.original.matrix_world, dtype=float)
+            local[:3, 3] -= np.array(owner.original.instance_collection.instance_offset)
+            matrix = placed @ local
+        else:
+            matrix = placed
         mesh = instance.object.to_mesh()
         try:
-            parts.append(_surface(mesh, to_bone @ np.array(instance.matrix_world)))
+            parts.append(_surface(mesh, matrix))
         finally:
             instance.object.to_mesh_clear()
     # A hidden object isn't evaluated, and the collision meshes are hidden: its
     # own mesh, unmodified, where it stands.
     for name, obj in wanted.items():
         if name not in seen and obj.type == "MESH":
-            parts.append(_surface(obj.data, to_bone @ np.array(obj.matrix_world)))
+            placed = _on_bone(rig, obj)
+            matrix = placed if placed is not None else to_bone @ np.array(obj.matrix_world)
+            parts.append(_surface(obj.data, matrix))
     return np.concatenate(parts) if parts else np.zeros((0, 3))
+
+
+def _on_bone(rig, obj) -> np.ndarray | None:
+    """Where ``obj`` sits in its bone's frame, from what puts it there and nothing posed.
+
+    Blender hangs a child of a bone from the bone's tail. None where something
+    else moves it as well, a constraint: then only where it stands says.
+    """
+    if obj.parent != rig or obj.parent_type != "BONE" or len(obj.constraints):
+        return None
+    bone = rig.data.bones.get(obj.parent_bone)
+    if bone is None:
+        return None
+    tail = np.eye(4)
+    tail[1, 3] = bone.length
+    return (
+        tail
+        @ np.array(obj.matrix_parent_inverse, dtype=float)
+        @ np.array(obj.matrix_basis, dtype=float)
+    )
 
 
 def _surface(mesh, matrix: np.ndarray) -> np.ndarray:
@@ -188,16 +228,18 @@ def _hash_mesh(digest, obj) -> None:
 _generation = 0
 #: Mesh name -> (the generation it was hashed in, its hash).
 _mesh_hashes: dict[str, tuple[int, bytes]] = {}
+#: Bumped on every change Blender reports to the scene, and on frame changes,
+#: undo and redo: what's worked out for a redraw holds until it moves on.
+_epoch = 0
+#: Rig name -> ((epoch, generation, the capsules' source), whether stale).
+_stale: dict[str, tuple[tuple, bool]] = {}
 
 
 def _mesh_digest(mesh) -> bytes:
     cached = _mesh_hashes.get(mesh.name)
     if cached is not None and cached[0] == _generation:
         return cached[1]
-    flat = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
-    mesh.vertices.foreach_get("co", flat)
-    # To a tenth of a millimetre: float noise in a mesh untouched isn't a change.
-    found = hashlib.sha1(np.round(flat, 4).tobytes()).digest()
+    found = _shape_digest(mesh)
     _mesh_hashes[mesh.name] = (_generation, found)
     return found
 
@@ -210,13 +252,31 @@ def _evaluated_digest(obj) -> bytes:
     evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
     mesh = evaluated.to_mesh()
     try:
-        flat = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
-        mesh.vertices.foreach_get("co", flat)
+        found = _shape_digest(mesh)
     finally:
         evaluated.to_mesh_clear()
-    found = hashlib.sha1(np.round(flat, 4).tobytes()).digest()
     _mesh_hashes[key] = (_generation, found)
     return found
+
+
+def _shape_digest(mesh) -> bytes:
+    """A mesh's shape as the fit reads it: its vertices, and the faces it spreads points over.
+
+    The faces too: one added or removed between the same vertices changes the
+    surface the fit samples, and not a vertex.
+    """
+    flat = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", flat)
+    corners = np.empty(len(mesh.loops), dtype=np.int32)
+    mesh.loops.foreach_get("vertex_index", corners)
+    sides = np.empty(len(mesh.polygons), dtype=np.int32)
+    mesh.polygons.foreach_get("loop_total", sides)
+    digest = hashlib.sha1()
+    # To a tenth of a millimetre: float noise in a mesh untouched isn't a change.
+    digest.update(np.round(flat, 4).tobytes())
+    digest.update(corners.tobytes())
+    digest.update(sides.tobytes())
+    return digest.digest()
 
 
 def note_updates(depsgraph) -> None:
@@ -227,7 +287,8 @@ def note_updates(depsgraph) -> None:
     object as the object updated. Moving, posing and playing don't change a
     mesh's geometry, only where it is.
     """
-    global _generation
+    global _generation, _epoch
+    _epoch += 1
     for update in depsgraph.updates:
         if not update.is_updated_geometry:
             continue
@@ -244,11 +305,19 @@ def note_updates(depsgraph) -> None:
             return
 
 
+def note_change() -> None:
+    """The scene may have changed without a depsgraph update: a frame set, an undo."""
+    global _epoch
+    _epoch += 1
+
+
 def forget() -> None:
     """A new file: its meshes share names, not shapes, with the last one's."""
-    global _generation
+    global _generation, _epoch
     _generation += 1
+    _epoch += 1
     _mesh_hashes.clear()
+    _stale.clear()
 
 
 def capsules_of(rig) -> list[geometry.Capsule]:
@@ -261,17 +330,26 @@ def capsules_of(rig) -> list[geometry.Capsule]:
     ]
 
 
-def capsule_ends(rig, capsules) -> tuple[np.ndarray, np.ndarray]:
-    """Each capsule's ends in world space, as the rig stands now: two (C, 3) arrays."""
+def capsule_ends(rig, capsules) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Each capsule in world space, as the rig stands now: its ends, two (C, 3)
+    arrays, and its radius, (C,).
+
+    The radius scaled as the ends are: by the rig's scale, and its parents'. A
+    scale that stretches one way more than another makes an ellipse of the
+    capsule's section, and the radius is its widest, so the capsule holds it.
+    """
     if not capsules:
-        return np.zeros((0, 3)), np.zeros((0, 3))
-    placed = {}
+        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0)
+    placed, stretch = {}, {}
     for capsule in capsules:
         if capsule.bone not in placed:
-            placed[capsule.bone] = np.array(rig.matrix_world @ rig.pose.bones[capsule.bone].matrix)
+            matrix = np.array(rig.matrix_world @ rig.pose.bones[capsule.bone].matrix)
+            placed[capsule.bone] = matrix
+            stretch[capsule.bone] = float(np.linalg.norm(matrix[:3, :3], 2))
     a = np.array([placed[c.bone][:3, :3] @ c.a + placed[c.bone][:3, 3] for c in capsules])
     b = np.array([placed[c.bone][:3, :3] @ c.b + placed[c.bone][:3, 3] for c in capsules])
-    return a, b
+    radii = np.array([c.radius * stretch[c.bone] for c in capsules])
+    return a, b, radii
 
 
 def collision_state(rig, scene) -> str:
@@ -290,20 +368,28 @@ def collision_state(rig, scene) -> str:
     if not len(rig.kinema_capsules) and not objects:
         return ""
     digest = hashlib.sha1(rig.kinema_capsules_source.encode())
+    # The robot's own placement: moved, every capsule is somewhere else. Its
+    # pose is the job's, in the waypoints' fingerprint.
+    _placement(digest, rig)
     for obj in objects:
         digest.update(f"|{obj.name}|{obj.type}|{obj.kinema_obstacle_shape}|".encode())
         digest.update(np.round(np.array([tuple(c) for c in obj.bound_box]), 6).tobytes())
         if obj.type == "MESH":
             _hash_mesh(digest, obj)
-        link = obj
-        while link is not None:
-            digest.update(f"{link.name}|".encode())
-            digest.update(np.round(np.array(link.matrix_parent_inverse), 6).tobytes())
-            digest.update(_keys(link))
-            digest.update(_unkeyed_transform(link))
-            digest.update(_drivers_and_constraints(link))
-            link = link.parent
+        _placement(digest, obj)
     return digest.hexdigest()
+
+
+def _placement(digest, obj) -> None:
+    """Where ``obj`` stands, and everything that puts it there, up its parents."""
+    link = obj
+    while link is not None:
+        digest.update(f"{link.name}|{link.parent_type}|{link.parent_bone}|".encode())
+        digest.update(np.round(np.array(link.matrix_parent_inverse), 6).tobytes())
+        digest.update(_keys(link))
+        digest.update(_unkeyed_transform(link))
+        digest.update(_drivers_and_constraints(link))
+        link = link.parent
 
 
 #: The transform channels an object's matrix_basis is made from, and how many
@@ -315,21 +401,34 @@ _TRANSFORM = (
 )
 
 
+_TRANSFORM_PATHS = frozenset(path for path, _ in _TRANSFORM)
+
+
+def _transform_curves(obj) -> list:
+    """The curves of ``obj``'s own animation that move it: its transform channels'."""
+    from .ik import own_fcurve_containers
+
+    return [
+        curve
+        for container in own_fcurve_containers(obj)
+        for curve in container
+        if curve.data_path in _TRANSFORM_PATHS
+    ]
+
+
 def _unkeyed_transform(obj) -> bytes:
-    """Every transform channel nothing keys, by its value.
+    """Every transform channel nothing keys or drives, by its value.
 
     Keys usually cover some channels only, a moving obstacle's location, say;
     its scale and turn are set by hand, and changing them changes what it
-    covers. A keyed channel is in its keys instead: where the current frame has
-    put it is no change.
+    covers. A keyed channel is in its keys instead, and a driven one in its
+    driver's settings: where the current frame has put it is no change.
     """
-    from .ik import own_fcurve_containers
-
-    keyed = {
-        (curve.data_path, curve.array_index)
-        for container in own_fcurve_containers(obj)
-        for curve in container
-    }
+    keyed = {(curve.data_path, curve.array_index) for curve in _transform_curves(obj)}
+    data = obj.animation_data
+    for driver in (data.drivers if data is not None else ()):
+        if not driver.mute:
+            keyed.add((driver.data_path, driver.array_index))
     values = [obj.rotation_mode]
     for path, size in _TRANSFORM:
         for index in range(size):
@@ -394,19 +493,37 @@ def _settings(struct) -> str:
 
 
 def _keys(obj) -> bytes:
-    """An object's animation, as its keyframes: empty when nothing animates it."""
+    """How an object's own animation moves it: empty when nothing does.
+
+    Each transform curve's keys, and everything that shapes the curve between
+    and past them: each key's interpolation and easing, the curve's
+    extrapolation, whether it is muted, its modifiers. Only the transform's:
+    a robot's action keys its joints too, and those are the job's.
+    """
     data = obj.animation_data
     if data is None or data.action is None:
         return b""
-    from .ik import own_fcurve_containers
-
-    values = [
-        (point.co[0], point.co[1], *point.handle_left, *point.handle_right)
-        for container in own_fcurve_containers(obj)
-        for curve in container
-        for point in curve.keyframe_points
-    ]
-    return np.round(np.array(values, dtype=float), 6).tobytes() if values else b""
+    parts = []
+    for curve in sorted(_transform_curves(obj), key=lambda c: (c.data_path, c.array_index)):
+        points = curve.keyframe_points
+        shape = []
+        for field in ("co", "handle_left", "handle_right"):
+            flat = np.empty(len(points) * 2)
+            points.foreach_get(field, flat)
+            shape.append(flat)
+        shape = np.concatenate(shape)
+        timing = [
+            (point.interpolation, point.easing, round(point.back, 6), round(point.amplitude, 6),
+             round(point.period, 6))
+            for point in points
+        ]
+        modifiers = [f"{modifier.type}:{_settings(modifier)}" for modifier in curve.modifiers]
+        parts.append(
+            f"{curve.data_path}[{curve.array_index}]:{curve.mute}:{curve.extrapolation}:"
+            f"{timing}:{modifiers}:".encode()
+        )
+        parts.append(np.round(shape, 6).tobytes())
+    return b"|".join(parts)
 
 
 def check_measured_this(rig, scene) -> bool:
@@ -436,8 +553,46 @@ def closest_approach(rig, scene):
 
 
 def capsules_stale(rig) -> bool:
-    """Whether the meshes have changed since the capsules were fitted."""
-    return bool(len(rig.kinema_capsules)) and rig.kinema_capsules_source != source_signature(rig)
+    """Whether the meshes have changed since the capsules were fitted.
+
+    Worked out once per change to the scene: the panels ask on every redraw,
+    several times, and fingerprinting where every mesh of a robot sits takes
+    about a millisecond.
+    """
+    if not len(rig.kinema_capsules):
+        return False
+    key = (_epoch, _generation, rig.kinema_capsules_source)
+    cached = _stale.get(rig.name)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    stale = rig.kinema_capsules_source != source_signature(rig)
+    _stale[rig.name] = (key, stale)
+    return stale
+
+
+class KINEMA_OT_clear_capsules(Operator):
+    bl_idname = "kinema.clear_capsules"
+    bl_label = "Clear Capsules"
+    bl_description = (
+        "Remove the robot's capsules. The Motion Check stops measuring it against the "
+        "obstacles, and nothing is drawn or fingerprinted for it as it moves"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        rig = active_rig(context)
+        return rig is not None and bool(len(rig.kinema_capsules))
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        count = len(rig.kinema_capsules)
+        rig.kinema_capsules.clear()
+        rig.kinema_capsules_source = ""
+        _stale.pop(rig.name, None)
+        _redraw(context)
+        self.report({"INFO"}, f"{count} capsule{'s' if count != 1 else ''} cleared")
+        return {"FINISHED"}
 
 
 class KINEMA_OT_fit_capsules(Operator):
@@ -509,14 +664,37 @@ def obstacle_collection(scene, create: bool = False):
 
 
 def obstacle_objects(scene) -> list:
+    """The objects in the scene's obstacles collection itself, in this scene.
+
+    Not those in collections inside it: Add Selected and Remove Selected put
+    objects in and take them out of this one collection, and an obstacle only
+    there through another collection could be neither removed nor told apart.
+    Never the robot, nor anything riding on it, however it came to.
+    """
     collection = obstacle_collection(scene)
     if collection is None:
         return []
-    in_scene = set(scene.objects)
     return [
-        obj for obj in collection.all_objects
-        if obj in in_scene and not builder.is_kinema_rig(obj)
+        obj for obj in collection.objects
+        if obj.name in scene.objects and not on_a_robot(obj)
     ]
+
+
+def nested_objects(scene) -> int:
+    """How many objects are in collections inside the obstacles collection: not measured."""
+    collection = obstacle_collection(scene)
+    if collection is None:
+        return 0
+    return len({obj for child in collection.children for obj in child.all_objects})
+
+
+def on_a_robot(obj) -> bool:
+    """Whether ``obj`` is a robot, or rides on one: a robot is up its parents somewhere."""
+    while obj is not None:
+        if builder.is_kinema_rig(obj):
+            return True
+        obj = obj.parent
+    return False
 
 
 def obstacles(context) -> list[geometry.Obstacle]:
@@ -602,11 +780,7 @@ def _vector(values):
 
 def _candidates(context) -> list:
     """Selected objects that could stand in the robot's way: not a rig, nor anything on one."""
-    return [
-        obj
-        for obj in context.selected_objects
-        if not builder.is_kinema_rig(obj) and not builder.is_kinema_rig(obj.parent)
-    ]
+    return [obj for obj in context.selected_objects if not on_a_robot(obj)]
 
 
 class KINEMA_OT_add_obstacles(Operator):
@@ -646,12 +820,14 @@ class KINEMA_OT_remove_obstacles(Operator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         collection = obstacle_collection(context.scene)
+        scene = context.scene
         removed = [obj for obj in context.selected_objects if obj.name in collection.objects]
         for obj in removed:
-            # Kept in the scene: an object only in the obstacles would vanish with it.
-            if len(obj.users_collection) == 1:
-                context.scene.collection.objects.link(obj)
             collection.objects.unlink(obj)
+            # Kept in this scene: an object only in its obstacles would leave it.
+            # Its other collections may be another scene's.
+            if obj.name not in scene.objects:
+                scene.collection.objects.link(obj)
         _redraw(context)
         self.report({"INFO"}, f"{len(removed)} obstacle{'s' if len(removed) != 1 else ''} removed")
         return {"FINISHED"}
@@ -695,6 +871,7 @@ def unregister_props() -> None:
 classes = (
     KinemaCapsule,
     KINEMA_OT_fit_capsules,
+    KINEMA_OT_clear_capsules,
     KINEMA_OT_add_obstacles,
     KINEMA_OT_remove_obstacles,
 )

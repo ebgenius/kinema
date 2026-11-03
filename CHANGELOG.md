@@ -71,8 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Collision checking**, in a new Collision panel. The Motion Check measures how close the
   robot comes to the obstacles on every frame, and flags a link that hits one, with the frame.
   - **Fit Capsules** fits up to four capsules round each link's meshes: its collision meshes,
-    or what it shows, an attached tool included. On a KR210, ten for the arm, the forearm's
-    341 mm in radius at most, where one capsule would be 824 mm.
+    or what it shows, an attached tool included. On a KR210, eleven for the arm, the forearm's
+    490 mm in radius at most, where one capsule would be 824 mm. **Clear Capsules** removes
+    them.
   - Obstacles are the objects in the scene's *Kinema Obstacles* collection, each a box, a
     sphere or a floor. Each scene has its own.
   - **Show Collision Shapes** draws what the check measures, red where it touches.

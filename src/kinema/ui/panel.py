@@ -72,6 +72,11 @@ def active_rig(context: bpy.types.Context) -> bpy.types.Object | None:
     return _last_shown(scene)
 
 
+def forget() -> None:
+    """A new file: its robots and scenes share names, not identities, with the last one's."""
+    _shown.clear()
+
+
 def _last_shown(scene) -> bpy.types.Object | None:
     """The robot ``scene``'s panels last showed, or its only one, if it can be seen."""
     last = scene.objects.get(_shown.get(scene.name, ""))
@@ -738,6 +743,23 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
             layout.label(text="Linear moves need an IK target", icon="ERROR")
 
 
+def check_outdated(rig, scene) -> str:
+    """Why the stored Motion Check no longer describes the job, or "" while it does."""
+    from ..ops import collision
+    from ..ops.waypoints import job_signature
+
+    # A handful of waypoints hashed per redraw; cheap, and it keeps findings
+    # about a job since edited from passing as current.
+    if rig.kinema_motion_check_job != job_signature(rig):
+        return "The waypoints have changed since this check"
+    if not collision.check_measured_this(rig, scene):
+        return "The obstacles or capsules have changed since this check"
+    if collision.capsules_stale(rig):
+        # Its clearances were measured with capsules that no longer fit the links.
+        return "The meshes have changed since the capsules: Fit Again, then Check Again"
+    return ""
+
+
 class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
     """What the last motion check found, one move per row.
 
@@ -755,8 +777,6 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         return rig is not None and len(rig.kinema_waypoints) > 1
 
     def draw(self, context: bpy.types.Context) -> None:
-        from ..ops import collision
-        from ..ops.waypoints import job_signature
         from ..rig.motion_check import problems
 
         layout = self.layout
@@ -770,14 +790,9 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
         if not len(checks):
             layout.label(text="Generate Motion checks the job too", icon="INFO")
             return
-        # A handful of waypoints hashed per redraw; cheap, and it keeps
-        # findings about a job since edited from passing as current.
-        if rig.kinema_motion_check_job != job_signature(rig):
-            layout.label(text="The waypoints have changed since this check", icon="ERROR")
-        elif not collision.check_measured_this(rig, context.scene):
-            layout.label(
-                text="The obstacles or capsules have changed since this check", icon="ERROR"
-            )
+        outdated = check_outdated(rig, context.scene)
+        if outdated:
+            layout.label(text=outdated, icon="ERROR")
 
         column = layout.column(align=True)
         for check in checks:
@@ -814,7 +829,8 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
         capsules = rig.kinema_capsules
 
         layout.label(text="Robot")
-        layout.operator(
+        row = layout.row(align=True)
+        row.operator(
             "kinema.fit_capsules",
             text="Fit Again" if len(capsules) else "Fit Capsules",
             icon="MESH_CAPSULE",
@@ -822,6 +838,7 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
         if not len(capsules):
             layout.label(text="Fit capsules round the links to check them", icon="INFO")
         else:
+            row.operator("kinema.clear_capsules", text="", icon="X")
             links = len({capsule.bone for capsule in capsules})
             layout.label(text=f"{len(capsules)} capsules on {links} links")
             if collision.capsules_stale(rig):
@@ -837,6 +854,12 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
             layout.label(text="Add the objects in the robot's way", icon="INFO")
         else:
             layout.label(text=f"{len(objects)} obstacle{'s' if len(objects) != 1 else ''}")
+        nested = collision.nested_objects(context.scene)
+        if nested:
+            layout.label(
+                text=f"{nested} in collections inside it aren't measured: add them",
+                icon="ERROR",
+            )
         active = context.active_object
         if active is not None and active in objects:
             layout.prop(active, "kinema_obstacle_shape", text=active.name)

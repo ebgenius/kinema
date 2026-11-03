@@ -80,6 +80,8 @@ class Sample:
     tool: np.ndarray
     #: The robot's capsules' ends in world space, (C, 2, 3); None with none fitted.
     segments: np.ndarray | None = None
+    #: Their radii in world space, (C,): the robot's scale too. None: as fitted.
+    radii: np.ndarray | None = None
     #: The obstacles as they stood on this frame, in world space.
     obstacles: tuple = ()
 
@@ -195,10 +197,11 @@ def check_move(
 
 def _closest_approach(result: MoveCheck, own: list[Sample], capsules) -> None:
     """Where the robot came closest to an obstacle over the move's own frames."""
-    radii = np.array([capsule.radius for capsule in capsules], dtype=float)
+    fitted = np.array([capsule.radius for capsule in capsules], dtype=float)
     for sample in own:
-        if sample.segments is None or not len(radii) or not sample.obstacles:
+        if sample.segments is None or not len(fitted) or not sample.obstacles:
             continue
+        radii = fitted if sample.radii is None else sample.radii
         found = collision.clearances(
             sample.segments[:, 0], sample.segments[:, 1], radii, list(sample.obstacles)
         )

@@ -114,7 +114,7 @@ class TestCapsules:
         _fit(arm6)
         _set_q(builder, arm6, TURNED)
         capsules = collision.capsules_of(arm6)
-        a, b = collision.capsule_ends(arm6, capsules)
+        a, b, _ = collision.capsule_ends(arm6, capsules)
         for capsule, end_a, end_b in zip(capsules, a, b, strict=True):
             objects = collision.link_meshes(arm6)[capsule.bone]
             world = np.concatenate([
@@ -145,6 +145,96 @@ class TestCapsules:
         for q in (TURNED, HOME * 0.5, TURNED * -0.7):
             _set_q(builder, arm6, q)
             assert not collision.capsules_stale(arm6)
+
+    def test_the_same_meshes_fit_the_same_in_any_pose(self, arm6, builder, modules):
+        """Fitted in the bone's frame: where the arm stands changes nothing, to the bit."""
+        collision = modules("ops.collision")
+        fitted = []
+        for q in (HOME, TURNED):
+            _set_q(builder, arm6, q)
+            _fit(arm6)
+            fitted.append([
+                (c.bone, tuple(c.a), tuple(c.b), c.radius) for c in collision.capsules_of(arm6)
+            ])
+        assert fitted[0] == fitted[1]
+
+    def test_clear_capsules(self, arm6, modules):
+        """Nothing fitted, drawn or fingerprinted for the robot afterwards."""
+        import bpy
+
+        collision, overlay = modules("ops.collision"), modules("ui.collision_overlay")
+        _fit(arm6)
+        assert len(overlay.shape_lines(bpy.context)[0])
+        assert "FINISHED" in bpy.ops.kinema.clear_capsules()
+        assert not len(arm6.kinema_capsules) and arm6.kinema_capsules_source == ""
+        assert not collision.capsules_stale(arm6)
+        assert not len(overlay.shape_lines(bpy.context)[0])
+        assert not bpy.ops.kinema.clear_capsules.poll()
+
+    def test_staleness_is_worked_out_once_per_change(self, arm6, modules, monkeypatch):
+        """The panels ask on every redraw, several times: the meshes are fingerprinted once."""
+        import bpy
+
+        collision = modules("ops.collision")
+        _fit(arm6)
+        calls = []
+        signature = collision.source_signature
+        monkeypatch.setattr(
+            collision, "source_signature", lambda rig: calls.append(1) or signature(rig)
+        )
+        for _ in range(5):
+            assert not collision.capsules_stale(arm6)
+        assert len(calls) == 1
+        objects = next(iter(collision.link_meshes(arm6).values()))
+        objects[0].location.x += 0.05
+        bpy.context.view_layer.update()
+        assert collision.capsules_stale(arm6) and collision.capsules_stale(arm6)
+        assert len(calls) == 2
+
+    def test_removing_a_face_makes_them_stale(self, arm6, modules):
+        """The same vertices, one face fewer: the surface the fit samples changed."""
+        import bmesh
+        import bpy
+
+        collision = modules("ops.collision")
+        mesh = next(iter(collision.link_meshes(arm6).values()))[0].data
+        assert len(mesh.polygons) > 1
+        _fit(arm6)
+        vertices = len(mesh.vertices)
+        shape = bmesh.new()
+        shape.from_mesh(mesh)
+        shape.faces.ensure_lookup_table()
+        bmesh.ops.delete(shape, geom=[shape.faces[0]], context="FACES_ONLY")
+        shape.to_mesh(mesh)
+        shape.free()
+        mesh.update()
+        bpy.context.view_layer.update()
+        assert len(mesh.vertices) == vertices
+        assert collision.capsules_stale(arm6)
+
+    @pytest.mark.parametrize("scale", [(2.0, 2.0, 2.0), (1.0, 1.0, 3.0)])
+    def test_they_scale_with_the_robot(self, arm6, modules, scale):
+        """As wide as the links they hold: a robot scaled up has thicker links."""
+        import bpy
+
+        collision = modules("ops.collision")
+        _fit(arm6)
+        capsules = collision.capsules_of(arm6)
+        arm6.scale = scale
+        bpy.context.view_layer.update()
+        a, b, radii = collision.capsule_ends(arm6, capsules)
+        assert radii == pytest.approx([c.radius * max(scale) for c in capsules])
+        # Every vertex of every link still inside its capsules, as scaled.
+        geometry = modules("rig.collision")
+        for bone, objects in collision.link_meshes(arm6).items():
+            world = np.concatenate([
+                np.array([obj.matrix_world @ v.co for v in obj.data.vertices]) for obj in objects
+            ])
+            held = [index for index, capsule in enumerate(capsules) if capsule.bone == bone]
+            gaps = np.min([
+                geometry._point_segment_distance(world, a[i], b[i]) - radii[i] for i in held
+            ], axis=0)
+            assert gaps.max() <= 1e-5, bone
 
     def test_reshaping_a_mesh_makes_them_stale(self, arm6, modules):
         """As Edit Mode does: the same vertices, as many, one of them moved."""
@@ -190,6 +280,19 @@ class TestWhatALinkIs:
         _fit(arm6)
         radius = max(c.radius for c in collision.capsules_of(arm6) if c.bone == bone)
         assert radius >= 0.3, "fitted to the hidden 0.6 m cube, not the link's own mesh"
+
+    def test_a_tool_attached_beside_collision_meshes_is_kept(self, arm6, builder, modules):
+        """The collision meshes stand for what was imported, not for what was added."""
+        collision = modules("ops.collision")
+        bone, _ = next(iter(collision.link_meshes(arm6).items()))
+        hull = self._on_bone(arm6, bone, "Hull", size=0.3)
+        hull[builder.PROP_GEOMETRY_KIND] = builder.KIND_COLLISION
+        tool = self._on_bone(arm6, bone, "Gripper", size=0.04, offset=(0.0, 0.0, 0.8))
+        assert collision.link_meshes(arm6)[bone] == [hull, tool]
+        _fit(arm6)
+        signature = collision.source_signature(arm6)
+        tool.location.z += 0.1
+        assert collision.source_signature(arm6) != signature
 
     def test_a_tool_on_the_tcp_gets_capsules(self, arm6, builder, modules):
         collision = modules("ops.collision")
@@ -350,6 +453,64 @@ class TestObstacles:
         assert collision.obstacle_objects(bpy.context.scene) == []
         assert crate.name in bpy.context.scene.objects
 
+    def test_only_the_collection_s_own_objects_are_obstacles(self, arm6, modules):
+        """Remove Selected takes them out of it: one only there through another couldn't be."""
+        import bpy
+
+        collision = modules("ops.collision")
+        crate = _obstacle("Crate", (1.0, 0.0, 0.0))
+        fixtures = bpy.data.collections.new("Fixtures")
+        collision.obstacle_collection(bpy.context.scene).children.link(fixtures)
+        clamp = bpy.data.objects.new("Clamp", None)
+        fixtures.objects.link(clamp)
+        assert clamp.name in bpy.context.scene.objects
+        assert collision.obstacle_objects(bpy.context.scene) == [crate]
+        assert collision.nested_objects(bpy.context.scene) == 1
+        # Added, it is one, and Remove Selected takes it out again.
+        with bpy.context.temp_override(selected_objects=[clamp]):
+            assert "FINISHED" in bpy.ops.kinema.add_obstacles()
+            assert clamp in collision.obstacle_objects(bpy.context.scene)
+            assert "FINISHED" in bpy.ops.kinema.remove_obstacles()
+        assert collision.obstacle_objects(bpy.context.scene) == [crate]
+        bpy.data.collections.remove(fixtures)
+
+    def test_nothing_riding_on_the_robot_is_an_obstacle(self, arm6, modules):
+        """However far down its parents, and however it came to ride there."""
+        import bpy
+
+        collision = modules("ops.collision")
+        gripper = bpy.data.objects.new("Gripper", None)
+        finger = bpy.data.objects.new("Finger", None)
+        for obj in (gripper, finger):
+            bpy.context.scene.collection.objects.link(obj)
+        gripper.parent, finger.parent = arm6, gripper
+        with bpy.context.temp_override(selected_objects=[finger]):
+            assert not bpy.ops.kinema.add_obstacles.poll()
+        crate = _obstacle("Crate", (1.0, 0.0, 0.0))
+        assert collision.obstacle_objects(bpy.context.scene) == [crate]
+        # Picked up after it was added.
+        crate.parent = finger
+        assert collision.obstacle_objects(bpy.context.scene) == []
+
+    def test_removing_one_held_by_another_scene_keeps_it_in_this_one(self, arm6, modules):
+        """Its other collection is another scene's: unlinked here, it would leave this one."""
+        import bpy
+
+        collision = modules("ops.collision")
+        scene = bpy.context.scene
+        crate = _obstacle("Crate", (1.0, 0.0, 0.0))
+        scene.collection.objects.unlink(crate)
+        other = bpy.data.scenes.new("Elsewhere")
+        try:
+            other.collection.objects.link(crate)
+            assert len(crate.users_collection) == 2
+            with bpy.context.temp_override(selected_objects=[crate]):
+                assert "FINISHED" in bpy.ops.kinema.remove_obstacles()
+            assert collision.obstacle_objects(scene) == []
+            assert crate.name in scene.objects
+        finally:
+            bpy.data.scenes.remove(other)
+
     def test_the_robot_is_never_an_obstacle(self, arm6):
         import bpy
 
@@ -389,14 +550,20 @@ class TestChecking:
         capsules = collision.capsules_of(arm6)
         order = [pose_bone.name for pose_bone in builder.joint_bones(arm6)]
         index = max(range(len(capsules)), key=lambda i: order.index(capsules[i].bone))
-        a, b = collision.capsule_ends(arm6, capsules)
+        a, b, _ = collision.capsule_ends(arm6, capsules)
         return capsules[index], (a[index] + b[index]) / 2.0
 
-    def test_a_link_hitting_an_obstacle_is_named_with_the_frame(self, arm6, builder, modules):
+    @pytest.mark.parametrize("scale", [1.0, 2.0])
+    def test_a_link_hitting_an_obstacle_is_named_with_the_frame(
+        self, arm6, builder, modules, scale
+    ):
         import bpy
 
         self._job(arm6, builder, modules)
         _fit(arm6)
+        # A robot scaled up has links as much thicker: their capsules too.
+        arm6.scale = (scale, scale, scale)
+        bpy.context.view_layer.update()
         capsule, middle = self._halfway(arm6, builder, modules)
         _obstacle("Post", tuple(middle), size=0.02)
         bpy.context.view_layer.objects.active = arm6
@@ -407,8 +574,8 @@ class TestChecking:
         assert (row.clearance_obstacle, row.clearance_bone, row.clearance_frame) == (
             "Post", capsule.bone, 16
         )
-        assert row.clearance == pytest.approx(-(capsule.radius + 0.02), abs=1e-4)
-        depth = (capsule.radius + 0.02) * 1000
+        assert row.clearance == pytest.approx(-(capsule.radius * scale + 0.02), abs=1e-4)
+        depth = (capsule.radius * scale + 0.02) * 1000
         expected = f"{capsule.bone} hits Post by {depth:.0f} mm at frame 16"
         assert expected in modules("rig.motion_check").problems(row)
 
@@ -467,6 +634,7 @@ class TestThePanel:
         [
             "moved", "removed", "refitted", "scrubbed", "scaled while animated", "constrained",
             "capsules stale", "constraint retuned", "driver retuned", "constraint folded",
+            "robot moved", "keys eased", "scrubbed past a driven one",
         ],
     )
     def test_the_closest_approach_goes_with_what_was_measured(
@@ -479,7 +647,7 @@ class TestThePanel:
         TestChecking()._job(arm6, builder, modules)
         _fit(arm6)
         far = _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
-        if change in ("scrubbed", "scaled while animated"):
+        if change in ("scrubbed", "scaled while animated", "keys eased"):
             # It moves through the job: where the current frame puts it is no change.
             far.keyframe_insert("location", frame=1)
             far.location.x = 6.0
@@ -509,6 +677,10 @@ class TestThePanel:
             variable.type = "TRANSFORMS"
             variable.targets[0].id = anchor
             variable.targets[0].transform_type = "LOC_Z"
+        if change == "scrubbed past a driven one":
+            # It moves through the job by a driver on the frame, not by keys.
+            driver = far.driver_add("location", 0).driver
+            driver.type, driver.expression = "SCRIPTED", "5 + frame * 0.01"
         bpy.context.view_layer.update()
         bpy.context.view_layer.objects.active = arm6
         assert "FINISHED" in bpy.ops.kinema.check_motion()
@@ -545,11 +717,22 @@ class TestThePanel:
             assert far.location.z == pytest.approx(5.0)
         elif change == "constraint folded":
             far.constraints[0].show_expanded = not far.constraints[0].show_expanded
+        elif change == "robot moved":
+            # Every capsule somewhere else; the job's own fingerprint is its pose.
+            arm6.location.x += 1.0
+        elif change == "keys eased":
+            # The same keys, but it jumps between them instead of gliding.
+            for curves in modules("ops.ik").own_fcurve_containers(far):
+                for curve in curves:
+                    for point in curve.keyframe_points:
+                        point.interpolation = "CONSTANT"
         else:
             scene.frame_set(20)
+            if change == "scrubbed past a driven one":
+                assert far.location.x == pytest.approx(5.2)
         bpy.context.view_layer.update()
         found = collision.closest_approach(arm6, scene)
-        if change in ("scrubbed", "constraint folded"):
+        if change in ("scrubbed", "constraint folded", "scrubbed past a driven one"):
             assert found is not None and found.clearance_obstacle == "FarAway"
         else:
             assert found is None
@@ -576,9 +759,29 @@ class TestThePanel:
             scene=other, view_layer=other.view_layers[0], selected_objects=[post]
         ):
             assert "FINISHED" in bpy.ops.kinema.add_obstacles()
-        assert collision.obstacle_collection(other) not in (None, firsts)
-        assert collision.obstacle_objects(other) == [post]
-        assert collision.obstacle_objects(first) == [crate]
+        try:
+            assert collision.obstacle_collection(other) not in (None, firsts)
+            assert collision.obstacle_objects(other) == [post]
+            assert collision.obstacle_objects(first) == [crate]
+        finally:
+            bpy.data.scenes.remove(other)
+
+    def test_stale_capsules_outdate_the_motion_check(self, arm6, builder, modules):
+        """Its clearances were measured with capsules that no longer fit the links."""
+        import bpy
+
+        collision, panel = modules("ops.collision"), modules("ui.panel")
+        TestChecking()._job(arm6, builder, modules)
+        _fit(arm6)
+        _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        scene = bpy.context.scene
+        assert panel.check_outdated(arm6, scene) == ""
+        next(iter(collision.link_meshes(arm6).values()))[0].location.x += 0.05
+        bpy.context.view_layer.update()
+        assert collision.check_measured_this(arm6, scene)
+        assert "Fit Again" in panel.check_outdated(arm6, scene)
 
 
 class TestTheRobotStaysInThePanels:
@@ -637,6 +840,34 @@ class TestTheRobotStaysInThePanels:
 
 
 class TestOverlay:
+    def test_outlines_are_placed_not_rebuilt(self, arm6, builder, modules, monkeypatch):
+        """Each capsule outlined once per fit; each redraw only places the outlines."""
+        import bpy
+
+        overlay, collision = modules("ui.collision_overlay"), modules("ops.collision")
+        _fit(arm6)
+        capsules = collision.capsules_of(arm6)
+        outlined = []
+        original = overlay.capsule_lines
+        monkeypatch.setattr(
+            overlay, "capsule_lines", lambda *args: outlined.append(1) or original(*args)
+        )
+        overlay.forget()
+        geometry = modules("rig.collision")
+        per_capsule = len(original((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 1.0))
+        for q in (HOME, TURNED):
+            _set_q(builder, arm6, q)
+            clear, _ = overlay.shape_lines(bpy.context)
+            assert clear.shape == (per_capsule * len(capsules), 2, 3)
+            a, b, radii = collision.capsule_ends(arm6, capsules)
+            # Every point drawn on its capsule's surface, wherever the arm is.
+            for index in range(len(capsules)):
+                points = clear[index * per_capsule:(index + 1) * per_capsule].reshape(-1, 3)
+                distance = geometry._point_segment_distance(points, a[index], b[index])
+                np.testing.assert_allclose(distance, radii[index], atol=1e-6)
+        assert len(outlined) == len(capsules)
+
+
     def test_what_touches_is_drawn_red(self, arm6, builder, modules):
         import bpy
 
@@ -645,12 +876,32 @@ class TestOverlay:
         _fit(arm6)
         far = _obstacle("FarAway", (5.0, 5.0, 5.0))
         clear, hit = overlay.shape_lines(bpy.context)
-        assert clear and not hit
+        assert len(clear) and not len(hit)
 
         capsules = collision.capsules_of(arm6)
-        a, b = collision.capsule_ends(arm6, capsules)
+        a, b, _ = collision.capsule_ends(arm6, capsules)
         far.location = tuple((a[0] + b[0]) / 2.0)
         bpy.context.view_layer.update()
         clear, hit = overlay.shape_lines(bpy.context)
         # The capsule and the box, each outlined in red.
         assert len(hit) >= len(overlay.capsule_lines(a[0], b[0], capsules[0].radius)) + 12
+
+
+class TestOpeningAFile:
+    def test_every_handler_outlives_a_file_being_opened(self, addon, modules):
+        """Blender drops a handler that isn't persistent before it opens a file."""
+        handlers = modules("handlers")
+        for collection, function in handlers._HANDLERS:
+            assert function in collection, function.__name__
+            # What @persistent leaves: the attribute, set to None.
+            assert hasattr(function, "_bpy_persistent"), function.__name__
+
+    def test_the_robot_last_shown_is_forgotten(self, arm6, modules):
+        """The next file may have a robot of the same name, in a scene of the same name."""
+        import bpy
+
+        panel, handlers = modules("ui.panel"), modules("handlers")
+        assert panel.active_rig(bpy.context) == arm6
+        assert panel._shown
+        handlers.on_load_post()
+        assert not panel._shown

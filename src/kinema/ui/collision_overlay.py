@@ -27,17 +27,22 @@ SEGMENTS = 16
 FLOOR_SIZE = 4.0
 
 _handles: list = []
+#: Rig name -> (its capsules as fitted, each one's outline in its bone's frame,
+#: an (S, 2, 3) array). Outlined once per fit; each draw only places them.
+_outlines: dict[str, tuple[tuple, list]] = {}
+#: (what the scene is at, the obstacles there and each one's outline).
+_obstacles_drawn: tuple = ((), [], [])
 
 
-def shape_lines(context) -> tuple[list, list]:
+def shape_lines(context) -> tuple[np.ndarray, np.ndarray]:
     """World-space segments: those clear of everything, and those touching something.
 
-    Each is a pair of 3-vectors. Every visible rig's capsules, and every
-    obstacle, as they stand on the current frame.
+    Each an (N, 2, 3) array of segments' ends. Every visible rig's capsules,
+    and every obstacle, as they stand on the current frame.
     """
     from ..ops import collision
 
-    obstacles = collision.obstacles(context)
+    obstacles, obstacle_outlines = _obstacles_now(context)
     clear, hit = [], []
     touched = set()
     for rig in context.view_layer.objects:
@@ -46,19 +51,64 @@ def shape_lines(context) -> tuple[list, list]:
         capsules = collision.capsules_of(rig)
         if not capsules:
             continue
-        a, b = collision.capsule_ends(rig, capsules)
-        radii = np.array([capsule.radius for capsule in capsules])
+        a, b, radii = collision.capsule_ends(rig, capsules)
         touching = np.zeros((len(capsules), len(obstacles)), dtype=bool)
         if obstacles:
             touching = geometry.clearances(a, b, radii, obstacles) < 0.0
-        for index in range(len(capsules)):
-            lines = capsule_lines(a[index], b[index], radii[index])
-            (hit if touching[index].any() else clear).extend(lines)
+        placed = {}
+        outlines = _local_outlines(rig, capsules)
+        for index, (capsule, outline) in enumerate(zip(capsules, outlines, strict=True)):
+            matrix = placed.get(capsule.bone)
+            if matrix is None:
+                matrix = np.array(rig.matrix_world @ rig.pose.bones[capsule.bone].matrix)
+                placed[capsule.bone] = matrix
+            lines = outline @ matrix[:3, :3].T + matrix[:3, 3]
+            (hit if touching[index].any() else clear).append(lines)
         touched |= {obstacles[j].name for j in np.nonzero(touching.any(axis=0))[0]}
-    for obstacle in obstacles:
-        lines = obstacle_lines(obstacle)
-        (hit if obstacle.name in touched else clear).extend(lines)
-    return clear, hit
+    for obstacle, lines in zip(obstacles, obstacle_outlines, strict=True):
+        (hit if obstacle.name in touched else clear).append(lines)
+    return _stacked(clear), _stacked(hit)
+
+
+def _stacked(parts: list) -> np.ndarray:
+    return np.concatenate(parts) if parts else np.zeros((0, 2, 3))
+
+
+def _local_outlines(rig, capsules) -> list:
+    """Each capsule's outline in its bone's frame, worked out again only once refitted."""
+    key = tuple((c.bone, *c.a, *c.b, c.radius) for c in capsules)
+    cached = _outlines.get(rig.name)
+    if cached is None or cached[0] != key:
+        cached = (key, [np.array(capsule_lines(c.a, c.b, c.radius)) for c in capsules])
+        _outlines[rig.name] = cached
+    return cached[1]
+
+
+def _obstacles_now(context) -> tuple[list, list]:
+    """The obstacles and their outlines, worked out again only once the scene has changed.
+
+    A sphere's size reads its whole mesh: not something to do on every redraw.
+    """
+    global _obstacles_drawn
+    from ..ops import collision
+
+    scene = context.scene
+    shapes = tuple(
+        (obj.name, obj.kinema_obstacle_shape) for obj in collision.obstacle_objects(scene)
+    )
+    key = (collision._epoch, collision._generation, scene.name, scene.frame_current, shapes)
+    if _obstacles_drawn[0] != key:
+        found = collision.obstacles(context)
+        outlines = [np.array(obstacle_lines(o)).reshape(-1, 2, 3) for o in found]
+        _obstacles_drawn = (key, found, outlines)
+    return _obstacles_drawn[1], _obstacles_drawn[2]
+
+
+def forget() -> None:
+    """A new file: its rigs and obstacles share names, not shapes, with the last one's."""
+    global _obstacles_drawn
+    _outlines.clear()
+    _obstacles_drawn = ((), [], [])
 
 
 def capsule_lines(a, b, radius: float) -> list:
@@ -137,7 +187,7 @@ def _draw() -> None:
     if overlay is not None and not overlay.show_overlays:
         return
     clear, hit = shape_lines(context)
-    if not clear and not hit:
+    if not len(clear) and not len(hit):
         return
 
     import gpu
@@ -153,9 +203,9 @@ def _draw() -> None:
         shader.uniform_float("viewportSize", (region.width, region.height))
         shader.uniform_float("lineWidth", LINE_WIDTH * context.preferences.system.ui_scale)
         for lines, color in ((clear, CLEAR), (hit, HIT)):
-            if not lines:
+            if not len(lines):
                 continue
-            points = [tuple(point) for segment in lines for point in segment]
+            points = np.ascontiguousarray(lines.reshape(-1, 3), dtype=np.float32)
             shader.uniform_float("color", color)
             batch_for_shader(shader, "LINES", {"pos": points}).draw(shader)
     finally:
