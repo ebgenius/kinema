@@ -73,12 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Fit Capsules** fits up to four capsules round each link's meshes: its collision meshes,
     or what it shows, an attached tool included. On a KR210, ten for the arm, the forearm's
     341 mm in radius at most, where one capsule would be 824 mm.
-  - Obstacles are the objects in a *Kinema Obstacles* collection, each a box, a sphere or a
-    floor.
+  - Obstacles are the objects in the scene's *Kinema Obstacles* collection, each a box, a
+    sphere or a floor. Each scene has its own.
   - **Show Collision Shapes** draws what the check measures, red where it touches.
 
 ### Changed
 
+- **The panels keep the robot while something else is selected,** in Object Mode: the one
+  they last showed, or the scene's only robot. Before, selecting a fixture, to make it an
+  obstacle say, took them away. The robot's name is marked *Not selected* meanwhile.
 - **Velocity Limits is now Motion Limits,** with **Speed**, **Acceleration** and **Not
   Checked** sub-panels. **Ignore Velocity Limits** is now **Ignore Motion Limits**, and a
   file saved with it ticked keeps it.

@@ -7,11 +7,11 @@ They are kept on the rig, in each bone's frame, with a fingerprint of the
 meshes they came from, so the panel can say when the meshes have changed
 since.
 
-**Obstacles** are the objects in the *Kinema Obstacles* collection. Each is a
-box by default, its own bounds placed where it stands; or a sphere, the size
-of its largest half-extent; or a floor, everything below the plane through its
-origin square to its Z axis. Read on every frame, so one that moves is
-measured where it is.
+**Obstacles** are the objects in the scene's *Kinema Obstacles* collection,
+one per scene. Each is a box by default, its own bounds placed where it
+stands; or a sphere, the smallest ball about its centre that holds it; or a
+floor, everything below the plane through its origin square to its Z axis.
+Read on every frame, so one that moves is measured where it is.
 
 The Motion Check measures every capsule against every obstacle on every frame
 of the job, and says where a link comes closest, or hits.
@@ -339,29 +339,58 @@ def _unkeyed_transform(obj) -> bytes:
 
 
 def _drivers_and_constraints(obj) -> bytes:
-    """What drives an object or constrains it, by its settings.
+    """What drives an object or constrains it, by every setting it has.
 
-    Not what they read: a constraint follows its target and a driver its
-    inputs, and those are fingerprinted only where they are obstacles
-    themselves. Moving the target of an obstacle's constraint is not seen.
+    Every setting, not a chosen few: a Copy Location's offset, a driver's
+    variable type, any of them moves the object. Not what they read: a
+    constraint follows its target and a driver its inputs, and those are
+    fingerprinted only where they are obstacles themselves. Moving the target
+    of an obstacle's constraint is not seen.
     """
     parts = []
     data = obj.animation_data
-    for driver in (data.drivers if data is not None else ()):
-        targets = [
-            (variable.name, target.id.name if target.id else "", target.data_path)
-            for variable in driver.driver.variables
-            for target in variable.targets
+    for curve in (data.drivers if data is not None else ()):
+        variables = [
+            f"{_settings(variable)}<{';'.join(_settings(target) for target in variable.targets)}>"
+            for variable in curve.driver.variables
         ]
-        parts.append(f"{driver.data_path}[{driver.array_index}]:{driver.driver.expression}:{targets}")
-    for constraint in obj.constraints:
-        target = getattr(constraint, "target", None)
+        modifiers = [f"{modifier.type}:{_settings(modifier)}" for modifier in curve.modifiers]
+        keys = [tuple(round(value, 6) for value in point.co) for point in curve.keyframe_points]
         parts.append(
-            f"{constraint.name}:{constraint.type}:{constraint.mute}:"
-            f"{round(constraint.influence, 6)}:{target.name if target else ''}:"
-            f"{getattr(constraint, 'subtarget', '')}"
+            f"{curve.data_path}[{curve.array_index}]:{curve.mute}:{_settings(curve.driver)}:"
+            f"{variables}:{modifiers}:{keys}"
         )
+    for constraint in obj.constraints:
+        parts.append(f"{constraint.type}:{_settings(constraint)}")
     return "|".join(parts).encode()
+
+
+#: Settings that change how something is shown in the interface, not what it does.
+_INTERFACE_ONLY = frozenset({"rna_type", "show_expanded", "active", "is_override_data_local"})
+
+
+def _settings(struct) -> str:
+    """Every writable setting of ``struct`` but its lists, as the same text in every session.
+
+    What it points to by name, not followed. Numbers rounded, so a value read
+    back from a file is the value stored. Flag sets sorted: a set's order
+    changes from one Python process to the next.
+    """
+    values = []
+    for prop in struct.bl_rna.properties:
+        if prop.is_readonly or prop.type == "COLLECTION" or prop.identifier in _INTERFACE_ONLY:
+            continue
+        value = getattr(struct, prop.identifier)
+        if prop.type == "POINTER":
+            value = getattr(value, "name", "") if value is not None else ""
+        elif prop.type == "FLOAT":
+            value = np.round(np.array(value, dtype=float), 6).tolist()
+        elif prop.type == "ENUM" and prop.is_enum_flag:
+            value = sorted(value)
+        elif getattr(prop, "array_length", 0):
+            value = tuple(value)
+        values.append(f"{prop.identifier}={value}")
+    return ",".join(values)
 
 
 def _keys(obj) -> bytes:
@@ -462,12 +491,18 @@ class KINEMA_OT_fit_capsules(Operator):
 # obstacles
 # --------------------------------------------------------------------------
 def obstacle_collection(scene, create: bool = False):
-    """The scene's obstacles collection, made and linked under the scene if asked to."""
-    collection = bpy.data.collections.get(OBSTACLES)
+    """The scene's obstacles collection, made and linked under the scene if asked to.
+
+    Kept on the scene, not looked up by name: collections belong to the file,
+    so a name would find another scene's obstacles, or a collection of the
+    user's that happens to be called the same.
+    """
+    collection = scene.kinema.obstacles
     if collection is None:
         if not create:
             return None
         collection = bpy.data.collections.new(OBSTACLES)
+        scene.kinema.obstacles = collection
     if create and collection not in scene.collection.children_recursive:
         scene.collection.children.link(collection)
     return collection

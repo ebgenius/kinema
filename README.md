@@ -324,8 +324,9 @@ bone, and on the TCP for an attached tool:
 They are kept on the rig and move with it, however the job plays. After changing a link's
 meshes or tool, the panel says so: **Fit Again**.
 
-**Obstacles are the objects in the *Kinema Obstacles* collection.** **Add Selected** puts the
-selected objects there. Each is measured as one of three shapes, chosen in the panel:
+**Obstacles are the objects in the scene's *Kinema Obstacles* collection.** **Add Selected**
+puts the selected objects there, and each scene has its own. Selecting them leaves the robot in
+the panels: in Object Mode they keep the robot they last showed, marked *Not selected*. Each is measured as one of three shapes, chosen in the panel:
 - **Box**, the default: the object's own bounds, turned and placed as it stands. Tight for
   anything modelled along its own axes;
 - **Sphere**: the smallest ball about its centre that holds all of it: a ball, stretched or

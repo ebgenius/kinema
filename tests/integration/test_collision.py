@@ -110,8 +110,6 @@ class TestCapsules:
 
     def test_they_ride_on_their_bones(self, arm6, builder, modules):
         """Fitted in one pose, and still round the link in another."""
-        import bpy
-
         collision = modules("ops.collision")
         _fit(arm6)
         _set_q(builder, arm6, TURNED)
@@ -126,7 +124,6 @@ class TestCapsules:
             centre = world.mean(axis=0)
             geometry = modules("rig.collision")
             assert float(geometry._point_segment_distance(centre, end_a, end_b)) <= capsule.radius
-        assert bpy.context.scene.frame_current is not None
 
     def test_moving_a_mesh_on_its_bone_makes_them_stale(self, arm6, modules):
         import bpy
@@ -469,7 +466,7 @@ class TestThePanel:
         "change",
         [
             "moved", "removed", "refitted", "scrubbed", "scaled while animated", "constrained",
-            "capsules stale",
+            "capsules stale", "constraint retuned", "driver retuned", "constraint folded",
         ],
     )
     def test_the_closest_approach_goes_with_what_was_measured(
@@ -487,9 +484,36 @@ class TestThePanel:
             far.keyframe_insert("location", frame=1)
             far.location.x = 6.0
             far.keyframe_insert("location", frame=31)
+        if change in ("constraint retuned", "constraint folded"):
+            # It follows an empty out of the way: its own location is offset from it.
+            anchor = bpy.data.objects.new("Anchor", None)
+            bpy.context.scene.collection.objects.link(anchor)
+            anchor.location = (6.0, 6.0, 6.0)
+            follow = far.constraints.new("COPY_LOCATION")
+            follow.target = anchor
+        if change == "driver retuned":
+            # Its height read off an empty, then off another that stands at the
+            # same height on frame 1 and climbs away through the job: only on
+            # frame 1 does it stand in the same place.
+            anchor = bpy.data.objects.new("Anchor", None)
+            climber = bpy.data.objects.new("Climber", None)
+            for empty in (anchor, climber):
+                bpy.context.scene.collection.objects.link(empty)
+                empty.location = (0.0, 0.0, 5.0)
+            climber.keyframe_insert("location", index=2, frame=1)
+            climber.location.z = 50.0
+            climber.keyframe_insert("location", index=2, frame=31)
+            driver = far.driver_add("location", 2).driver
+            driver.type = "AVERAGE"
+            variable = driver.variables.new()
+            variable.type = "TRANSFORMS"
+            variable.targets[0].id = anchor
+            variable.targets[0].transform_type = "LOC_Z"
+        bpy.context.view_layer.update()
         bpy.context.view_layer.objects.active = arm6
         assert "FINISHED" in bpy.ops.kinema.check_motion()
         scene = bpy.context.scene
+        assert collision.closest_approach(arm6, scene) is not None
         if change == "moved":
             far.location.x = 4.0
         elif change == "removed":
@@ -507,14 +531,109 @@ class TestThePanel:
         elif change == "capsules stale":
             mesh_object = next(iter(collision.link_meshes(arm6).values()))[0]
             mesh_object.location.x += 0.05
+        elif change == "constraint retuned":
+            # Its own location added on: it moves 5 m, nothing else changes.
+            far.constraints[0].use_offset = True
+        elif change == "driver retuned":
+            scene.frame_set(1)
+            bpy.context.view_layer.update()
+            # Where it stands now is no change: the drivers' settings are.
+            assert far.location.z == pytest.approx(5.0)
+            assert collision.closest_approach(arm6, scene) is not None
+            far.animation_data.drivers[0].driver.variables[0].targets[0].id = climber
+            bpy.context.view_layer.update()
+            assert far.location.z == pytest.approx(5.0)
+        elif change == "constraint folded":
+            far.constraints[0].show_expanded = not far.constraints[0].show_expanded
         else:
             scene.frame_set(20)
         bpy.context.view_layer.update()
         found = collision.closest_approach(arm6, scene)
-        if change == "scrubbed":
+        if change in ("scrubbed", "constraint folded"):
             assert found is not None and found.clearance_obstacle == "FarAway"
         else:
             assert found is None
+
+    def test_each_scene_has_obstacles_of_its_own(self, arm6, modules):
+        """Collections are the file's: a name alone would share them between scenes."""
+        import bpy
+
+        collision = modules("ops.collision")
+        first = bpy.context.scene
+        crate = _obstacle("Crate", (1.0, 0.0, 0.0))
+        firsts = collision.obstacle_collection(first)
+        assert firsts.name == collision.OBSTACLES
+        # Another scene holding a collection of that name: not its obstacles.
+        other = bpy.data.scenes.new("Other")
+        other.collection.children.link(firsts)
+        assert crate.name in other.objects
+        assert collision.obstacle_collection(other) is None
+        assert collision.obstacle_objects(other) == []
+
+        post = bpy.data.objects.new("Post", None)
+        other.collection.objects.link(post)
+        with bpy.context.temp_override(
+            scene=other, view_layer=other.view_layers[0], selected_objects=[post]
+        ):
+            assert "FINISHED" in bpy.ops.kinema.add_obstacles()
+        assert collision.obstacle_collection(other) not in (None, firsts)
+        assert collision.obstacle_objects(other) == [post]
+        assert collision.obstacle_objects(first) == [crate]
+
+
+class TestTheRobotStaysInThePanels:
+    """Selecting a fixture to make it an obstacle doesn't take the robot's panels away."""
+
+    def _select_only(self, obj):
+        import bpy
+
+        for other in bpy.context.selected_objects:
+            other.select_set(False)
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+
+    def test_selecting_a_fixture_keeps_the_robot_shown(self, arm6, modules):
+        import bpy
+
+        panel = modules("ui.panel")
+        self._select_only(arm6)
+        assert panel.active_rig(bpy.context) == arm6
+        crate = _obstacle("Crate", (1.0, 0.0, 0.0))
+        assert bpy.context.object == crate and not arm6.select_get()
+        assert panel.active_rig(bpy.context) == arm6
+        assert not panel.is_selected(bpy.context, arm6)
+        assert panel.KINEMA_PT_collision.poll(bpy.context)
+        assert bpy.ops.kinema.fit_capsules.poll()
+
+    def test_the_last_robot_shown_of_two(self, arm6, modules):
+        import bpy
+
+        panel = modules("ui.panel")
+        second = arm6.copy()
+        second.data = arm6.data.copy()
+        bpy.context.scene.collection.objects.link(second)
+        crate = _obstacle("Crate", (1.0, 0.0, 0.0))
+        bpy.context.view_layer.update()
+        for shown in (second, arm6):
+            self._select_only(shown)
+            assert panel.active_rig(bpy.context) == shown
+            self._select_only(crate)
+            assert panel.active_rig(bpy.context) == shown
+
+    def test_editing_another_object_shows_no_robot(self, arm6, modules):
+        import bpy
+
+        panel = modules("ui.panel")
+        self._select_only(arm6)
+        assert panel.active_rig(bpy.context) == arm6
+        crate = _obstacle("Crate", (1.0, 0.0, 0.0))
+        bpy.ops.object.mode_set(mode="EDIT")
+        try:
+            assert bpy.context.mode == "EDIT_MESH"
+            assert panel.active_rig(bpy.context) is None
+        finally:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        assert crate.mode == "OBJECT"
 
 
 class TestOverlay:

@@ -33,22 +33,61 @@ from ..rig.waypoints import MOVE_LINEAR
 CATEGORY = "Kinema"
 
 
+#: The robot each scene's panels last showed, by scene and object name.
+_shown: dict[str, str] = {}
+
+
 def active_rig(context: bpy.types.Context) -> bpy.types.Object | None:
     """The Kinema rig the panel should act on.
 
     Accepts the active object if it is a rig, otherwise the armature that owns
     the active object -- so selecting a link mesh still shows its robot's
-    controls rather than an empty panel.
+    controls rather than an empty panel -- otherwise a selected rig.
+
+    With no robot selected, the one the panels last showed, so selecting a
+    fixture to make it an obstacle doesn't take the panels away; or the
+    scene's only robot. In Object Mode only: editing another object is
+    something else.
     """
     obj = context.object
+    rig = None
     if builder.is_kinema_rig(obj):
-        return obj
-    if obj is not None and builder.is_kinema_rig(obj.parent):
-        return obj.parent
-    for candidate in context.selected_objects:
-        if builder.is_kinema_rig(candidate):
-            return candidate
-    return None
+        rig = obj
+    elif obj is not None and builder.is_kinema_rig(obj.parent):
+        rig = obj.parent
+    else:
+        rig = next(
+            (candidate for candidate in context.selected_objects
+             if builder.is_kinema_rig(candidate)),
+            None,
+        )
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return rig
+    if rig is not None:
+        _shown[scene.name] = rig.name
+        return rig
+    if context.mode != "OBJECT":
+        return None
+    return _last_shown(scene)
+
+
+def _last_shown(scene) -> bpy.types.Object | None:
+    """The robot ``scene``'s panels last showed, or its only one, if it can be seen."""
+    last = scene.objects.get(_shown.get(scene.name, ""))
+    if builder.is_kinema_rig(last) and last.visible_get():
+        return last
+    rigs = [
+        obj for obj in scene.objects
+        if builder.is_kinema_rig(obj) and obj.visible_get()
+    ]
+    return rigs[0] if len(rigs) == 1 else None
+
+
+def is_selected(context: bpy.types.Context, rig: bpy.types.Object) -> bool:
+    """Whether the panels show ``rig`` because it, or something on it, is selected."""
+    obj = context.object
+    return rig == obj or (obj is not None and rig == obj.parent) or rig in context.selected_objects
 
 
 class KinemaSceneProps(PropertyGroup):
@@ -90,6 +129,11 @@ class KinemaSceneProps(PropertyGroup):
             "them, red where they touch"
         ),
         default=True,
+    )
+    obstacles: PointerProperty(
+        name="Obstacles",
+        description="The collection whose objects the Motion Check measures the robot against",
+        type=bpy.types.Collection,
     )
     # Blender reads properties from a class's own __annotations__ and does not
     # walk base classes, so the shared definitions are merged in rather than
@@ -188,6 +232,10 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
         sub = row.row()
         sub.alignment = "RIGHT"
         sub.label(text=f"{count} DoF")
+        if not is_selected(context, rig):
+            # Kept while something else is selected: say so, so the panels
+            # aren't read as the selected object's.
+            layout.label(text="Not selected: the robot last shown", icon="RESTRICT_SELECT_ON")
 
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
