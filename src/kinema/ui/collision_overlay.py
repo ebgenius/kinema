@@ -27,9 +27,10 @@ SEGMENTS = 16
 FLOOR_SIZE = 4.0
 
 _handles: list = []
-#: Rig name -> (its capsules as fitted, each one's outline in its bone's frame,
-#: an (S, 2, 3) array). Outlined once per fit; each draw only places them.
-_outlines: dict[str, tuple[tuple, list]] = {}
+#: A capsule's outline, worked out once for every capsule: each point as
+#: (across the axis, the other way across it, along it as a fraction of its
+#: length, past its ends), the first two and last in units of the radius.
+_outline: np.ndarray | None = None
 #: (what the scene is at, the obstacles there and each one's outline).
 _obstacles_drawn: tuple = ((), [], [])
 
@@ -55,14 +56,10 @@ def shape_lines(context) -> tuple[np.ndarray, np.ndarray]:
         touching = np.zeros((len(capsules), len(obstacles)), dtype=bool)
         if obstacles:
             touching = geometry.clearances(a, b, radii, obstacles) < 0.0
-        placed = {}
-        outlines = _local_outlines(rig, capsules)
-        for index, (capsule, outline) in enumerate(zip(capsules, outlines, strict=True)):
-            matrix = placed.get(capsule.bone)
-            if matrix is None:
-                matrix = np.array(rig.matrix_world @ rig.pose.bones[capsule.bone].matrix)
-                placed[capsule.bone] = matrix
-            lines = outline @ matrix[:3, :3].T + matrix[:3, 3]
+        # As measured: round each capsule's ends in world space, at its world
+        # radius, so a robot scaled unevenly is drawn as the check holds it.
+        for index in range(len(capsules)):
+            lines = _placed_outline(a[index], b[index], float(radii[index]))
             (hit if touching[index].any() else clear).append(lines)
         touched |= {obstacles[j].name for j in np.nonzero(touching.any(axis=0))[0]}
     for obstacle, lines in zip(obstacles, obstacle_outlines, strict=True):
@@ -74,14 +71,29 @@ def _stacked(parts: list) -> np.ndarray:
     return np.concatenate(parts) if parts else np.zeros((0, 2, 3))
 
 
-def _local_outlines(rig, capsules) -> list:
-    """Each capsule's outline in its bone's frame, worked out again only once refitted."""
-    key = tuple((c.bone, *c.a, *c.b, c.radius) for c in capsules)
-    cached = _outlines.get(rig.name)
-    if cached is None or cached[0] != key:
-        cached = (key, [np.array(capsule_lines(c.a, c.b, c.radius)) for c in capsules])
-        _outlines[rig.name] = cached
-    return cached[1]
+def _placed_outline(a: np.ndarray, b: np.ndarray, radius: float) -> np.ndarray:
+    """What :func:`capsule_lines` draws for this capsule, as an (S, 2, 3) array.
+
+    Placed from one outline worked out once, with numpy: building each from
+    its rings and arcs in Python on every redraw took milliseconds.
+    """
+    global _outline
+    if _outline is None:
+        unit = np.array(capsule_lines((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 1.0)).reshape(-1, 3)
+        u, v = _square_to(np.array([0.0, 0.0, 1.0]))
+        along = np.clip(unit[:, 2], 0.0, 1.0)
+        _outline = np.column_stack([unit @ u, unit @ v, along, unit[:, 2] - along])
+    axis = b - a
+    length = float(np.linalg.norm(axis))
+    axis = axis / length if length > 1e-9 else np.array([0.0, 0.0, 1.0])
+    u, v = _square_to(axis)
+    points = (
+        a
+        + np.outer(_outline[:, 2], b - a)
+        + radius * (np.outer(_outline[:, 0], u) + np.outer(_outline[:, 1], v)
+                    + np.outer(_outline[:, 3], axis))
+    )
+    return points.reshape(-1, 2, 3)
 
 
 def _obstacles_now(context) -> tuple[list, list]:
@@ -107,7 +119,6 @@ def _obstacles_now(context) -> tuple[list, list]:
 def forget() -> None:
     """A new file: its rigs and obstacles share names, not shapes, with the last one's."""
     global _obstacles_drawn
-    _outlines.clear()
     _obstacles_drawn = ((), [], [])
 
 

@@ -324,9 +324,13 @@ bone, and on the TCP for an attached tool:
 - not the base, which stands on whatever floor there is.
 
 They are kept on the rig and move with it, however the job plays, and scale with it: a robot
-scaled unevenly gets the widest of its scales. After changing a link's meshes, faces or tool,
+scaled unevenly gets the widest of its scales. After changing a link's meshes, faces, shape keys or tool,
 the panel says so: **Fit Again**. The **×** beside it clears them, and with them all the
 collision work Kinema does for the robot as it moves.
+
+Capsules ride rigidly on their bones, so a link mesh that also moves on its bone, by a
+constraint, a driver or keys, can't be held by them. **Fit Capsules** names it and fits nothing
+until what moves it is removed or applied.
 
 **Obstacles are the objects in the scene's *Kinema Obstacles* collection,** directly in it:
 not those in a collection inside it, which the panel counts. **Add Selected** puts the

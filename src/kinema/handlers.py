@@ -275,10 +275,18 @@ def on_geometry_changed(scene: bpy.types.Scene, depsgraph=None) -> None:
 
 @persistent
 def on_scene_moved(*_args) -> None:
-    """A frame set, an undo or a redo: what the panels worked out for the scene may not hold."""
+    """A frame set: what the panels worked out for the scene may not hold."""
     from .ops import collision
 
     collision.note_change()
+
+
+@persistent
+def on_undone(*_args) -> None:
+    """An undo or a redo: any mesh may be back to a shape it had, unreported."""
+    from .ops import collision
+
+    collision.note_undo()
 
 
 @persistent
@@ -358,8 +366,8 @@ _HANDLERS = (
     (bpy.app.handlers.frame_change_post, on_pose_settled),
     (bpy.app.handlers.depsgraph_update_post, on_geometry_changed),
     (bpy.app.handlers.frame_change_post, on_scene_moved),
-    (bpy.app.handlers.undo_post, on_scene_moved),
-    (bpy.app.handlers.redo_post, on_scene_moved),
+    (bpy.app.handlers.undo_post, on_undone),
+    (bpy.app.handlers.redo_post, on_undone),
 )
 
 

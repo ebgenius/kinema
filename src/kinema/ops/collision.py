@@ -195,6 +195,10 @@ def source_signature(rig) -> str:
             # as a change.
             placed = obj.matrix_parent_inverse @ obj.matrix_basis
             digest.update(np.round(np.array(placed), 5).tobytes())
+            # What would move it on the bone: a fit refuses it, so one added
+            # since asks for Fit Again, which says why.
+            digest.update(_keys(obj))
+            digest.update(_drivers_and_constraints(obj))
             if obj.type == "MESH":
                 _hash_mesh(digest, obj)
             else:
@@ -209,16 +213,55 @@ def source_signature(rig) -> str:
     return digest.hexdigest()
 
 
-def _hash_mesh(digest, obj) -> None:
-    """A mesh object's shape as the fit reads it: with its modifiers, where they apply.
+def moving_on_bone(rig) -> list[tuple[str, str]]:
+    """The robot's link objects that move on their bones: (name, what moves it).
 
-    The fit reads what Blender evaluates, modifiers included, for an object it
-    evaluates; a hidden one, it reads unmodified. So does this.
+    Capsules ride rigidly on their bone, so they can't hold one of these: a
+    constraint, a driver or keys on its transform puts it somewhere else from
+    one pose or frame to the next.
     """
-    if obj.visible_get() and any(modifier.show_viewport for modifier in obj.modifiers):
+    found = []
+    for objects in link_meshes(rig).values():
+        for obj in objects:
+            why = _what_moves(obj)
+            if why:
+                found.append((obj.name, why))
+    return sorted(found)
+
+
+def _what_moves(obj) -> str:
+    if any(not constraint.mute for constraint in obj.constraints):
+        return "a constraint"
+    data = obj.animation_data
+    if data is not None and any(
+        not driver.mute and driver.data_path in _TRANSFORM_PATHS for driver in data.drivers
+    ):
+        return "a driver"
+    if any(not curve.mute for curve in _transform_curves(obj)) or any(
+        curves for _track, _strip, curves in _strip_curves(obj)
+    ):
+        return "keys"
+    return ""
+
+
+def _hash_mesh(digest, obj) -> None:
+    """A mesh object's shape as the fit reads it: with its modifiers and shape keys.
+
+    The fit reads what Blender evaluates for an object it evaluates; a hidden
+    one, it reads unmodified. So does this.
+    """
+    if obj.visible_get() and _deformed(obj):
         digest.update(_evaluated_digest(obj))
     else:
         digest.update(_mesh_digest(obj.data))
+
+
+def _deformed(obj) -> bool:
+    """Whether what Blender evaluates ``obj`` to can differ from its mesh."""
+    keys = getattr(obj.data, "shape_keys", None)
+    return any(modifier.show_viewport for modifier in obj.modifiers) or (
+        keys is not None and len(keys.key_blocks) > 0
+    )
 
 
 #: Bumped whenever Blender reports a mesh's geometry has changed, by
@@ -295,20 +338,29 @@ def note_updates(depsgraph) -> None:
         # The object too: a modifier that follows another object changes what
         # the object evaluates to when that object moves, and the mesh itself
         # isn't touched.
+        # A shape key's value changes what the object evaluates to, not its
+        # mesh: Blender reports the object.
         changed = update.id
         if isinstance(changed, bpy.types.Mesh) or (
             isinstance(changed, bpy.types.Object)
             and changed.type == "MESH"
-            and len(changed.modifiers)
+            and _deformed(changed)
         ):
             _generation += 1
             return
 
 
 def note_change() -> None:
-    """The scene may have changed without a depsgraph update: a frame set, an undo."""
+    """The scene may have changed without a depsgraph update: a frame set."""
     global _epoch
     _epoch += 1
+
+
+def note_undo() -> None:
+    """An undo or a redo: any mesh may be back to a shape it had, and nothing says which."""
+    global _epoch, _generation
+    _epoch += 1
+    _generation += 1
 
 
 def forget() -> None:
@@ -373,7 +425,8 @@ def collision_state(rig, scene) -> str:
     _placement(digest, rig)
     for obj in objects:
         digest.update(f"|{obj.name}|{obj.type}|{obj.kinema_obstacle_shape}|".encode())
-        digest.update(np.round(np.array([tuple(c) for c in obj.bound_box]), 6).tobytes())
+        # The bounds it's measured by: an empty's are its display size.
+        digest.update(np.round(np.concatenate(_local_bounds(obj)), 6).tobytes())
         if obj.type == "MESH":
             _hash_mesh(digest, obj)
         _placement(digest, obj)
@@ -416,6 +469,40 @@ def _transform_curves(obj) -> list:
     ]
 
 
+def _strip_curves(obj) -> list:
+    """The NLA strips that play on ``obj``: (track, strip, its transform curves).
+
+    Only those that play: tracks and strips not muted, the soloed track alone
+    where one is, and none with the NLA turned off.
+    """
+    from .ik import _iter_fcurve_containers
+
+    data = obj.animation_data
+    if data is None or not data.use_nla:
+        return []
+    tracks = [track for track in data.nla_tracks if track.is_solo] or list(data.nla_tracks)
+    found = []
+    for track in tracks:
+        if track.mute:
+            continue
+        for strip in track.strips:
+            if strip.mute or strip.action is None:
+                continue
+            handle = None
+            if getattr(strip.action, "layers", None):
+                handle = getattr(getattr(strip, "action_slot", None), "handle", None)
+                if handle is None:
+                    continue
+            curves = [
+                curve
+                for container in _iter_fcurve_containers(strip.action, handle)
+                for curve in container
+                if curve.data_path in _TRANSFORM_PATHS
+            ]
+            found.append((track, strip, curves))
+    return found
+
+
 def _unkeyed_transform(obj) -> bytes:
     """Every transform channel nothing keys or drives, by its value.
 
@@ -424,7 +511,14 @@ def _unkeyed_transform(obj) -> bytes:
     covers. A keyed channel is in its keys instead, and a driven one in its
     driver's settings: where the current frame has put it is no change.
     """
-    keyed = {(curve.data_path, curve.array_index) for curve in _transform_curves(obj)}
+    # A muted curve sets nothing: its channel is wherever it was put.
+    keyed = {
+        (curve.data_path, curve.array_index)
+        for curve in _transform_curves(obj)
+        if not curve.mute
+    }
+    for _track, _strip, curves in _strip_curves(obj):
+        keyed |= {(curve.data_path, curve.array_index) for curve in curves if not curve.mute}
     data = obj.animation_data
     for driver in (data.drivers if data is not None else ()):
         if not driver.mute:
@@ -465,7 +559,9 @@ def _drivers_and_constraints(obj) -> bytes:
 
 
 #: Settings that change how something is shown in the interface, not what it does.
-_INTERFACE_ONLY = frozenset({"rna_type", "show_expanded", "active", "is_override_data_local"})
+_INTERFACE_ONLY = frozenset(
+    {"rna_type", "show_expanded", "active", "is_override_data_local", "select"}
+)
 
 
 def _settings(struct) -> str:
@@ -499,12 +595,31 @@ def _keys(obj) -> bytes:
     and past them: each key's interpolation and easing, the curve's
     extrapolation, whether it is muted, its modifiers. Only the transform's:
     a robot's action keys its joints too, and those are the job's.
+
+    The active action's, and each NLA strip's that plays, with the strip's own
+    timing and blending and its track's.
     """
     data = obj.animation_data
-    if data is None or data.action is None:
+    if data is None:
         return b""
+    strips = _strip_curves(obj)
+    if data.action is None and not strips:
+        return b""
+    parts = [
+        f"use_nla={data.use_nla}|{data.action_blend_type}|{data.action_extrapolation}|"
+        f"{round(data.action_influence, 6)}".encode(),
+        _curves_digest(_transform_curves(obj) if data.action is not None else []),
+    ]
+    for track, strip, curves in strips:
+        parts.append(f"{track.name}:{track.is_solo}:{_settings(strip)}".encode())
+        parts.append(_curves_digest(curves))
+    return b"|".join(parts)
+
+
+def _curves_digest(curves) -> bytes:
+    """``curves``' keys, and everything that shapes each curve between and past them."""
     parts = []
-    for curve in sorted(_transform_curves(obj), key=lambda c: (c.data_path, c.array_index)):
+    for curve in sorted(curves, key=lambda c: (c.data_path, c.array_index)):
         points = curve.keyframe_points
         shape = []
         for field in ("co", "handle_left", "handle_right"):
@@ -614,6 +729,16 @@ class KINEMA_OT_fit_capsules(Operator):
         if not meshes:
             self.report({"ERROR"}, "No meshes ride on this robot's joints to fit capsules to")
             return {"CANCELLED"}
+        moving = moving_on_bone(rig)
+        if moving:
+            named = ", ".join(f"{name} ({why})" for name, why in moving[:4])
+            more = f" and {len(moving) - 4} more" if len(moving) > 4 else ""
+            self.report(
+                {"ERROR"},
+                f"Capsules ride rigidly on their bones, and these move on theirs: {named}{more}. "
+                "Remove what moves them, or apply it",
+            )
+            return {"CANCELLED"}
         started = time.perf_counter()
         fitted = []
         window = context.window_manager
@@ -714,6 +839,9 @@ def obstacle_of(obj) -> geometry.Obstacle:
     if kind == geometry.KIND_FLOOR:
         # The plane its own X and Y span, however a parent has sheared them.
         normal = np.cross(linear[:, 0], linear[:, 1])
+        # Mirrored in X or Y, the cross product turns round; its Z doesn't.
+        if float(normal @ linear[:, 2]) < 0.0:
+            normal = -normal
         if np.linalg.norm(normal) > 0.0:
             turned[:3, :3] = _frame_with_z(normal / np.linalg.norm(normal))
         turned[:3, 3] = location
