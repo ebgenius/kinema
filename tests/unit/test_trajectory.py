@@ -6,12 +6,18 @@ The claims checked here:
 - the speed and acceleration costs measure exactly what the Motion Check
   measures, so a job the solve keeps within its limits is one the check passes;
 - a move's frames-needed estimate counts only its own frames;
-- the limit costs are made by the jaxls the problem is, and forgetting drops them.
+- the limit costs are made by the jaxls the problem is, and forgetting drops them;
+- the collision cost measures what the Motion Check measures, box, sphere and
+  floor, costs nothing where a capsule keeps far enough away, and has a
+  gradient everywhere; capsules and obstacles are padded to a count, with the
+  padding asking nothing, and the obstacles stand still with the robot either
+  side of the job.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -22,6 +28,7 @@ trajectory = load_addon_module("solver.trajectory")
 base = load_addon_module("solver.base")
 velocity = load_addon_module("rig.velocity")
 check = load_addon_module("rig.motion_check")
+geometry = load_addon_module("rig.collision")
 
 
 def _problem(frames=10, dof=2):
@@ -149,6 +156,12 @@ class TestCostsBelongToTheirJaxls:
         jaxls = self._jaxls("one")
         assert trajectory._limit_costs(jaxls)[0] is trajectory._limit_costs(jaxls)[0]
 
+    def test_the_collision_cost_is_made_by_its_jaxls_too(self, monkeypatch):
+        monkeypatch.setattr(trajectory, "_costs", {})
+        old = self._jaxls("old")
+        assert trajectory._collision_cost(old) is trajectory._collision_cost(old)
+        assert trajectory._collision_cost(self._jaxls("new"))[0] == "new"
+
     def test_forgetting_everything_drops_them(self, monkeypatch):
         monkeypatch.setattr(trajectory, "_costs", {})
         trajectory._limit_costs(self._jaxls("one"))
@@ -203,3 +216,196 @@ def test_frames_needed_scales_with_the_square_root_of_acceleration():
     move = check.check_move("B", "JOINT", 0, 30, np.eye(4), np.eye(4), samples, [joint], FPS)
     expected = math.ceil(30 * math.sqrt(2.0))
     assert check.frames_needed(move, samples, [joint], FPS, True, True) in (expected, expected + 1)
+
+
+def _obstacles():
+    """A box, a sphere and a floor, each turned, round the origin."""
+    turned = np.array([[0.0, -0.6, 0.8], [1.0, 0.0, 0.0], [0.0, 0.8, 0.6]])
+    made = []
+    for index, (kind, size) in enumerate(
+        (
+            (geometry.KIND_BOX, np.array([0.2, 0.1, 0.3])),
+            (geometry.KIND_SPHERE, np.array([0.25])),
+            (geometry.KIND_FLOOR, np.zeros(3)),
+        )
+    ):
+        matrix = np.eye(4)
+        matrix[:3, :3] = turned if index != 1 else np.eye(3)
+        matrix[:3, 3] = (0.1 * index, -0.2, 0.05 * index - 0.4 * (index == 2))
+        made.append(geometry.Obstacle(f"o{index}", kind, matrix, size))
+    return made
+
+
+def _as_arrays(jnp, obstacles):
+    kind = jnp.asarray([trajectory.SHAPES.index(o.kind) for o in obstacles])
+    rotation = jnp.asarray(np.array([o.matrix[:3, :3] for o in obstacles]), dtype=jnp.float32)
+    centre = jnp.asarray(np.array([o.matrix[:3, 3] for o in obstacles]), dtype=jnp.float32)
+    size = jnp.asarray(
+        np.array([np.resize(np.asarray(o.size, dtype=float), 3) for o in obstacles]),
+        dtype=jnp.float32,
+    )
+    return kind, rotation, centre, size
+
+
+def _collision(frames=10, capsules=3, obstacles=2):
+    frame = np.repeat(np.eye(4)[None, None], frames, axis=0).repeat(obstacles, axis=1)
+    frame[:, :, 0, 3] = np.arange(frames)[:, None]
+    return trajectory.Collision(
+        link=np.arange(capsules),
+        a=np.zeros((capsules, 3)),
+        b=np.ones((capsules, 3)),
+        radius=np.full(capsules, 0.05),
+        placement=np.repeat(np.eye(4)[None], frames, axis=0),
+        kind=np.zeros(obstacles, dtype=int),
+        frame=frame,
+        size=np.full((frames, obstacles, 3), 0.1),
+        # Not zero at the job's ends, so the rest frames' zero is padding's own.
+        weight=np.ones(frames),
+        keep_clear=0.01,
+    )
+
+
+class TestKeepingClear:
+    jax = pytest.importorskip("jax")
+    jnp = pytest.importorskip("jax.numpy")
+
+    def test_each_shape_is_measured_as_the_check_measures_it(self):
+        """Segments outside, touching and through each: the distance the check finds."""
+        random = np.random.default_rng(3)
+        a = random.uniform(-0.6, 0.6, (60, 3))
+        b = a + random.uniform(-0.5, 0.5, (60, 3))
+        obstacles = _obstacles()
+        expected = geometry.clearances(a, b, np.zeros(len(a)), obstacles)
+        got = trajectory.segment_clearance(
+            self.jax, self.jnp, self.jnp.asarray(a, dtype=self.jnp.float32),
+            self.jnp.asarray(b, dtype=self.jnp.float32), *_as_arrays(self.jnp, obstacles),
+        )
+        np.testing.assert_allclose(np.asarray(got), expected, atol=2e-5)
+        assert (expected < 0.0).any() and (expected > 0.0).any(), "precondition: both"
+
+    def test_it_has_a_gradient_everywhere(self):
+        """At a sphere's centre and deep in a box: no square root of zero to make a NaN."""
+        obstacles = _obstacles()
+        points = self.jnp.asarray(
+            [obstacles[0].matrix[:3, 3], obstacles[1].matrix[:3, 3]], dtype=self.jnp.float32
+        )
+
+        def total(a):
+            return trajectory.segment_clearance(
+                self.jax, self.jnp, a, a + 0.01, *_as_arrays(self.jnp, obstacles)
+            ).sum()
+
+        gradient = np.asarray(self.jax.grad(total)(points))
+        assert np.isfinite(gradient).all()
+
+    def test_its_gradient_is_the_distance_s_own(self):
+        """The closest point found with the gradient stopped; the distance's own there."""
+        from jax import config
+
+        obstacles = _obstacles()
+        a = np.array([[0.5, 0.3, 0.4], [-0.1, 0.6, 0.2], [0.3, -0.3, -0.5]])
+        b = a + np.array([[-0.4, 0.1, 0.3], [0.5, -0.2, 0.1], [0.2, 0.3, 0.6]])
+        config.update("jax_enable_x64", True)
+        try:
+            arrays = _as_arrays(self.jnp, obstacles)
+            arrays = tuple(self.jnp.asarray(x, dtype=self.jnp.float64) if i else x
+                           for i, x in enumerate(arrays))
+
+            def total(flat):
+                return trajectory.segment_clearance(
+                    self.jax, self.jnp, flat.reshape(-1, 3), self.jnp.asarray(b), *arrays
+                ).sum()
+
+            flat = self.jnp.asarray(a.ravel())
+            gradient = np.asarray(self.jax.grad(total)(flat))
+            step = 1e-6
+            numeric = np.array([
+                (float(total(flat.at[i].add(step))) - float(total(flat.at[i].add(-step))))
+                / (2 * step)
+                for i in range(flat.size)
+            ])
+        finally:
+            config.update("jax_enable_x64", False)
+        np.testing.assert_allclose(gradient, numeric, atol=1e-4)
+
+    def test_a_capsule_far_enough_away_costs_nothing(self):
+        """Short of ``aim`` it costs about the shortfall, weighted; past it, nothing."""
+
+        class Robot:
+            @staticmethod
+            def forward_kinematics(q):
+                # Every link at the origin, unturned.
+                return self.jnp.tile(self.jnp.asarray([1.0, 0, 0, 0, 0, 0, 0]), (2, 1))
+
+        jnp = self.jnp
+        sphere = geometry.Obstacle("ball", geometry.KIND_SPHERE, np.eye(4), np.array([0.1]))
+        kind, rotation, centre, size = _as_arrays(jnp, [sphere])
+        shared = {
+            "link": jnp.asarray([0, 1, 0]),
+            "a": jnp.asarray([[0.2, 0.0, 0.0], [0.135, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+            "b": jnp.asarray([[0.2, 0.0, 1.0], [0.135, 0.0, 1.0], [0.0, 0.0, 0.0]]),
+            "radius": jnp.asarray([0.05, 0.03, 0.05]),
+            "capsule_mask": jnp.asarray([1.0, 1.0, 0.0]),
+            "kind": kind,
+            "obstacle_mask": jnp.asarray([1.0]),
+            "aim": jnp.asarray(0.01),
+        }
+        own = {
+            "placement": jnp.eye(4),
+            "rotation": rotation,
+            "centre": centre,
+            "size": size,
+            "weight": jnp.asarray(7.0),
+        }
+        short = np.asarray(trajectory.clearance_short({"q": jnp.zeros(1)}, Robot, "q", shared, own))
+        # 50 mm clear of the ball, 5 mm clear, and a padded capsule inside it.
+        level = trajectory.SATURATION
+        np.testing.assert_allclose(
+            short, [0.0, 7.0 * level * np.log1p(0.005 / level), 0.0], atol=1e-6
+        )
+
+
+class TestPaddingTheCell:
+    def test_counts_are_padded_to_the_next_bucket(self):
+        assert trajectory.padded(1, trajectory.CAPSULE_BUCKETS) == 8
+        assert trajectory.padded(11, trajectory.CAPSULE_BUCKETS) == 16
+        assert trajectory.padded(0, trajectory.OBSTACLE_BUCKETS) == 4
+        assert _collision(capsules=9, obstacles=5).shape == (16, 8)
+
+    def test_too_many_are_refused(self):
+        most = trajectory.OBSTACLE_BUCKETS[-1]
+        with pytest.raises(base.SolverError, match=f"{most + 1} is too many"):
+            trajectory.padded(most + 1, trajectory.OBSTACLE_BUCKETS)
+
+    def test_the_cell_stands_still_either_side_and_asks_nothing(self):
+        problem = _problem(frames=10)
+        collision = _collision(frames=10)
+        padded, own = trajectory.at_rest(replace(problem, collision=collision))
+        rest, after = trajectory.REST_FRAMES, padded.frames - own.stop
+        cell = padded.collision
+        np.testing.assert_array_equal(cell.frame[own], collision.frame)
+        np.testing.assert_array_equal(cell.frame[:rest], collision.frame[:1].repeat(rest, 0))
+        np.testing.assert_array_equal(cell.frame[own.stop:], collision.frame[-1:].repeat(after, 0))
+        np.testing.assert_array_equal(cell.placement[own], collision.placement)
+        np.testing.assert_array_equal(cell.size[own], collision.size)
+        assert len(cell.placement) == len(cell.size) == padded.frames
+        np.testing.assert_array_equal(cell.weight[own], collision.weight)
+        assert not cell.weight[:rest].any() and not cell.weight[own.stop:].any()
+
+    def test_padding_asks_nothing(self):
+        jnp = pytest.importorskip("jax.numpy")
+        collision = _collision(frames=4, capsules=3, obstacles=2)
+        arrays = trajectory._collision_arrays(jnp, collision)
+        assert arrays["a"].shape == (8, 3) and arrays["rotation"].shape == (4, 4, 3, 3)
+        np.testing.assert_array_equal(np.asarray(arrays["capsule_mask"]), [1] * 3 + [0] * 5)
+        np.testing.assert_array_equal(np.asarray(arrays["obstacle_mask"]), [1, 1, 0, 0])
+        assert float(arrays["aim"]) == pytest.approx(0.01 + trajectory.CLEARANCE_MARGIN)
+        np.testing.assert_allclose(
+            np.asarray(arrays["weight"]), collision.weight * trajectory.COLLISION_WEIGHT
+        )
+
+    def test_a_kernel_keeps_to_its_cell(self):
+        optimizer = trajectory.Optimizer(32, (8, 4))
+        with pytest.raises(base.SolverError, match="don't match this kernel"):
+            optimizer.dispatch(None, _problem(frames=10))
+

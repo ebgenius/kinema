@@ -77,6 +77,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Obstacles are the objects in the scene's *Kinema Obstacles* collection, each a box, a
     sphere or a floor. Each scene has its own.
   - **Show Collision Shapes** draws what the check measures, red where it touches.
+- **Optimize Motion keeps clear of the obstacles.** With capsules fitted, every capsule is
+  kept at least **Keep Clear By** (10 mm unless changed) from every obstacle on every frame,
+  where the waypoints and lines leave room: the arm goes round. **Avoid Obstacles** turns it
+  off.
+  - An obstacle that moves, or a robot carried along, is kept clear of where it is on each
+    frame.
+  - Where the job itself runs into an obstacle, at a waypoint, on a line or at its ends, the
+    job stays as taught and within its limits, and the Motion Check names the hit. Where
+    going round would take more than the frames allow, it gets as close as the limits let it.
 
 ### Changed
 

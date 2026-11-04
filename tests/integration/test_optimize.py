@@ -54,6 +54,8 @@ SHORT = (1, 61, 121, 151)
 #: and leaves at full speed.
 LONG = (1, 151, 301, 451)
 LONG_ACCELERATION = 0.5
+#: How far above the forearm's middle a post clips it, part-way into it.
+CLIPPED = 0.06
 
 
 @pytest.fixture
@@ -441,3 +443,345 @@ class TestRefusing:
         with pytest.raises(RuntimeError, match="Generate Motion again"):
             bpy.ops.kinema.optimize_motion()
         assert _keys(modules, arm6) == before
+
+
+def _in_the_way(builder, modules, rig, frame=31, up=None, size=0.03, shape="BOX"):
+    """An obstacle by the arm's outermost capsule on ``frame``, mid-way through move B.
+
+    ``up`` above the capsule's middle: at :data:`CLIPPED`, the default, it
+    reaches 33 mm into the arm; at 0 it is buried in it, 72 mm deep.
+    """
+    import bpy
+
+    from .test_collision import _fit, _obstacle
+
+    collision = modules("ops.collision")
+    _fit(rig)
+    bpy.context.scene.frame_set(frame)
+    capsules = collision.capsules_of(rig)
+    order = [pose_bone.name for pose_bone in builder.joint_bones(rig)]
+    index = max(range(len(capsules)), key=lambda i: order.index(capsules[i].bone))
+    a, b, _ = collision.capsule_ends(rig, capsules)
+    rise = CLIPPED if up is None else up
+    middle = (a[index] + b[index]) / 2.0 + np.array([0.0, 0.0, rise])
+    obstacle = _obstacle("Post", tuple(middle), size=size, shape=shape)
+    bpy.context.view_layer.objects.active = rig
+    return obstacle
+
+
+def _closest(rig):
+    return min(
+        (row for row in rig.kinema_motion_check if row.clearance_obstacle),
+        key=lambda row: row.clearance,
+    )
+
+
+class TestKeepingClear:
+    @pytest.mark.parametrize(
+        "robot", ["arm6", "arm6 with a tool", "arm6 on a track", "rail6", "mjcf_arm"]
+    )
+    def test_the_capsules_ride_the_solver_s_links(
+        self, addon, fixture_dir, clean_scene, builder, modules, robot
+    ):
+        """Placed by the solver's own kinematics, each is where Blender shows it, in any pose."""
+        import bpy
+
+        from .test_collision import TestWhatALinkIs, _fit, _obstacle
+
+        optimize, collision = modules("ops.optimize"), modules("ops.collision")
+        name = robot.split()[0]
+        path = fixture_dir / (f"{name}.xml" if name.startswith("mjcf") else f"{name}.urdf")
+        assert "FINISHED" in bpy.ops.kinema.build_robot(filepath=str(path))
+        rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
+        bpy.context.view_layer.objects.active = rig
+        rig.select_set(True)
+        rig.kinema_solver_mode = "NUMPY"
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        if robot.endswith("track"):
+            assert "FINISHED" in bpy.ops.kinema.add_external_axis(axis_name="track")
+        if robot.endswith("tool"):
+            tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+            TestWhatALinkIs._on_bone(rig, tcp, "Gripper", size=0.04, offset=(0.0, 0.0, 0.05))
+        # Moved and turned, so the robot's own placement is in it too.
+        rig.location, rig.rotation_euler = (0.3, -0.2, 0.1), (0.0, 0.0, 0.7)
+        _fit(rig)
+        _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
+        bpy.context.view_layer.objects.active = rig
+
+        solver, pyroki = optimize._model(rig)
+        which, links, a, b = optimize.capsule_links(rig, pyroki)
+        capsules = collision.capsules_of(rig)
+        assert len(which) == len(capsules), "precondition: every capsule moves with a joint"
+        if robot.endswith("tool"):
+            assert any(capsules[i].bone == tcp for i in which), "precondition: one on the TCP"
+        jax = pytest.importorskip("jax")
+        import jaxlie
+
+        column = {joint: index for index, joint in enumerate(pyroki.actuated_names)}
+        manager = modules("solver.manager")
+        random = np.random.default_rng(0)
+        for _ in range(3):
+            for pose_bone in builder.joint_bones(rig):
+                low = pose_bone.bone.get(builder.PROP_LOWER, -1.0)
+                high = pose_bone.bone.get(builder.PROP_UPPER, 1.0)
+                prismatic = pose_bone.bone.get(builder.PROP_JOINT_TYPE) == "prismatic"
+                value = float(random.uniform(max(low, -1.0), min(high, 1.0)))
+                if prismatic:
+                    pose_bone.location[1] = value
+                else:
+                    pose_bone.rotation_euler[1] = value
+            bpy.context.view_layer.update()
+            q = np.zeros(len(column))
+            for pose_bone in builder.joint_bones(rig):
+                if pose_bone.name in column:
+                    q[column[pose_bone.name]] = modules("ops.velocity").joint_value(pose_bone)
+            poses = jaxlie.SE3(pyroki.robot.forward_kinematics(jax.numpy.asarray(q))[links])
+            placement = np.array(rig.matrix_world) @ manager.root_pose(rig)
+            solved = [
+                np.asarray(poses.apply(jax.numpy.asarray(ends))) @ placement[:3, :3].T
+                + placement[:3, 3]
+                for ends in (a, b)
+            ]
+            shown = collision.capsule_ends(rig, [capsules[i] for i in which])[:2]
+            for got, expected in zip(solved, shown, strict=True):
+                assert np.abs(got - expected).max() < 1e-4
+
+    def test_a_job_through_an_obstacle_comes_back_clear_of_it(self, arm6, builder, modules):
+        """The forearm swings through a post on move B; optimized, it goes round it."""
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6)
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert _closest(arm6).clearance < -0.02, "precondition: it hits the post"
+        assert any("hits Post" in found for found in _problems(modules, arm6)["B"])
+
+        job = optimize.prepare(bpy.context, arm6)
+        assert job.problem.collision is not None
+        optimize.dispatch(job)
+        written, kind, message = optimize.finish(bpy.context, job)
+        assert (written, kind) == (True, "INFO")
+        assert "within every limit" in message and "mm clear at the closest" in message
+        assert _problems(modules, arm6) == {"B": [], "C": [], "D": []}
+        assert _closest(arm6).clearance >= arm6.kinema_keep_clear
+        assert _waypoint_error_mm(modules, arm6) < 0.01
+        line = next(row for row in arm6.kinema_motion_check if row.move == "LINEAR")
+        assert 0.0 <= line.line_error < 1e-5
+
+    def test_it_keeps_as_far_away_as_asked(self, arm6, builder, modules):
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6)
+        arm6.kinema_keep_clear = 0.04
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert 0.04 <= _closest(arm6).clearance < 0.045
+
+    def test_a_post_buried_in_the_arm_is_gone_round_within_the_limits(
+        self, arm6, builder, modules
+    ):
+        """Deep in, a weak pull still takes the arm all the way out: nothing holds it."""
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6, up=0.0)
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert _closest(arm6).clearance < -0.07, "precondition: buried"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert _closest(arm6).clearance >= arm6.kinema_keep_clear
+        assert _problems(modules, arm6) == {"B": [], "C": [], "D": []}
+        assert _waypoint_error_mm(modules, arm6) < 0.01
+
+    @pytest.mark.parametrize("frame", [1, 121])
+    def test_where_it_can_t_keep_clear_the_job_stays_as_taught(
+        self, arm6, builder, modules, frame
+    ):
+        """A post on the job's pinned first frame, or on waypoint C: no amount of pulling
+        clears it there, and pulling hard would wreck the job round it instead."""
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6, frame=frame, up=0.0)
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        before = {row.name: row.clearance for row in arm6.kinema_motion_check}
+        assert _closest(arm6).clearance_frame == frame, "precondition: hit there"
+        if frame == 1:
+            assert before["D"] < 0.0, "precondition: D clips it too, elsewhere"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert _waypoint_error_mm(modules, arm6) < 0.01
+        closest = _closest(arm6)
+        assert (closest.clearance_frame, closest.clearance_obstacle) == (frame, "Post")
+        assert closest.clearance < -0.07
+        for row in arm6.kinema_motion_check:
+            assert row.speed_ratio < 1.05 and row.accel_ratio < 1.05, row.name
+        if frame == 1:
+            row = next(row for row in arm6.kinema_motion_check if row.name == "D")
+            assert row.clearance >= arm6.kinema_keep_clear
+
+    def test_unticked_it_goes_through_as_before(self, arm6, builder, modules):
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6)
+        arm6.kinema_avoid_obstacles = False
+        job = optimize.prepare(bpy.context, arm6)
+        assert job.problem.collision is None and job.optimizer.shape is None
+        optimize.dispatch(job)
+        written, _, message = optimize.finish(bpy.context, job)
+        assert written and "clear" not in message
+        assert _closest(arm6).clearance < -0.02
+
+    def test_an_obstacle_that_moves_is_kept_clear_of_where_it_is(self, arm6, builder, modules):
+        """Keyed far off on the job's first frame, and into the arm's way by frame 31."""
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        post = _in_the_way(builder, modules, arm6)
+        where = post.location.copy()
+        post.keyframe_insert("location", frame=31)
+        post.location = (where.x, where.y, where.z + 2.0)
+        post.keyframe_insert("location", frame=1)
+        post.keyframe_insert("location", frame=61)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert _closest(arm6).clearance < -0.02, "precondition: it hits the post"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert _closest(arm6).clearance >= arm6.kinema_keep_clear
+
+    def test_a_robot_carried_along_keeps_clear_where_it_is_carried(self, arm6, builder, modules):
+        """The robot's object keyed to move: the obstacles are measured from where it is."""
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        post = _in_the_way(builder, modules, arm6)
+        post.location.y += 0.5
+        arm6.keyframe_insert("location", frame=1)
+        arm6.location.y += 0.5
+        arm6.keyframe_insert("location", frame=31)
+        arm6.keyframe_insert("location", frame=181)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert _closest(arm6).clearance < -0.02, "precondition: it hits the post"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert _closest(arm6).clearance >= arm6.kinema_keep_clear
+
+    def test_capsules_the_meshes_have_outgrown_are_refused(self, arm6, builder, modules):
+        import bpy
+
+        collision = modules("ops.collision")
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6)
+        next(iter(collision.link_meshes(arm6).values()))[0].location.x += 0.05
+        bpy.context.view_layer.update()
+        assert collision.capsules_stale(arm6), "precondition: stale"
+        before = _keys(modules, arm6)
+        with pytest.raises(RuntimeError, match="Fit Again, or untick Avoid Obstacles"):
+            bpy.ops.kinema.optimize_motion()
+        assert _keys(modules, arm6) == before
+        arm6.kinema_avoid_obstacles = False
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+
+    @pytest.mark.parametrize(
+        "change", ["obstacle moved", "keep clear", "unticked", "capsules cleared", "robot moved"]
+    )
+    def test_a_cell_changed_meanwhile_gets_nothing_written(self, arm6, builder, modules, change):
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, ROOMY)
+        post = _in_the_way(builder, modules, arm6)
+        before = _keys(modules, arm6)
+        job = optimize.prepare(bpy.context, arm6)
+        optimize.dispatch(job)
+
+        if change == "obstacle moved":
+            post.location.x += 0.1
+        elif change == "keep clear":
+            arm6.kinema_keep_clear = 0.05
+        elif change == "unticked":
+            arm6.kinema_avoid_obstacles = False
+        elif change == "capsules cleared":
+            bpy.context.view_layer.objects.active = arm6
+            assert "FINISHED" in bpy.ops.kinema.clear_capsules()
+        else:
+            arm6.location.x += 0.1
+        bpy.context.view_layer.update()
+
+        written, kind, message = optimize.finish(bpy.context, job)
+        assert (written, kind) == (False, "WARNING")
+        assert "nothing was written" in message
+        assert _keys(modules, arm6) == before
+
+    def test_another_obstacle_compiles_nothing(self, arm6, builder, modules):
+        """Obstacles are padded to a count, so a kernel serves a cell until it outgrows it."""
+        import bpy
+
+        from .test_collision import _obstacle
+
+        trajectory = modules("solver.trajectory")
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6)
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        ((optimizer, _),) = trajectory._optimizers.values()
+        solve = optimizer._fn[0]
+
+        _obstacle("Wall", (2.0, 0.0, 0.5), size=0.2)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert next(iter(trajectory._optimizers.values()))[0] is optimizer
+        assert solve._cache_size() == 1
+
+
+    def test_the_collision_panel_offers_it(self, arm6, builder, modules):
+        """Drawn into a layout that records it: real properties, greyed out when unticked."""
+        import types
+
+        import bpy
+
+        panel = modules("ui.panel")
+        log = []
+
+        class Layout:
+            use_property_split = enabled = alert = False
+            alignment, scale_y = "", 1.0
+
+            def __init__(self):
+                self.active = True
+
+            def row(self, **_):
+                made = Layout()
+                log.append(("layout", made))
+                return made
+
+            column = box = row
+
+            def separator(self, **_):
+                pass
+
+            def label(self, *, text="", icon="NONE"):
+                log.append(("label", text))
+
+            def prop(self, data, name, **_):
+                log.append(("prop", data, name, self))
+
+            def operator(self, idname, **_):
+                return types.SimpleNamespace()
+
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6)
+        for avoid in (True, False):
+            arm6.kinema_avoid_obstacles = avoid
+            log.clear()
+            panel.KINEMA_PT_collision.draw(types.SimpleNamespace(layout=Layout()), bpy.context)
+            drawn = {entry[2]: entry[3] for entry in log if entry[0] == "prop" and entry[1] == arm6}
+            assert set(drawn) == {"kinema_avoid_obstacles", "kinema_keep_clear"}
+            assert all(name in arm6.bl_rna.properties for name in drawn)
+            assert drawn["kinema_avoid_obstacles"].active
+            assert drawn["kinema_keep_clear"].active is avoid
+            assert ("label", "Optimize Motion") in log
