@@ -370,6 +370,14 @@ carried along.
 - Where going round takes more than a move's frames allow at the robot's speeds, it comes
   as close to clear as the limits leave room for, and the Motion Check says where it still
   hits. Give the move more frames, or move the obstacle.
+- **A large obstacle across a joint move can change the move's timing instead of its path.**
+  Clearance is measured frame by frame, and crossing an obstacle in fewer frames counts as
+  much as going round it. So the arm may wind back first, cross at full speed, and pass its
+  next waypoint before coming back to it. On a KR120 at 24 fps, a 100-frame joint move
+  swinging the tool 2.4 m past a 1.2 m cube went in 506 mm as taught. Optimized, the base
+  wound back 0.34 rad, crossed at its top speed and overshot by 0.27 rad, and the arm still
+  came out 26 mm in. Teach a waypoint over the obstacle, or give the move more frames.
+  Letting a move take longer by itself is [#93](https://github.com/ebgenius/kinema/issues/93).
 - The obstacles are measured on each frame, as the check measures them. A link could still
   pass through a thin obstacle between two frames of a fast move.
 - **Avoid Obstacles**, beside it, turns it off. Capsules that no longer fit the meshes are

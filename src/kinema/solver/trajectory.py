@@ -32,6 +32,18 @@ nothing else is:
   Motion Check names the hit.
 - Between the two, where going round would take more than a move's frames
   allow, it gets as close to clear as the limits leave room for.
+- **The timing pays too.** The cost is summed frame by frame, and fewer
+  frames near an obstacle lower it as well as going round does. With a large
+  obstacle across a joint move, the solver changes the move's timing rather
+  than its path: it winds back, crosses at full speed and passes the next
+  waypoint before coming back. On a KR120 at 24 fps, past a 1.2 m cube, the
+  base wound back 0.34 rad, crossed at 1.02 times its top speed and overshot
+  by 0.27 rad, and the arm still came out 26 mm in.
+  Weighting the depth by how far a capsule moves that frame stops the wind-up
+  and the overshoot, but either leaves the arm 350-410 mm in, with the
+  acceleration jittering at up to 1.7 times its limit, or still crosses at twice
+  the taught speed. Within fixed frames, nothing removes the incentive: the
+  move needs more frames (issue #93).
 Only with capsules and obstacles both: a kernel without them is the one there
 was before.
 

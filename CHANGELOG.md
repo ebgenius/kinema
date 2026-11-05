@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Where the job itself runs into an obstacle, at a waypoint, on a line or at its ends, the
     job stays as taught and within its limits, and the Motion Check names the hit. Where
     going round would take more than the frames allow, it gets as close as the limits let it.
+  - A large obstacle across a joint move can change the move's timing instead: the arm
+    winds back, crosses at full speed and passes its waypoint before coming back. Teach a
+    waypoint over the obstacle, or give the move more frames.
 
 ### Changed
 
