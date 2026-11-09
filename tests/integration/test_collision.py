@@ -4,6 +4,7 @@ The claims worth holding onto:
 - every vertex of a link's meshes is inside one of its capsules, in its bone's
   frame, so the capsules move with the rig whatever plays it;
 - the panel can tell when the meshes have changed since the capsules were fitted;
+- a link gets as many capsules as it is asked for, and asking again makes them stale;
 - an object in the obstacles collection is measured as its box, its sphere or
   its floor, where it stands;
 - the Motion Check names the link, the obstacle and the frame where the robot
@@ -137,6 +138,102 @@ class TestCapsules:
         assert collision.capsules_stale(arm6)
         _fit(arm6)
         assert not collision.capsules_stale(arm6)
+
+    def test_a_link_gets_the_capsules_it_is_asked_for(self, arm6, builder, modules):
+        """Three on one link, where the fit chose one; the others as the fit chose."""
+        import bpy
+
+        collision, geometry = modules("ops.collision"), modules("rig.collision")
+
+        def by_bone():
+            found = {}
+            for capsule in collision.capsules_of(arm6):
+                found.setdefault(capsule.bone, []).append(
+                    (tuple(capsule.a), tuple(capsule.b), capsule.radius)
+                )
+            return found
+
+        _fit(arm6)
+        before = by_bone()
+        bone = builder.joint_bones(arm6)[1].name
+        assert len(before[bone]) == 1
+        arm6.pose.bones[bone].kinema_capsule_count = "3"
+        _fit(arm6)
+        after = by_bone()
+        assert len(after[bone]) == 3
+        assert {name: caps for name, caps in after.items() if name != bone} == {
+            name: caps for name, caps in before.items() if name != bone
+        }
+        points = collision.bone_points(
+            bpy.context, arm6, bone, collision.link_meshes(arm6)[bone]
+        )
+        gaps = np.min(
+            [geometry._point_segment_distance(points, c.a, c.b) - c.radius
+             for c in collision.capsules_of(arm6) if c.bone == bone],
+            axis=0,
+        )
+        assert gaps.max() <= 1e-6
+
+    def test_a_count_changed_makes_them_stale(self, arm6, builder, modules):
+        """Until fitted again; and Auto, where they were fitted with it, adds nothing.
+
+        Nothing in it for Auto: capsules fitted before a count could be set
+        still read as fitted.
+        """
+        collision = modules("ops.collision")
+        pose_bone = builder.joint_bones(arm6)[2]
+        _fit(arm6)
+        fitted = arm6.kinema_capsules_source
+        assert not collision.capsules_stale(arm6)
+        pose_bone.kinema_capsule_count = "2"
+        assert collision.capsules_stale(arm6)
+        _fit(arm6)
+        assert not collision.capsules_stale(arm6)
+        pose_bone.kinema_capsule_count = "AUTO"
+        assert collision.capsules_stale(arm6)
+        assert collision.source_signature(arm6) == fitted
+
+    def test_the_panel_lists_each_link_with_its_count(self, arm6, builder, modules):
+        """A real property on each joint bone with meshes, and how many it has."""
+        import types
+
+        import bpy
+
+        panel, collision = modules("ui.panel"), modules("ops.collision")
+        log = []
+
+        class Layout:
+            use_property_split = enabled = alert = active = False
+
+            def row(self, **_):
+                return self
+
+            column = box = split = row
+
+            def separator(self, **_):
+                pass
+
+            def label(self, *, text="", icon="NONE"):
+                log.append(("label", text))
+
+            def prop(self, data, name, **_):
+                log.append(("prop", data, name))
+
+            def operator(self, idname, **_):
+                return types.SimpleNamespace()
+
+        bone = builder.joint_bones(arm6)[0]
+        bone.kinema_capsule_count = "2"
+        _fit(arm6)
+        panel.KINEMA_PT_collision.draw(types.SimpleNamespace(layout=Layout()), bpy.context)
+        counts = [
+            entry[1] for entry in log
+            if entry[0] == "prop" and entry[2] == "kinema_capsule_count"
+        ]
+        meshes = collision.link_meshes(arm6)
+        assert sorted(pose_bone.name for pose_bone in counts) == sorted(meshes)
+        assert all("kinema_capsule_count" in pose_bone.bl_rna.properties for pose_bone in counts)
+        assert ("label", "2 fitted") in log and ("label", "1 fitted") in log
 
     def test_posing_the_arm_is_no_change(self, arm6, builder, modules):
         """Playing the job moves every mesh, and changes none of them."""

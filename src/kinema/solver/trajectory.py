@@ -32,18 +32,20 @@ nothing else is:
   Motion Check names the hit.
 - Between the two, where going round would take more than a move's frames
   allow, it gets as close to clear as the limits leave room for.
-- **The timing pays too.** The cost is summed frame by frame, and fewer
-  frames near an obstacle lower it as well as going round does. With a large
-  obstacle across a joint move, the solver changes the move's timing rather
-  than its path: it winds back, crosses at full speed and passes the next
-  waypoint before coming back. On a KR120 at 24 fps, past a 1.2 m cube, the
-  base wound back 0.34 rad, crossed at 1.02 times its top speed and overshot
-  by 0.27 rad, and the arm still came out 26 mm in.
-  Weighting the depth by how far a capsule moves that frame stops the wind-up
-  and the overshoot, but either leaves the arm 350-410 mm in, with the
-  acceleration jittering at up to 1.7 times its limit, or still crosses at twice
-  the taught speed. Within fixed frames, nothing removes the incentive: the
-  move needs more frames (issue #93).
+- **A hit it can't avoid makes it hurry.** The cost is summed frame by
+  frame, so where a capsule can't get clear, fewer frames near the obstacle
+  are all that's left to lower it. The solver changes the move's timing: it
+  winds back, crosses at full speed and passes the next waypoint before coming
+  back. More frames don't help. On a KR120 at 24 fps, a joint move swinging
+  past a 1.2 m cube: the arm went over the cube, but the turret's one capsule
+  reached 27 mm into it whenever the base faced it, while the turret's meshes
+  stood 337 mm clear, and the base can't swing the other way round. At 100,
+  150, 200 and 300 frames the base still wound back by up to 0.43 rad and
+  crossed at its top speed. With the turret in three capsules, it stayed clear,
+  and neither the wind-up nor the overshoot happened. A start or an end pinned
+  inside an obstacle does the same. Weighting the depth by how far a capsule
+  moves that frame stopped the wind-up, but left the arm 350-410 mm in, or
+  still crossing at twice the taught speed (issue #93).
 Only with capsules and obstacles both: a kernel without them is the one there
 was before.
 

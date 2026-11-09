@@ -91,17 +91,35 @@ class Obstacle:
 # --------------------------------------------------------------------------
 # fitting
 # --------------------------------------------------------------------------
-def fit(points: np.ndarray, max_parts: int = MAX_PARTS, slack: float = SLACK) -> list:
+def fit(
+    points: np.ndarray,
+    max_parts: int = MAX_PARTS,
+    slack: float = SLACK,
+    parts: int | None = None,
+) -> list:
     """Capsules around ``points``, as ``(a, b, radius)``, in the points' own frame.
 
     Every point is inside one of them. They are fitted to the points thinned,
     which bounds only what thinning kept, so each is then widened to take in
     the points nearest it that it doesn't.
+
+    ``parts`` asks for that many, as set on a link by hand, and gets them where
+    the points can be split that far: the same split the count would be tried
+    with here. Otherwise the count is chosen by volume, which can keep one
+    capsule round a squat link whose ends stand far out past it: a KR120's
+    turret came out one capsule reaching 0.36 m past its meshes, where three
+    stood clear of what one hit.
     """
     points = np.asarray(points, dtype=float)
     thinned = thin(points)
     if len(thinned) == 0:
         return []
+    if parts is not None:
+        # One cluster always forms, so this always returns.
+        for count in range(max(int(parts), 1), 0, -1):
+            clusters = _clusters(thinned, count)
+            if clusters is not None:
+                return _covering(points, [_capsule(cluster) for cluster in clusters])
     tries = []
     for parts in range(1, max_parts + 1):
         clusters = _clusters(thinned, parts)

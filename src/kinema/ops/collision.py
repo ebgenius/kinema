@@ -186,6 +186,34 @@ def _surface(mesh, matrix: np.ndarray) -> np.ndarray:
     return geometry.surface_points(vertices, triangles.reshape(-1, 3))
 
 
+#: A link's choices of how many capsules it gets: Auto, or a count.
+CAPSULE_COUNTS = [
+    (
+        "AUTO",
+        "Auto",
+        "The fewest, up to four, within a quarter of the tightest fit by volume. Volume "
+        "can keep one capsule round a squat link whose ends stand far out past it",
+    ),
+    *[
+        (str(count), str(count), f"{count} capsule{'s' if count > 1 else ''} round this link")
+        for count in range(1, geometry.MAX_PARTS + 1)
+    ],
+]
+
+
+def capsule_count(rig, bone_name: str) -> int | None:
+    """How many capsules a link was asked for, or None for Auto."""
+    pose_bone = rig.pose.bones.get(bone_name)
+    value = getattr(pose_bone, "kinema_capsule_count", "AUTO") if pose_bone else "AUTO"
+    return None if value == "AUTO" else int(value)
+
+
+def _on_capsule_count_changed(_pose_bone, context) -> None:
+    # The capsules no longer follow it: the panels have to ask again.
+    note_change()
+    _redraw(context)
+
+
 def source_signature(rig) -> str:
     """A fingerprint of the meshes the capsules are fitted to: their shapes, and where
     they sit on their bones.
@@ -198,6 +226,12 @@ def source_signature(rig) -> str:
         # A child of a bone hangs from its tail: a bone made longer moves it.
         rest = rig.data.bones.get(bone)
         digest.update(f"{bone}|{round(rest.length, 6) if rest else ''}|".encode())
+        # How many capsules the link was asked for, where it was: the fit
+        # follows it. Auto adds nothing, so capsules fitted before there was a
+        # count to set still read as fitted.
+        parts = capsule_count(rig, bone)
+        if parts is not None:
+            digest.update(f"parts={parts}|".encode())
         for obj in sorted(objects, key=lambda o: o.name):
             digest.update(f"{obj.name}|{_what_moves(obj)}|".encode())
             # Where it sits on the bone, from what puts it there and nothing
@@ -764,7 +798,7 @@ def closest_approach(rig, scene):
 
 
 def capsules_stale(rig) -> bool:
-    """Whether the meshes have changed since the capsules were fitted.
+    """Whether the meshes, or a link's capsule count, have changed since the capsules were fitted.
 
     Worked out once per change to the scene: the panels ask on every redraw,
     several times, and fingerprinting where every mesh of a robot sits takes
@@ -842,7 +876,8 @@ class KINEMA_OT_fit_capsules(Operator):
         try:
             for done, (bone, objects) in enumerate(sorted(meshes.items())):
                 points = bone_points(context, rig, bone, objects)
-                fitted += [(bone, a, b, radius) for a, b, radius in geometry.fit(points)]
+                found = geometry.fit(points, parts=capsule_count(rig, bone))
+                fitted += [(bone, a, b, radius) for a, b, radius in found]
                 window.progress_update(done + 1)
         except ImportError as exc:
             self.report({"ERROR"}, f"Fit Capsules needs trimesh, which didn't load: {exc}")
@@ -1083,9 +1118,21 @@ def register_props() -> None:
         items=SHAPES,
         default=geometry.KIND_BOX,
     )
+    bpy.types.PoseBone.kinema_capsule_count = EnumProperty(
+        name="Capsules",
+        description=(
+            "How many capsules Fit Capsules puts round this link. Set more where one fat "
+            "capsule stands far out past the link, as Show Collision Shapes draws it; Fit "
+            "Again after"
+        ),
+        items=CAPSULE_COUNTS,
+        default="AUTO",
+        update=_on_capsule_count_changed,
+    )
 
 
 def unregister_props() -> None:
+    del bpy.types.PoseBone.kinema_capsule_count
     del bpy.types.Object.kinema_capsules
     del bpy.types.Object.kinema_capsules_source
     del bpy.types.Object.kinema_motion_check_collision

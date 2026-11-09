@@ -325,6 +325,12 @@ bone, and on the TCP for an attached tool:
 - every point of the meshes inside them;
 - not the base, which stands on whatever floor there is.
 
+The fit chooses how many capsules a link gets by their volume, and volume can't see where the
+bulk sits. A squat link can come out as one long capsule whose ends stand far out past it: a
+KR120's turret got one capsule reaching 0.36 m past its meshes, into an obstacle the turret
+itself stood well clear of. **Capsules per link**, under the fit, sets a link's count by hand,
+from 1 to 4, or leaves it on **Auto**. Fit Again after: the panel asks for it.
+
 They are kept on the rig and move with it, however the job plays, and scale with it: a robot
 scaled unevenly gets the widest of its scales. After changing a link's meshes, faces, shape keys or tool,
 the panel says so: **Fit Again**. The **×** beside it clears them, and with them all the
@@ -372,14 +378,20 @@ carried along.
 - Where going round takes more than a move's frames allow at the robot's speeds, it comes
   as close to clear as the limits leave room for, and the Motion Check says where it still
   hits. Give the move more frames, or move the obstacle.
-- **A large obstacle across a joint move can change the move's timing instead of its path.**
-  Clearance is measured frame by frame, and crossing an obstacle in fewer frames counts as
-  much as going round it. So the arm may wind back first, cross at full speed, and pass its
-  next waypoint before coming back to it. On a KR120 at 24 fps, a 100-frame joint move
-  swinging the tool 2.4 m past a 1.2 m cube went in 506 mm as taught. Optimized, the base
-  wound back 0.34 rad, crossed at its top speed and overshot by 0.27 rad, and the arm still
-  came out 26 mm in. Teach a waypoint over the obstacle, or give the move more frames.
-  Letting a move take longer by itself is [#93](https://github.com/ebgenius/kinema/issues/93).
+- **A hit it can't avoid changes the move's timing instead of its path.** Clearance is
+  measured frame by frame, so where a link can't get clear, crossing in fewer frames is all
+  that's left to lower it. The arm winds back first, crosses at full speed, and passes its
+  next waypoint before coming back to it. A start or an end inside an obstacle does the same.
+  - The usual cause is a capsule much bigger than its link: Show Collision Shapes shows it.
+    On a KR120 at 24 fps, a joint move swinging the tool 2.4 m past a 1.2 m cube went over
+    it, but the turret's one capsule reached 27 mm into the cube whenever the base faced
+    it. The turret itself stood 337 mm clear. The base wound back 0.34 rad, crossed at its
+    top speed and overshot by 0.27 rad, at any number of frames. With the turret set to 3
+    capsules, it stayed clear, and the wind-up and the overshoot were gone. Optimize Motion
+    took 6 s instead of 14. The arm still came out 8 mm in, at its acceleration limits: going
+    over the cube needs more than the move's 100 frames, and at 160 it kept 50 mm clear.
+  - Where the hit is real, move the obstacle, or teach the waypoint clear of it.
+  - Letting a move take longer to go round is [#93](https://github.com/ebgenius/kinema/issues/93).
 - The obstacles are measured on each frame, as the check measures them. A link could still
   pass through a thin obstacle between two frames of a fast move.
 - **Avoid Obstacles**, beside it, turns it off. Capsules that no longer fit the meshes are

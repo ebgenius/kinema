@@ -74,6 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     or what it shows, an attached tool included. On a KR210, eleven for the arm, the forearm's
     490 mm in radius at most, where one capsule would be 824 mm. **Clear Capsules** removes
     them.
+  - **Capsules per link** sets how many a link gets, 1 to 4, where the automatic choice
+    leaves one capsule standing far out past it. A KR120's turret got one, reaching 0.36 m
+    past its meshes; with three, an Optimize Motion that had wound back, sprinted past a cube
+    and overshot did none of it.
   - Obstacles are the objects in the scene's *Kinema Obstacles* collection, each a box, a
     sphere or a floor. Each scene has its own.
   - **Show Collision Shapes** draws what the check measures, red where it touches.
@@ -86,9 +90,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Where the job itself runs into an obstacle, at a waypoint, on a line or at its ends, the
     job stays as taught and within its limits, and the Motion Check names the hit. Where
     going round would take more than the frames allow, it gets as close as the limits let it.
-  - A large obstacle across a joint move can change the move's timing instead: the arm
-    winds back, crosses at full speed and passes its waypoint before coming back. Teach a
-    waypoint over the obstacle, or give the move more frames.
+  - A hit it can't avoid changes the move's timing instead: the arm winds back, crosses at
+    full speed and passes its waypoint before coming back. Usually that's a capsule much
+    bigger than its link: give the link more capsules.
 
 ### Changed
 

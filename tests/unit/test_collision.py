@@ -70,6 +70,40 @@ class TestFitting:
         assert total < 0.5 * collision.volume(one[0][2], one[0][0], one[0][1])
         assert _inside_any(points, several).all()
 
+    def test_a_count_asked_for_is_the_count_fitted(self):
+        """Fewer than the fit would choose, or more: each holds every point."""
+        upright = _cylinder_points(0.05, 1.0, seed=1) + [0.0, 0.0, 0.5]
+        arm = _cylinder_points(0.05, 1.0, seed=2)[:, [2, 1, 0]] + [0.5, 0.0, 0.0]
+        points = np.r_[upright, arm]
+        chosen = len(collision.fit(points))
+        for parts in (1, 3, 4):
+            assert parts != chosen
+            capsules = collision.fit(points, parts=parts)
+            assert len(capsules) == parts
+            assert _inside_any(points, capsules).all()
+
+    def test_a_count_asked_for_is_the_split_the_fit_would_try(self):
+        """The same capsules as the fit chooses, where it chooses that count."""
+        upright = _cylinder_points(0.05, 1.0, seed=1) + [0.0, 0.0, 0.5]
+        arm = _cylinder_points(0.05, 1.0, seed=2)[:, [2, 1, 0]] + [0.5, 0.0, 0.0]
+        points = np.r_[upright, arm]
+        chosen = collision.fit(points)
+        asked = collision.fit(points, parts=len(chosen))
+        for (a1, b1, r1), (a2, b2, r2) in zip(chosen, asked, strict=True):
+            np.testing.assert_array_equal(a1, a2)
+            np.testing.assert_array_equal(b1, b2)
+            assert r1 == r2
+
+    def test_points_too_few_to_split_that_far_get_fewer(self):
+        """Four capsules need sixteen points to cluster: six get one."""
+        points = np.array(
+            [(0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1),
+             (0.1, 0.1, 0.1), (0.2, 0.0, 0.0)]
+        )
+        capsules = collision.fit(points, parts=4)
+        assert len(capsules) == 1
+        assert _inside_any(points, capsules).all()
+
     def test_the_same_points_give_the_same_capsules(self):
         upright = _cylinder_points(0.05, 1.0, seed=1) + [0.0, 0.0, 0.5]
         arm = _cylinder_points(0.05, 1.0, seed=2)[:, [2, 1, 0]] + [0.5, 0.0, 0.0]
