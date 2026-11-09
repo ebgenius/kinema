@@ -687,20 +687,51 @@ class TestKeepingClear:
         arm6.kinema_avoid_obstacles = False
         assert "FINISHED" in bpy.ops.kinema.optimize_motion()
 
+    def test_a_link_with_no_frame_to_place_its_capsules_by_is_refused(
+        self, arm6, builder, modules
+    ):
+        """Left out of the solve instead, its capsules would go through the post."""
+        import bpy
+
+        collision = modules("ops.collision")
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6)
+        node = arm6.data.bones[collision.capsules_of(arm6)[-1].bone]
+        while builder.PROP_CHILD_LINK not in node:
+            node = node.parent
+        del node[builder.PROP_LINK_CORRECTION]
+        assert not collision.capsules_stale(arm6), "precondition: the capsules still fit"
+        before = _keys(modules, arm6)
+        with pytest.raises(RuntimeError, match=f"ride {node.name}, which records no link frame"):
+            bpy.ops.kinema.optimize_motion()
+        assert _keys(modules, arm6) == before
+        arm6.kinema_avoid_obstacles = False
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+
     @pytest.mark.parametrize(
-        "change", ["obstacle moved", "keep clear", "unticked", "capsules cleared", "robot moved"]
+        "change",
+        [
+            "obstacle moved", "keep clear", "unticked", "capsules cleared", "robot moved",
+            "capsule changed", "meshes outgrew the capsules",
+        ],
     )
     def test_a_cell_changed_meanwhile_gets_nothing_written(self, arm6, builder, modules, change):
         import bpy
 
         optimize = modules("ops.optimize")
+        collision = modules("ops.collision")
         _job(builder, arm6, ROOMY)
         post = _in_the_way(builder, modules, arm6)
         before = _keys(modules, arm6)
         job = optimize.prepare(bpy.context, arm6)
         optimize.dispatch(job)
+        source = arm6.kinema_capsules_source
 
-        if change == "obstacle moved":
+        if change == "capsule changed":
+            arm6.kinema_capsules[-1].radius += 0.01
+        elif change == "meshes outgrew the capsules":
+            next(iter(collision.link_meshes(arm6).values()))[0].location.x += 0.05
+        elif change == "obstacle moved":
             post.location.x += 0.1
         elif change == "keep clear":
             arm6.kinema_keep_clear = 0.05
@@ -712,6 +743,11 @@ class TestKeepingClear:
         else:
             arm6.location.x += 0.1
         bpy.context.view_layer.update()
+        if change in ("capsule changed", "meshes outgrew the capsules"):
+            # Neither refits: the meshes' fingerprint is the one the solve began with.
+            assert arm6.kinema_capsules_source == source, "precondition: not fitted again"
+            outgrown = change == "meshes outgrew the capsules"
+            assert collision.capsules_stale(arm6) == outgrown, "precondition"
 
         written, kind, message = optimize.finish(bpy.context, job)
         assert (written, kind) == (False, "WARNING")

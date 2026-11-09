@@ -348,7 +348,9 @@ selected*. Each is measured as one of three shapes, chosen in the panel:
 - **Floor**: everything below the plane through its origin, square to its Z axis.
 
 A complicated fixture is a few of them. Obstacles are read on every frame, so one that moves
-is measured where it is.
+is measured where it is. What an obstacle follows by a constraint or a driver isn't watched,
+though: move that, and neither the check nor Optimize Motion notices. Check Again after
+([#94](https://github.com/ebgenius/kinema/issues/94)).
 
 **The check** names, for each move, the link that came closest, to which obstacle, and on
 which frame. A link reaching into an obstacle is flagged: "joint_3 hits Fixture by 40 mm at

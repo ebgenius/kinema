@@ -193,8 +193,9 @@ def model_signature(rig, scene) -> tuple:
     The joints, which of them are held, their limits, and the TCP; where the
     bones the solve doesn't move are: each held joint, and Root, which places
     the whole robot; the frame rate, which every speed and acceleration is
-    measured by; and, while it keeps clear of obstacles, the capsules, the
-    obstacles, where the robot stands among them, and how far it keeps away.
+    measured by; and, while it keeps clear of obstacles, the capsules and
+    whether they still fit the meshes, the obstacles, where the robot stands
+    among them, and how far it keeps away.
     Blender stays live while a solve runs, so any of them can
     change before its result lands, and keying that result would then write a
     motion solved for another robot, for one standing elsewhere, or for frames
@@ -216,9 +217,14 @@ def model_signature(rig, scene) -> tuple:
     placed = tuple((pose_bone.name, _placement(rig, pose_bone)) for pose_bone in unmoved)
     fps = _number(wp.scene_fps(scene))
     # What it keeps clear of, and by how much: the capsules, the obstacles and
-    # where the robot stands among them.
+    # where the robot stands among them. And whether the capsules still fit
+    # the meshes: a solve isn't started on capsules that don't, nor written.
     clear = (
-        (collision_ops.collision_state(rig, scene), _number(rig.kinema_keep_clear))
+        (
+            collision_ops.collision_state(rig, scene),
+            _number(rig.kinema_keep_clear),
+            collision_ops.capsules_stale(rig),
+        )
         if steers_clear(rig, scene)
         else None
     )
@@ -292,7 +298,7 @@ def capsule_links(rig, pyroki):
     frame, (C, 3) each. A capsule rides on the link of the nearest joint bone
     at or above its own: a TCP's on the last joint's. One on a bone no joint
     moves, such as Root, can't be steered, and isn't. Raises :class:`Refused`
-    if a link isn't in PyRoki's model.
+    if a link isn't in PyRoki's model, or its joint bone records no link frame.
 
     A link's frame is its joint bone's, turned by the correction recorded at
     import (``builder.PROP_LINK_CORRECTION``), as IK aims it: posed, the link
@@ -307,9 +313,15 @@ def capsule_links(rig, pyroki):
         node = bone
         while node is not None and builder.PROP_CHILD_LINK not in node:
             node = node.parent
-        stored = node.get(builder.PROP_LINK_CORRECTION) if node is not None else None
-        if stored is None or len(stored) != 16:
+        if node is None:
             continue
+        stored = node.get(builder.PROP_LINK_CORRECTION)
+        if stored is None or len(stored) != 16:
+            # Left out, the capsule would go through whatever is in its way.
+            raise Refused(
+                f"The capsules on {capsule.bone} ride {node.name}, which records no link "
+                "frame to place them by: import the robot again, or untick Avoid Obstacles"
+            )
         link = str(node[builder.PROP_CHILD_LINK])
         if link not in names:
             raise Refused(
