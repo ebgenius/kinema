@@ -10,8 +10,42 @@ solves all of its frames as one least-squares problem over the joint values:
 - on a linear move, the tool where the line puts it on every frame;
 - every joint inside its range;
 - every joint under its top speed, and its acceleration limit where it has one;
+- every capsule of the robot clear of every obstacle, given both;
 - as little acceleration and jerk as that leaves room for;
 - otherwise, close to the job it started from.
+
+**Clearance is a cost too**, a hinge like the limits': nothing where a
+capsule keeps far enough away, and a pull out where it doesn't. It measures
+what the Motion Check measures, exactly, each capsule's segment against each
+box, sphere or floor (:func:`segment_clearance`), placed by PyRoki's
+kinematics on every frame. The pull is weak, :data:`COLLISION_WEIGHT`, and
+levels off past :data:`SATURATION` deep, because it is only ever wanted where
+nothing else is:
+- Where there is room to go round, nothing much holds the arm where it was,
+  and even a weak pull takes it all the way clear: on arm6, out of a post
+  72 mm into the forearm to 12 mm clear, within every limit.
+- Where there isn't, because a waypoint, a line or the job's pinned ends run
+  into an obstacle, a strong pull wrecks the job instead of clearing it. At
+  the weight of a waypoint, a post across a KR210's line moved the waypoints
+  89 mm and took a joint to 136 times its acceleration limit. A weak one
+  leaves the job close to what it was, the waypoints within 0.1 mm, and the
+  Motion Check names the hit.
+- Between the two, where going round would take more than a move's frames
+  allow, it gets as close to clear as the limits leave room for.
+- **The timing pays too.** The cost is summed frame by frame, and fewer
+  frames near an obstacle lower it as well as going round does. With a large
+  obstacle across a joint move, the solver changes the move's timing rather
+  than its path: it winds back, crosses at full speed and passes the next
+  waypoint before coming back. On a KR120 at 24 fps, past a 1.2 m cube, the
+  base wound back 0.34 rad, crossed at 1.02 times its top speed and overshot
+  by 0.27 rad, and the arm still came out 26 mm in.
+  Weighting the depth by how far a capsule moves that frame stops the wind-up
+  and the overshoot, but either leaves the arm 350-410 mm in, with the
+  acceleration jittering at up to 1.7 times its limit, or still crosses at twice
+  the taught speed. Within fixed frames, nothing removes the incentive: the
+  move needs more frames (issue #93).
+Only with capsules and obstacles both: a kernel without them is the one there
+was before.
 
 It runs on PyRoki's solver, jaxls, over the PyRoki model the rig's IK already
 uses, limits included (``manager.bone_limits``). Deliberately free of ``bpy``:
@@ -113,6 +147,30 @@ STEP_TOLERANCE = 1e-5
 #: Compiled kernels kept, the most recently used.
 KEEP = 1
 
+#: What coming closer to an obstacle than the robot is to keep costs, per metre
+#: closer, before it levels off: a tenth of a whole limit over per 10 mm. See
+#: the module's docstring. Measured on arm6 with a post 72 mm into the
+#: forearm: at 30 and 300 it went round within every limit; at 10000, the
+#: weight of a waypoint, it went round over them, and at 100 it stuck at
+#: 62 mm in.
+COLLISION_WEIGHT = 30.0
+#: How much further than asked the collision cost aims, in metres, so the
+#: robot lands at least as far away as asked where it can.
+CLEARANCE_MARGIN = 0.002
+#: Golden-section steps for where along a capsule an obstacle is closest:
+#: each keeps 0.618 of the interval, so 24 take a 2 m capsule's to 0.02 mm.
+SEARCH_STEPS = 24
+#: Metres short past which the collision cost levels off, growing as the
+#: logarithm of the depth: an obstacle half a metre into an arm that can't
+#: leave it pulls little harder than one 20 mm in.
+SATURATION = 0.02
+#: Capsules and obstacles are padded to these counts, so a kernel serves a
+#: scene until it outgrows one.
+CAPSULE_BUCKETS = (8, 16, 32, 64, 128, 256)
+OBSTACLE_BUCKETS = (4, 8, 16, 32, 64, 128, 256)
+#: Obstacle shapes, by the names ``rig/collision.py`` gives them.
+SHAPES = ("BOX", "SPHERE", "FLOOR")
+
 
 def bucket(frames: int) -> int:
     """The padded length for a problem of ``frames`` frames, its rest frames included."""
@@ -151,10 +209,59 @@ class Problem:
     #: Seconds per frame.
     dt: float
     link_index: int
+    #: The robot's capsules and the obstacles to keep them clear of, or None
+    #: to solve without: see :class:`Collision`.
+    collision: Collision | None = None
 
     @property
     def frames(self) -> int:
         return int(len(self.q_init))
+
+
+@dataclass(frozen=True)
+class Collision:
+    """The robot's capsules, the obstacles on each frame, and how far to keep between.
+
+    Capsules ride on PyRoki's links: each is a segment in its link's frame,
+    and the solver places it with the link on every frame. Obstacles are where
+    the scene had them on each frame, in world space, as the Motion Check
+    measures them (``rig/collision.py``).
+    """
+
+    #: (C,) the link each capsule rides on, as PyRoki numbers its links.
+    link: np.ndarray
+    #: (C, 3) each capsule's ends in its link's frame.
+    a: np.ndarray
+    b: np.ndarray
+    #: (C,) radii in world space: the robot's scale taken in.
+    radius: np.ndarray
+    #: (frames, 4, 4) world space from the solver's frame on each frame: the
+    #: robot's object and Root, which may be carried.
+    placement: np.ndarray
+    #: (O,) each obstacle's shape: :data:`SHAPES` numbers them.
+    kind: np.ndarray
+    #: (frames, O, 4, 4) each obstacle's frame in world space, rotation and
+    #: centre: unscaled, as ``rig/collision.py``'s ``Obstacle.matrix``.
+    frame: np.ndarray
+    #: (frames, O, 3) a box's half-extents, or a sphere's radius first.
+    size: np.ndarray
+    #: (frames,) 1 on frames the robot has to keep clear on, 0 elsewhere.
+    weight: np.ndarray
+    #: Metres the robot is to keep from every obstacle.
+    keep_clear: float
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """Capsules and obstacles, padded: what a kernel is compiled for."""
+        return padded(len(self.link), CAPSULE_BUCKETS), padded(len(self.kind), OBSTACLE_BUCKETS)
+
+
+def padded(count: int, buckets: tuple) -> int:
+    """``count`` capsules or obstacles, rounded up to the next of ``buckets``."""
+    for size in buckets:
+        if count <= size:
+            return size
+    raise SolverError(f"{count} is too many to keep clear: the most is {buckets[-1]}")
 
 
 def at_rest(problem: Problem) -> tuple[Problem, slice]:
@@ -184,7 +291,18 @@ def at_rest(problem: Problem) -> tuple[Problem, slice]:
             np.full((after, dof), PIN_WEIGHT),
         ]
     )
-    padded = replace(
+    collision = problem.collision
+    if collision is not None:
+        # Obstacles stand where they did on the job's ends; nothing is asked
+        # of the robot there, pinned as it is.
+        collision = replace(
+            collision,
+            placement=held(collision.placement),
+            frame=held(collision.frame),
+            size=held(collision.size),
+            weight=zero(collision.weight),
+        )
+    padded_problem = replace(
         problem,
         q_init=held(problem.q_init),
         targets=held(problem.targets),
@@ -192,8 +310,9 @@ def at_rest(problem: Problem) -> tuple[Problem, slice]:
         orientation_weight=zero(problem.orientation_weight),
         prior=held(problem.prior),
         prior_weight=weight,
+        collision=collision,
     )
-    return padded, slice(before, before + frames)
+    return padded_problem, slice(before, before + frames)
 
 
 # --------------------------------------------------------------------------
@@ -220,8 +339,12 @@ class Pending:
 class Optimizer:
     """A compiled trajectory solve for one robot model and one padded length."""
 
-    def __init__(self, size: int, verbose: bool = False) -> None:
+    def __init__(self, size: int, shape: tuple[int, int] | None = None,
+                 verbose: bool = False) -> None:
         self.size = size
+        #: Capsules and obstacles, padded, or None for a kernel that keeps
+        #: clear of nothing.
+        self.shape = shape
         #: jaxls's own log of every iteration, for diagnosing a solve. Read when
         #: the kernel is traced.
         self.verbose = verbose
@@ -242,10 +365,12 @@ class Optimizer:
             stack["jaxls"], stack["pyroki"],
         )
         speed_cost, acceleration_cost = _limit_costs(jaxls)
+        collision_cost = _collision_cost(jaxls)
 
         @jdc.jit
         def solve(robot, q_init, targets, position_weight, orientation_weight,
-                  prior, prior_weight, speed_limit, acceleration_limit, dt, link_index):
+                  prior, prior_weight, speed_limit, acceleration_limit, dt, link_index,
+                  collision):
             frames = q_init.shape[0]
             joint = robot.joint_var_cls
             ids = np.arange(frames)
@@ -276,6 +401,11 @@ class Optimizer:
                     position_weight, orientation_weight,
                 ),
             ]
+            if collision is not None:
+                # Per frame: the capsules and the robot's placement are shared.
+                shared = {key: collision[key][None] for key in _SHARED}
+                own = {key: collision[key] for key in _PER_FRAME}
+                costs.append(collision_cost(batched, joint(ids), shared, own))
             problem = jaxls.LeastSquaresProblem(costs=costs, variables=[joint(ids)])
             solution, summary = problem.analyze().solve(
                 initial_vals=jaxls.VarValues.make([joint(ids).with_value(q_init)]),
@@ -298,6 +428,8 @@ class Optimizer:
         padded, own = at_rest(problem)
         if padded.frames != self.size:
             raise SolverError(f"a {padded.frames}-frame problem for a {self.size}-frame kernel")
+        if (padded.collision.shape if padded.collision is not None else None) != self.shape:
+            raise SolverError("the capsules or obstacles don't match this kernel")
         solve, jnp, jaxlie = self._kernel()
         targets = np.asarray(
             jaxlie.SE3.from_matrix(jnp.asarray(padded.targets, dtype=jnp.float32)).wxyz_xyz
@@ -314,6 +446,7 @@ class Optimizer:
             jnp.asarray(padded.acceleration_limit * (1.0 - LIMIT_MARGIN), dtype=jnp.float32),
             jnp.asarray(padded.dt, dtype=jnp.float32),
             jnp.asarray(padded.link_index, dtype=jnp.int32),
+            _collision_arrays(jnp, padded.collision),
         )
         self.compiled = True
         return Pending(q=q, iterations=iterations, own=own)
@@ -344,6 +477,133 @@ def acceleration_over(vals, before, now, after, dt, limit, weight):
     return (jnp.maximum(0.0, acceleration / limit - 1.0) * weight).flatten()
 
 
+#: Collision arrays every frame shares, and those with a value per frame.
+_SHARED = ("link", "a", "b", "radius", "capsule_mask", "kind", "obstacle_mask", "aim")
+_PER_FRAME = ("placement", "rotation", "centre", "size", "weight")
+
+
+def _collision_arrays(jnp, collision: Collision | None) -> dict | None:
+    """``collision`` padded to its kernel's shape, as the arrays the cost reads."""
+    if collision is None:
+        return None
+    capsules, obstacles = collision.shape
+    count, kinds = len(collision.link), len(collision.kind)
+
+    def pad(array, size, axis=0):
+        widths = [(0, 0)] * array.ndim
+        widths[axis] = (0, size - array.shape[axis])
+        return np.pad(array, widths)
+
+    frame = np.asarray(collision.frame, dtype=float)
+    floats = {
+        "a": pad(np.asarray(collision.a, dtype=float), capsules),
+        "b": pad(np.asarray(collision.b, dtype=float), capsules),
+        "radius": pad(np.asarray(collision.radius, dtype=float), capsules),
+        "capsule_mask": pad(np.ones(count), capsules),
+        "placement": np.asarray(collision.placement, dtype=float),
+        "obstacle_mask": pad(np.ones(kinds), obstacles),
+        "aim": np.asarray(collision.keep_clear + CLEARANCE_MARGIN),
+        "rotation": pad(frame[..., :3, :3], obstacles, axis=1),
+        "centre": pad(frame[..., :3, 3], obstacles, axis=1),
+        "size": pad(np.asarray(collision.size, dtype=float), obstacles, axis=1),
+        "weight": np.asarray(collision.weight, dtype=float) * COLLISION_WEIGHT,
+    }
+    arrays = {key: jnp.asarray(value, dtype=jnp.float32) for key, value in floats.items()}
+    arrays["link"] = jnp.asarray(pad(np.asarray(collision.link), capsules), dtype=jnp.int32)
+    arrays["kind"] = jnp.asarray(pad(np.asarray(collision.kind), obstacles), dtype=jnp.int32)
+    return arrays
+
+
+def signed_distance(jnp, points, kind, rotation, centre, size):
+    """Signed distance from ``points`` to obstacles, broadcast together: negative inside.
+
+    Exact for each shape, as ``rig/collision.py`` measures it, and smooth
+    enough to take a gradient of anywhere: no square root of zero.
+    """
+    local = jnp.einsum("...i,...ij->...j", points - centre, rotation)
+    q = jnp.abs(local) - size
+    box = _norm(jnp, jnp.maximum(q, 0.0)) + jnp.minimum(jnp.max(q, axis=-1), 0.0)
+    sphere = _norm(jnp, local) - size[..., 0]
+    floor = local[..., 2]
+    return jnp.where(kind == 0, box, jnp.where(kind == 1, sphere, floor))
+
+
+def _norm(jnp, vector):
+    return jnp.sqrt(jnp.sum(vector * vector, axis=-1) + 1e-12)
+
+
+def segment_clearance(jax, jnp, a, b, kind, rotation, centre, size):
+    """Signed distance from each segment ``a``-``b`` to each obstacle.
+
+    ``a`` and ``b`` are (C, 3); the obstacles' arrays have O leading. Returns
+    (C, O). Every shape's distance is convex along a line, so a golden-section
+    search finds where along the segment it is least, and the distance is
+    taken there. Where that is comes of comparisons, which carry no gradient,
+    and none is wanted: the closest point moving with the segment is a
+    second-order change, so the gradient is the distance's own at that point.
+    The search reads the segment with its gradient stopped all the same, which
+    spares the solver differentiating every step of it.
+    """
+    a, b = a[:, None, :], b[:, None, :]
+    kind, rotation, centre, size = kind[None], rotation[None], centre[None], size[None]
+    fixed_a, fixed_b = jax.lax.stop_gradient(a), jax.lax.stop_gradient(b)
+
+    def at(t, start, end):
+        return signed_distance(
+            jnp, start + t[..., None] * (end - start), kind, rotation, centre, size
+        )
+
+    ratio = (5.0**0.5 - 1.0) / 2.0
+    shape = jnp.broadcast_shapes(a.shape[:-1], kind.shape)
+    low, high = jnp.zeros(shape), jnp.ones(shape)
+    left, right = high - ratio * (high - low), low + ratio * (high - low)
+
+    def step(_, state):
+        low, high, left, right, f_left, f_right = state
+        # The least is left of `right` where f_left is the lower, else right of `left`.
+        lower = f_left < f_right
+        low = jnp.where(lower, low, left)
+        high = jnp.where(lower, right, high)
+        kept, f_kept = jnp.where(lower, left, right), jnp.where(lower, f_left, f_right)
+        new = jnp.where(lower, high - ratio * (high - low), low + ratio * (high - low))
+        f_new = at(new, fixed_a, fixed_b)
+        left, f_left = jnp.where(lower, new, kept), jnp.where(lower, f_new, f_kept)
+        right, f_right = jnp.where(lower, kept, new), jnp.where(lower, f_kept, f_new)
+        return low, high, left, right, f_left, f_right
+
+    state = (low, high, left, right, at(left, fixed_a, fixed_b), at(right, fixed_a, fixed_b))
+    _, _, left, right, f_left, f_right = jax.lax.fori_loop(0, SEARCH_STEPS, step, state)
+    # Where the least is at an end, the search closes in on it as on any other
+    # point: within 0.618 ** 25 of the segment's length, 6 µm on a metre.
+    return at(jnp.where(f_left < f_right, left, right), a, b)
+
+
+def clearance_short(vals, robot, var, shared, own):
+    """How much closer than it should be each capsule is to each obstacle, weighted.
+
+    Zero where it keeps ``aim`` away: the robot is free to go anywhere else.
+    """
+    import jax
+    import jaxlie
+    from jax import numpy as jnp
+
+    poses = jaxlie.SE3(robot.forward_kinematics(vals[var])[shared["link"]])
+    placement = own["placement"]
+
+    def world(points):
+        return poses.apply(points) @ placement[:3, :3].T + placement[:3, 3]
+
+    distance = segment_clearance(
+        jax, jnp, world(shared["a"]), world(shared["b"]), shared["kind"],
+        own["rotation"], own["centre"], own["size"],
+    )
+    short = jnp.maximum(0.0, shared["aim"] - (distance - shared["radius"][:, None]))
+    # The same as the depth, near the surface; its logarithm, deep in.
+    short = SATURATION * jnp.log1p(short / SATURATION)
+    mask = shared["capsule_mask"][:, None] * shared["obstacle_mask"][None, :]
+    return (short * mask * own["weight"]).flatten()
+
+
 _costs: dict = {}
 
 
@@ -362,6 +622,14 @@ def _limit_costs(jaxls):
     return _costs["speed"], _costs["acceleration"]
 
 
+def _collision_cost(jaxls):
+    """The collision cost, made once per jaxls, as the limit costs are."""
+    _limit_costs(jaxls)
+    if "collision" not in _costs:
+        _costs["collision"] = jaxls.Cost.factory(clearance_short)
+    return _costs["collision"]
+
+
 # --------------------------------------------------------------------------
 # the kernels kept
 # --------------------------------------------------------------------------
@@ -370,28 +638,34 @@ def _limit_costs(jaxls):
 _optimizers: OrderedDict = OrderedDict()
 
 
-def optimizer(identity, rig_name: str, link: str, frames: int) -> Optimizer:
-    """The optimizer for a job of ``frames`` frames on this rig's model, made if needed."""
+def optimizer(identity, rig_name: str, link: str, frames: int,
+              shape: tuple[int, int] | None = None) -> Optimizer:
+    """The optimizer for a job of ``frames`` frames on this rig's model, made if needed.
+
+    ``shape`` is the capsules and obstacles it keeps clear between, padded
+    (:attr:`Collision.shape`), or None for none.
+    """
     size = bucket(frames + 2 * REST_FRAMES)
-    key = (identity, str(link), size)
+    key = (identity, str(link), size, shape)
     entry = _optimizers.get(key)
     if entry is not None:
         _optimizers.move_to_end(key)
         return entry[0]
-    made = Optimizer(size)
+    made = Optimizer(size, shape)
     _optimizers[key] = (made, rig_name)
     while len(_optimizers) > KEEP:
         _optimizers.popitem(last=False)
     return made
 
 
-def compiled_for(identity, link: str, frames: int) -> bool:
+def compiled_for(identity, link: str, frames: int,
+                 shape: tuple[int, int] | None = None) -> bool:
     """Whether a compiled kernel is kept for a job of ``frames`` frames on this model."""
     try:
         size = bucket(frames + 2 * REST_FRAMES)
     except SolverError:
         return False
-    entry = _optimizers.get((identity, str(link), size))
+    entry = _optimizers.get((identity, str(link), size, shape))
     return entry is not None and entry[0].compiled
 
 

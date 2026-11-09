@@ -84,6 +84,9 @@ class Sample:
     radii: np.ndarray | None = None
     #: The obstacles as they stood on this frame, in world space.
     obstacles: tuple = ()
+    #: World space from the solvers' frame on this frame, 4x4: the robot's
+    #: object and its Root. None where nothing was measured.
+    placement: np.ndarray | None = None
 
 
 @dataclass

@@ -875,6 +875,14 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
                 f"to {closest.clearance_obstacle} at frame {closest.clearance_frame}",
                 icon="ERROR" if closest.clearance < 0.0 else "CHECKMARK",
             )
+
+        layout.separator()
+        layout.label(text="Optimize Motion")
+        column = layout.column()
+        column.prop(rig, "kinema_avoid_obstacles")
+        clear = column.row()
+        clear.active = rig.kinema_avoid_obstacles
+        clear.prop(rig, "kinema_keep_clear")
         layout.prop(context.scene.kinema, "show_collision")
 
 

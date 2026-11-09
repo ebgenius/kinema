@@ -491,7 +491,8 @@ def capsule_ends(rig, capsules) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 def collision_state(rig, scene) -> str:
     """A fingerprint of what a check measures the robot's clearance by.
 
-    The capsules as fitted, and every obstacle: its shape and where it stands.
+    The capsules, each one and the meshes they were fitted to, and every
+    obstacle: its shape and where it stands.
     Stored with a check, so a clearance measured against obstacles since moved,
     or capsules since fitted again, isn't shown as current. An object something
     animates is fingerprinted by its keys, not by where the current frame has
@@ -504,6 +505,11 @@ def collision_state(rig, scene) -> str:
     if not len(rig.kinema_capsules) and not objects:
         return ""
     digest = hashlib.sha1(rig.kinema_capsules_source.encode())
+    # The capsules themselves, not only the meshes they were fitted to: the
+    # same meshes fitted another way, or a capsule edited, measure differently.
+    for capsule in rig.kinema_capsules:
+        digest.update(f"|{capsule.bone}|".encode())
+        digest.update(np.round([*capsule.a, *capsule.b, capsule.radius], 6).tobytes())
     # The robot's own placement: moved, every capsule is somewhere else. Its
     # pose is the job's, in the waypoints' fingerprint.
     _placement(digest, rig)

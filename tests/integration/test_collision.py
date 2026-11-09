@@ -819,7 +819,7 @@ class TestThePanel:
             "capsules stale", "constraint retuned", "driver retuned", "constraint folded",
             "robot moved", "keys eased", "scrubbed past a driven one",
             "moved with its keys muted", "scrubbed through an NLA strip",
-            "an NLA strip's key changed",
+            "an NLA strip's key changed", "capsule changed",
         ],
     )
     def test_the_closest_approach_goes_with_what_was_measured(
@@ -897,6 +897,10 @@ class TestThePanel:
             assert "FINISHED" in bpy.ops.kinema.remove_obstacles()
         elif change == "refitted":
             arm6.kinema_capsules_source = "fitted again"
+        elif change == "capsule changed":
+            # The meshes as they were fitted to: only the capsule is different.
+            arm6.kinema_capsules[0].radius += 0.01
+            assert not collision.capsules_stale(arm6), "precondition: the meshes are unchanged"
         elif change == "scaled while animated":
             # Only its location is keyed: its size is set by hand.
             far.scale = (40.0, 40.0, 40.0)

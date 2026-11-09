@@ -13,7 +13,13 @@ joints the tool doesn't hang from, such as a gripper's, stay as the job has
 them.
 
 **What it changes.** The rest, within each joint's range, top speed and
-acceleration limit, as smoothly as those leave room for. Not a linear move's
+acceleration limit, as smoothly as those leave room for, and clear of the
+obstacles. With capsules fitted and obstacles in the scene, every capsule is
+kept the rig's Keep Clear By from every obstacle on every frame, where the
+waypoints and lines leave room: the arm takes another way round, or another
+elbow, where it can. It is a cost, as the limits are, and a weak one: where
+the job itself runs into an obstacle, the job wins, and the Motion Check says
+where (``solver/trajectory.py``). Not a linear move's
 timing: the line's targets are where Generate Motion put the tool on each
 frame, so it still runs along the line at a steady speed, and the joint moves
 either side ease into it and out of it. A move that can't
@@ -36,10 +42,11 @@ waits for the result instead.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import bpy
 import numpy as np
+from bpy.props import BoolProperty, FloatProperty
 from bpy.types import Operator
 
 from ..rig import builder, motion_check
@@ -47,6 +54,7 @@ from ..rig.waypoints import MOVE_LINEAR, WaypointError, spans
 from ..solver import manager, trajectory
 from ..solver.base import SolverError
 from ..ui.panel import active_rig
+from . import collision as collision_ops
 from . import waypoints as wp
 from .ik import (
     _key_switch_off,
@@ -124,9 +132,23 @@ def prepare(context, rig) -> Job:
         )
     solver, pyroki = _model(rig)
     first, last = plan[0].start_frame, plan[-1].end_frame
+    steering = steers_clear(rig, context.scene)
+    if steering and collision_ops.capsules_stale(rig):
+        raise Refused(
+            "The meshes have changed since the capsules were fitted: Fit Again, or "
+            "untick Avoid Obstacles"
+        )
+    riding = capsule_links(rig, pyroki) if steering else None
     try:
+        shape = None
+        if riding is not None:
+            count = len(collision_ops.obstacle_objects(context.scene))
+            shape = (
+                trajectory.padded(len(riding[0]), trajectory.CAPSULE_BUCKETS),
+                trajectory.padded(count, trajectory.OBSTACLE_BUCKETS),
+            )
         optimizer = trajectory.optimizer(
-            manager.rig_identity(rig), rig.name, solver.link_target[0], last - first + 1
+            manager.rig_identity(rig), rig.name, solver.link_target[0], last - first + 1, shape
         )
     except SolverError as exc:
         raise Refused(str(exc)) from exc
@@ -135,6 +157,11 @@ def prepare(context, rig) -> Job:
     if samples is None:
         raise Refused("This rig has no TCP to aim the tool by")
     problem, free = assemble(rig, plan, samples, solver, pyroki, 1.0 / wp.scene_fps(context.scene))
+    if riding is not None:
+        problem = replace(
+            problem,
+            collision=keep_clear(riding, samples, first, last, rig.kinema_keep_clear),
+        )
 
     flagged_before = None
     if len(rig.kinema_motion_check) and rig.kinema_motion_check_job == signature:
@@ -165,8 +192,11 @@ def model_signature(rig, scene) -> tuple:
 
     The joints, which of them are held, their limits, and the TCP; where the
     bones the solve doesn't move are: each held joint, and Root, which places
-    the whole robot; and the frame rate, which every speed and acceleration is
-    measured by. Blender stays live while a solve runs, so any of them can
+    the whole robot; the frame rate, which every speed and acceleration is
+    measured by; and, while it keeps clear of obstacles, the capsules and
+    whether they still fit the meshes, the obstacles, where the robot stands
+    among them, and how far it keeps away.
+    Blender stays live while a solve runs, so any of them can
     change before its result lands, and keying that result would then write a
     motion solved for another robot, for one standing elsewhere, or for frames
     of another length.
@@ -186,12 +216,24 @@ def model_signature(rig, scene) -> tuple:
         unmoved.append(root)
     placed = tuple((pose_bone.name, _placement(rig, pose_bone)) for pose_bone in unmoved)
     fps = _number(wp.scene_fps(scene))
+    # What it keeps clear of, and by how much: the capsules, the obstacles and
+    # where the robot stands among them. And whether the capsules still fit
+    # the meshes: a solve isn't started on capsules that don't, nor written.
+    clear = (
+        (
+            collision_ops.collision_state(rig, scene),
+            _number(rig.kinema_keep_clear),
+            collision_ops.capsules_stale(rig),
+        )
+        if steers_clear(rig, scene)
+        else None
+    )
     tcp = rig.data.bones.get(wp._tool_bone(rig))
     if tcp is None:
-        return joints, placed, fps, None
+        return joints, placed, fps, clear, None
     parent = tcp.parent.name if tcp.parent is not None else ""
     pose = tuple(_number(value) for row in tcp.matrix_local for value in row)
-    return joints, placed, fps, (tcp.name, parent, pose)
+    return joints, placed, fps, clear, (tcp.name, parent, pose)
 
 
 def _placement(rig, pose_bone) -> tuple:
@@ -236,6 +278,97 @@ def _model(rig):
         reason = solver.pyroki_error or "the PyRoki solver isn't available"
         raise Refused(f"Optimize Motion needs the PyRoki solver: {reason}")
     return solver, pyroki
+
+
+def steers_clear(rig, scene) -> bool:
+    """Whether Optimize Motion keeps ``rig`` clear of obstacles: it has both, and it's asked to."""
+    return (
+        bool(rig.kinema_avoid_obstacles)
+        and bool(len(rig.kinema_capsules))
+        and bool(collision_ops.obstacle_objects(scene))
+    )
+
+
+def capsule_links(rig, pyroki):
+    """The rig's capsules on PyRoki's links: which, and their ends in its frame.
+
+    Returns ``(which, links, a, b)``, or None with none to steer: where in
+    ``capsules_of`` the capsules that move with the joints are, the index of
+    the link each rides on, and its ends in that link's
+    frame, (C, 3) each. A capsule rides on the link of the nearest joint bone
+    at or above its own: a TCP's on the last joint's. One on a bone no joint
+    moves, such as Root, can't be steered, and isn't. Raises :class:`Refused`
+    if a link isn't in PyRoki's model, or its joint bone records no link frame.
+
+    A link's frame is its joint bone's, turned by the correction recorded at
+    import (``builder.PROP_LINK_CORRECTION``), as IK aims it: posed, the link
+    is the bone's matrix times the correction, so a bone's point ``p`` is
+    ``(M_joint C)^-1 M_bone p`` in it, at rest or in any pose.
+    """
+    names = list(pyroki.robot.links.names)
+    bones = rig.data.bones
+    kept, links, ends_a, ends_b = [], [], [], []
+    for index, capsule in enumerate(collision_ops.capsules_of(rig)):
+        bone = bones[capsule.bone]
+        node = bone
+        while node is not None and builder.PROP_CHILD_LINK not in node:
+            node = node.parent
+        if node is None:
+            continue
+        stored = node.get(builder.PROP_LINK_CORRECTION)
+        if stored is None or len(stored) != 16:
+            # Left out, the capsule would go through whatever is in its way.
+            raise Refused(
+                f"The capsules on {capsule.bone} ride {node.name}, which records no link "
+                "frame to place them by: import the robot again, or untick Avoid Obstacles"
+            )
+        link = str(node[builder.PROP_CHILD_LINK])
+        if link not in names:
+            raise Refused(
+                f"The capsules on {capsule.bone} ride {link}, which the solver's model "
+                "doesn't have: Fit Again, or untick Avoid Obstacles"
+            )
+        correction = np.array([float(v) for v in stored]).reshape(4, 4)
+        to_link = np.linalg.inv(_matrix(node.matrix_local) @ correction) @ _matrix(
+            bone.matrix_local
+        )
+        kept.append(index)
+        links.append(names.index(link))
+        ends_a.append(to_link[:3, :3] @ capsule.a + to_link[:3, 3])
+        ends_b.append(to_link[:3, :3] @ capsule.b + to_link[:3, 3])
+    if not kept:
+        return None
+    return kept, np.array(links), np.array(ends_a), np.array(ends_b)
+
+
+def keep_clear(riding, samples, first: int, last: int, distance: float) -> trajectory.Collision:
+    """The capsules in ``riding`` kept ``distance`` from the obstacles as each frame had them.
+
+    ``samples`` are the job as it played, with the obstacles and the robot's
+    placement read on every frame. Nothing is asked on the job's first and
+    last frames, which are pinned where they are.
+    """
+    which, links, a, b = riding
+    own = [sample for sample in samples if first <= sample.frame <= last]
+    kinds = np.array([trajectory.SHAPES.index(obstacle.kind) for obstacle in own[0].obstacles])
+    frame = np.array([[obstacle.matrix for obstacle in sample.obstacles] for sample in own])
+    # A sphere's radius first, a floor's nothing: three numbers each.
+    size = np.array(
+        [[np.resize(np.asarray(o.size, dtype=float), 3) for o in s.obstacles] for s in own]
+    )
+    # The widest each was over the job, in world space, as the check measures it.
+    radius = np.max([sample.radii[which] for sample in own], axis=0)
+    weight = np.ones(len(own))
+    weight[0] = weight[-1] = 0.0
+    return trajectory.Collision(
+        link=links, a=a, b=b, radius=radius,
+        placement=np.array([sample.placement for sample in own]),
+        kind=kinds, frame=frame, size=size, weight=weight, keep_clear=float(distance),
+    )
+
+
+def _matrix(matrix) -> np.ndarray:
+    return np.array([[matrix[r][c] for c in range(4)] for r in range(4)])
 
 
 def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem, list]:
@@ -397,7 +530,33 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
         message += "; within every limit"
     if job.flagged_before:
         message += f" (was {job.flagged_before} flagged)"
+    if job.problem.collision is not None:
+        message += "; " + _closest(checks or (), job.problem.collision.keep_clear)
     return True, ("WARNING" if flagged else "INFO"), message
+
+
+def _closest(checks, keep_clear: float) -> str:
+    """Where the optimized job comes closest to an obstacle, in words."""
+    closest = min(
+        (check for check in checks if check.clearance_obstacle),
+        key=lambda check: check.clearance,
+        default=None,
+    )
+    if closest is None:
+        return "no obstacle measured"
+    where = (
+        f"{closest.clearance_bone} to {closest.clearance_obstacle} at frame "
+        f"{closest.clearance_frame}"
+    )
+    if closest.clearance < 0.0:
+        return (
+            f"{closest.clearance_bone} hits {closest.clearance_obstacle} by "
+            f"{-closest.clearance * 1000:.0f} mm at frame {closest.clearance_frame}"
+        )
+    # Within half a millimetre of what was asked counts as keeping it.
+    if closest.clearance < keep_clear - 0.0005:
+        return f"closer than asked: {closest.clearance * 1000:.0f} mm, {where}"
+    return f"{closest.clearance * 1000:.0f} mm clear at the closest, {where}"
 
 
 def write_keys(context, rig, frames, q, free) -> None:
@@ -561,6 +720,33 @@ def _redraw(context) -> None:
 def forget() -> None:
     """Nothing is being optimised in a new file."""
     _running.clear()
+
+
+def register_props() -> None:
+    bpy.types.Object.kinema_avoid_obstacles = BoolProperty(
+        name="Avoid Obstacles",
+        description=(
+            "Optimize Motion keeps the robot's capsules clear of the obstacles, on every "
+            "frame, where the waypoints and lines leave room"
+        ),
+        default=True,
+    )
+    bpy.types.Object.kinema_keep_clear = FloatProperty(
+        name="Keep Clear By",
+        description=(
+            "How far Optimize Motion keeps the robot's capsules from every obstacle"
+        ),
+        default=0.01,
+        min=0.0,
+        soft_max=0.2,
+        unit="LENGTH",
+        subtype="DISTANCE",
+    )
+
+
+def unregister_props() -> None:
+    del bpy.types.Object.kinema_avoid_obstacles
+    del bpy.types.Object.kinema_keep_clear
 
 
 classes = (KINEMA_OT_optimize_motion,)

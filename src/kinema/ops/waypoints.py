@@ -1043,11 +1043,12 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
         for frame in range(first - 1, last + 2):
             scene.frame_set(frame)
             context.view_layer.update()
-            segments, radii, obstacles = None, None, ()
+            segments, radii, obstacles, placement = None, None, (), None
             if measured:
                 a, b, radii = collision_ops.capsule_ends(rig, capsules)
                 segments = np.stack([a, b], axis=1)
                 obstacles = tuple(collision_ops.obstacles(context))
+                placement = np.array(rig.matrix_world) @ manager.root_pose(rig)
             samples.append(
                 motion_check.Sample(
                     frame=frame,
@@ -1056,6 +1057,7 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
                     segments=segments,
                     radii=radii,
                     obstacles=obstacles,
+                    placement=placement,
                 )
             )
             window.progress_update(frame)

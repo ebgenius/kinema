@@ -199,8 +199,9 @@ keeps within the robot's limits. It keeps:
 - the job's first and last frames, with the robot at rest before and after them;
 - held joints, and joints the tool doesn't hang from, where the job has them.
 
-Everything else may change. Within each joint's range, top speed and acceleration limit, it
-takes the smoothest path it can. Then it keys every free joint on every frame with live IK
+Everything else may change. Within each joint's range, top speed and acceleration limit, and
+clear of the obstacles (see [Checking for collisions](#checking-for-collisions)), it takes the
+smoothest path it can. Then it keys every free joint on every frame with live IK
 off, so the job plays as it was solved, and checks it again. A free joint is one on the
 chain to the TCP that isn't held.
 - On a KR10 R1100-2 with its own `joint_limits.yaml`, a four-waypoint job with joint 2 at three
@@ -225,7 +226,8 @@ never retimed.
 - From the panel it runs while Blender stays live, and Esc abandons it, writing nothing. If the
   waypoints or the robot change before it finishes, it writes nothing either: a joint held or
   released, a held joint moved or its keys edited, a limit, the TCP, Root's pose, or the frame
-  rate. Scrubbing the timeline meanwhile is fine.
+  rate. So do the obstacles, the capsules, where the robot stands, and Keep Clear By, while it
+  keeps clear. Scrubbing the timeline meanwhile is fine.
 - The first run for a robot and a job length compiles first, which holds Blender up for
   seconds. JAX's compile cache keeps it for the sessions after.
 - It needs the PyRoki solver, whichever solver live IK uses.
@@ -346,7 +348,9 @@ selected*. Each is measured as one of three shapes, chosen in the panel:
 - **Floor**: everything below the plane through its origin, square to its Z axis.
 
 A complicated fixture is a few of them. Obstacles are read on every frame, so one that moves
-is measured where it is.
+is measured where it is. What an obstacle follows by a constraint or a driver isn't watched,
+though: move that, and neither the check nor Optimize Motion notices. Check Again after
+([#94](https://github.com/ebgenius/kinema/issues/94)).
 
 **The check** names, for each move, the link that came closest, to which obstacle, and on
 which frame. A link reaching into an obstacle is flagged: "joint_3 hits Fixture by 40 mm at
@@ -355,7 +359,40 @@ the obstacles, the capsules or where the robot stands change, when it asks for C
 Shapes** draws the capsules and obstacles as the check sees them, red where they touch on the
 current frame. That's the way to see a capsule that fits its link badly.
 
-Self-collision, and steering Optimize Motion clear of obstacles, are still to come.
+**Optimize Motion keeps clear of them.** With capsules fitted and obstacles in the scene, it
+keeps every capsule at least **Keep Clear By** (10 mm unless changed) from every obstacle, on
+every frame of the job. Both are set in the Collision panel. The waypoints and the lines stay where they
+are, so the arm goes round an obstacle between them: higher, wider, or with its elbow another
+way. An obstacle that moves is kept clear of where it is on each frame, and so is a robot
+carried along.
+- Where the job can't keep clear, the job wins. A waypoint, a line or the job's first or last
+  frame inside an obstacle stays where it was taught, and the moves round it stay close to
+  their limits; the Motion Check names the link, the obstacle and the frame. Pulling the arm
+  out harder there would only drag the waypoints off and make the joints lurch.
+- Where going round takes more than a move's frames allow at the robot's speeds, it comes
+  as close to clear as the limits leave room for, and the Motion Check says where it still
+  hits. Give the move more frames, or move the obstacle.
+- **A large obstacle across a joint move can change the move's timing instead of its path.**
+  Clearance is measured frame by frame, and crossing an obstacle in fewer frames counts as
+  much as going round it. So the arm may wind back first, cross at full speed, and pass its
+  next waypoint before coming back to it. On a KR120 at 24 fps, a 100-frame joint move
+  swinging the tool 2.4 m past a 1.2 m cube went in 506 mm as taught. Optimized, the base
+  wound back 0.34 rad, crossed at its top speed and overshot by 0.27 rad, and the arm still
+  came out 26 mm in. Teach a waypoint over the obstacle, or give the move more frames.
+  Letting a move take longer by itself is [#93](https://github.com/ebgenius/kinema/issues/93).
+- The obstacles are measured on each frame, as the check measures them. A link could still
+  pass through a thin obstacle between two frames of a fast move.
+- **Avoid Obstacles**, beside it, turns it off. Capsules that no longer fit the meshes are
+  refused while it's on: Fit Again first.
+- On arm6, a post 72 mm into the forearm mid-move was gone round, 12 mm clear, within every
+  limit, the waypoints within 0.001 mm. On a KR210 at 24 fps, a post the wrist swept
+  through 26 frames before a linear move came out 3 mm in: going round in that time would
+  have taken a joint near three times its acceleration limit. Solving its 400 frames took
+  8.7 s on a desktop, against 3.0 s without obstacles. With a post across its line instead,
+  330-420 mm into the arm, the waypoints stayed within 0.1 mm and the joints reached at most
+  2.2 times an acceleration limit.
+
+Self-collision is still to come.
 
 ## Choosing how the arm reaches
 
