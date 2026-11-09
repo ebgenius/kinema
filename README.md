@@ -319,17 +319,22 @@ bone, and on the TCP for an attached tool:
 - a link's imported collision meshes where it has them, otherwise what the link shows, and
   either way whatever was added to it, an attached tool;
 - each link split into up to four capsules, the fewest that come close to the tightest fit,
-  so an L-shaped link isn't one fat capsule. On a KR210 the forearm gets three, at most
-  490 mm in radius where one would be 824 mm, and the whole arm eleven, fitted in 4 s. The
-  same meshes give the same capsules in any pose;
+  so an L-shaped link isn't one fat capsule. On a KR210 the forearm gets four, at most
+  401 mm in radius where one would be 513 mm, and the whole arm fourteen, fitted in
+  4.5 s. The same meshes give the same capsules in any pose;
+- each capsule the tightest found round its part, along the part's main direction or the
+  narrowest cylinder's, trimmed so its rounded ends only just take in the mesh. Not that
+  cylinder with its ends rounded, as PyRoki fits one: each end would stand a whole radius past
+  a face, and a squat link's narrowest cylinder stands on its shortest side. A KR120's wrist,
+  210 mm thick, got a capsule 579 mm tall that way, and its turret one reaching 0.36 m past
+  its meshes;
 - every point of the meshes inside them;
 - not the base, which stands on whatever floor there is.
 
 The fit chooses how many capsules a link gets by their volume, and volume can't see where the
-bulk sits. A squat link can come out as one long capsule whose ends stand far out past it: a
-KR120's turret got one capsule reaching 0.36 m past its meshes, into an obstacle the turret
-itself stood well clear of. **Capsules per link**, under the fit, sets a link's count by hand,
-from 1 to 4, or leaves it on **Auto**. Fit Again after: the panel asks for it.
+bulk sits, so a link can still come out with fewer than suit it. **Capsules per link**, under
+the fit, sets a link's count by hand, from 1 to 4, or leaves it on **Auto**. Fit Again after:
+the panel asks for it.
 
 They are kept on the rig and move with it, however the job plays, and scale with it: a robot
 scaled unevenly gets the widest of its scales. After changing a link's meshes, faces, shape keys or tool,
@@ -382,14 +387,14 @@ carried along.
   measured frame by frame, so where a link can't get clear, crossing in fewer frames is all
   that's left to lower it. The arm winds back first, crosses at full speed, and passes its
   next waypoint before coming back to it. A start or an end inside an obstacle does the same.
-  - The usual cause is a capsule much bigger than its link: Show Collision Shapes shows it.
-    On a KR120 at 24 fps, a joint move swinging the tool 2.4 m past a 1.2 m cube went over
-    it, but the turret's one capsule reached 27 mm into the cube whenever the base faced
-    it. The turret itself stood 337 mm clear. The base wound back 0.34 rad, crossed at its
-    top speed and overshot by 0.27 rad, at any number of frames. With the turret set to 3
-    capsules, it stayed clear, and the wind-up and the overshoot were gone. Optimize Motion
-    took 6 s instead of 14. The arm still came out 8 mm in, at its acceleration limits: going
-    over the cube needs more than the move's 100 frames, and at 160 it kept 50 mm clear.
+  - A capsule much bigger than its link does it: Show Collision Shapes shows one. On a KR120
+    at 24 fps, a joint move swinging the tool 2.4 m past a 1.2 m cube went over it, but the
+    turret's capsule, fitted as a cylinder with its ends rounded, reached 27 mm into the
+    cube whenever the base faced it. The turret itself stood 337 mm clear. The base wound
+    back 0.34 rad, crossed at its top speed and overshot by 0.27 rad, at any number of
+    frames. Fitted as it is now, the turret's capsule stands 227 mm clear facing the cube,
+    and the same move came out 52 mm clear within every limit, with no wind-up and no
+    overshoot. Where a capsule still stands far out, give its link more: Capsules per link.
   - Where the hit is real, move the obstacle, or teach the waypoint clear of it.
   - Letting a move take longer to go round is [#93](https://github.com/ebgenius/kinema/issues/93).
 - The obstacles are measured on each frame, as the check measures them. A link could still

@@ -37,12 +37,14 @@ nothing else is:
   are all that's left to lower it. The solver changes the move's timing: it
   winds back, crosses at full speed and passes the next waypoint before coming
   back. More frames don't help. On a KR120 at 24 fps, a joint move swinging
-  past a 1.2 m cube: the arm went over the cube, but the turret's one capsule
-  reached 27 mm into it whenever the base faced it, while the turret's meshes
-  stood 337 mm clear, and the base can't swing the other way round. At 100,
-  150, 200 and 300 frames the base still wound back by up to 0.43 rad and
-  crossed at its top speed. With the turret in three capsules, it stayed clear,
-  and neither the wind-up nor the overshoot happened. A start or an end pinned
+  past a 1.2 m cube: the arm went over the cube, but the turret's one capsule,
+  then fitted as a cylinder with its ends rounded, reached 27 mm into it
+  whenever the base faced it, while the turret's meshes stood 337 mm clear, and
+  the base can't swing the other way round. At 100, 150, 200 and 300 frames the
+  base still wound back by up to 0.43 rad and crossed at its top speed. Fitted
+  as a capsule (``rig/collision.py``), the turret stands 227 mm clear, and the
+  same move came out 52 mm clear within every limit, with neither the wind-up
+  nor the overshoot. A start or an end pinned
   inside an obstacle does the same. Weighting the depth by how far a capsule
   moves that frame stopped the wind-up, but left the arm 350-410 mm in, or
   still crossing at twice the taught speed (issue #93).

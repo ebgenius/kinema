@@ -71,13 +71,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Collision checking**, in a new Collision panel. The Motion Check measures how close the
   robot comes to the obstacles on every frame, and flags a link that hits one, with the frame.
   - **Fit Capsules** fits up to four capsules round each link's meshes: its collision meshes,
-    or what it shows, an attached tool included. On a KR210, eleven for the arm, the forearm's
-    490 mm in radius at most, where one capsule would be 824 mm. **Clear Capsules** removes
-    them.
-  - **Capsules per link** sets how many a link gets, 1 to 4, where the automatic choice
-    leaves one capsule standing far out past it. A KR120's turret got one, reaching 0.36 m
-    past its meshes; with three, an Optimize Motion that had wound back, sprinted past a cube
-    and overshot did none of it.
+    or what it shows, an attached tool included. Each is fitted as a capsule, its rounded ends
+    trimmed to the mesh, not as PyRoki fits one, the narrowest cylinder with its ends rounded:
+    on a squat link those stand a whole radius past its faces. On a KR210, fourteen for the
+    arm, the forearm's 401 mm in radius at most, where one capsule would be 513 mm. A KR120's
+    wrist, 210 mm thick, fitted as one capsule, is 378 mm from end to end, not 579. **Clear
+    Capsules** removes them.
+  - **Capsules per link** sets how many a link gets, 1 to 4, where the automatic choice,
+    made by volume, leaves too few.
   - Obstacles are the objects in the scene's *Kinema Obstacles* collection, each a box, a
     sphere or a floor. Each scene has its own.
   - **Show Collision Shapes** draws what the check measures, red where it touches.
@@ -91,8 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     job stays as taught and within its limits, and the Motion Check names the hit. Where
     going round would take more than the frames allow, it gets as close as the limits let it.
   - A hit it can't avoid changes the move's timing instead: the arm winds back, crosses at
-    full speed and passes its waypoint before coming back. Usually that's a capsule much
-    bigger than its link: give the link more capsules.
+    full speed and passes its waypoint before coming back. A capsule much bigger than its
+    link does it; Show Collision Shapes shows one, and Capsules per link gives it more.
 
 ### Changed
 
