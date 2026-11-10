@@ -334,7 +334,8 @@ bone, and on the TCP for an attached tool:
 The fit chooses how many capsules a link gets by their volume, and volume can't see where the
 bulk sits, so a link can still come out with fewer than suit it. **Capsules per link**, under
 the fit, sets a link's count by hand, from 1 to 4, or leaves it on **Auto**. Fit Again after:
-the panel asks for it.
+the panel asks for it. Links behind a fixed joint ride on the bone of the joint before them,
+and are listed and counted with it: one count for their meshes together.
 
 They are kept on the rig and move with it, however the job plays, and scale with it: a robot
 scaled unevenly gets the widest of its scales. After changing a link's meshes, faces, shape keys or tool,

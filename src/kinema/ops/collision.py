@@ -1123,7 +1123,8 @@ def register_props() -> None:
         description=(
             "How many capsules Fit Capsules puts round this link. Set more where one fat "
             "capsule stands far out past the link, as Show Collision Shapes draws it; Fit "
-            "Again after"
+            "Again after. Links behind a fixed joint share this bone's count, for their "
+            "meshes together"
         ),
         items=CAPSULE_COUNTS,
         default="AUTO",
