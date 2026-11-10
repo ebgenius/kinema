@@ -756,7 +756,7 @@ def check_outdated(rig, scene) -> str:
         return "The obstacles or capsules have changed since this check"
     if collision.capsules_stale(rig):
         # Its clearances were measured with capsules that no longer fit the links.
-        return "The meshes have changed since the capsules: Fit Again, then Check Again"
+        return "Meshes or capsule counts changed since the fit: Fit Again, then Check Again"
     return ""
 
 
@@ -809,6 +809,26 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
                 row.label(text=problem)
 
 
+def _draw_capsule_counts(layout, rig, capsules, meshes) -> None:
+    """Each link with meshes to fit: how many capsules it's asked for, and has."""
+    if not meshes:
+        return
+    fitted = {}
+    for capsule in capsules:
+        fitted[capsule.bone] = fitted.get(capsule.bone, 0) + 1
+    column = layout.column(align=True)
+    column.label(text="Capsules per link")
+    for bone in sorted(meshes):
+        pose_bone = rig.pose.bones.get(bone)
+        if pose_bone is None:
+            continue
+        row = column.row(align=True)
+        split = row.split(factor=0.45, align=True)
+        split.label(text=bone)
+        split.prop(pose_bone, "kinema_capsule_count", text="")
+        split.label(text=f"{fitted[bone]} fitted" if bone in fitted else "none fitted")
+
+
 class KINEMA_PT_collision(KinemaPanelBase, Panel):
     """The robot's capsules and the obstacles the Motion Check measures it against."""
 
@@ -842,7 +862,8 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
             links = len({capsule.bone for capsule in capsules})
             layout.label(text=f"{len(capsules)} capsules on {links} links")
             if collision.capsules_stale(rig):
-                layout.label(text="The meshes have changed since: fit again", icon="ERROR")
+                layout.label(text="Changed since the fit: Fit Again", icon="ERROR")
+        _draw_capsule_counts(layout, rig, capsules, collision.link_meshes(rig))
 
         layout.separator()
         layout.label(text="Obstacles")

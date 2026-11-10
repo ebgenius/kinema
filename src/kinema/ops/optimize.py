@@ -135,8 +135,8 @@ def prepare(context, rig) -> Job:
     steering = steers_clear(rig, context.scene)
     if steering and collision_ops.capsules_stale(rig):
         raise Refused(
-            "The meshes have changed since the capsules were fitted: Fit Again, or "
-            "untick Avoid Obstacles"
+            "The meshes or the capsule counts have changed since the capsules were "
+            "fitted: Fit Again, or untick Avoid Obstacles"
         )
     riding = capsule_links(rig, pyroki) if steering else None
     try:

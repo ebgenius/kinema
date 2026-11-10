@@ -795,7 +795,7 @@ class TestKeepingClear:
                 log.append(("layout", made))
                 return made
 
-            column = box = row
+            column = box = split = row
 
             def separator(self, **_):
                 pass

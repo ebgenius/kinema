@@ -6,11 +6,16 @@ for the link. One capsule a link is what PyRoki fits from a description, and
 it is far too coarse for an industrial arm: a KR210's forearm, with its motor
 housing, came out 824 mm in radius, 8.7 times the volume of its convex hull.
 So :func:`fit` splits a link's points into clusters and bounds each with the
-narrowest cylinder around it (trimesh's ``minimum_cylinder``, the fit PyRoki's
-``Capsule.from_trimesh`` uses), capped at each end. More capsules fit tighter
-and cost more in every solve; it takes the fewest that come within
-:data:`SLACK` of the tightest of up to :data:`MAX_PARTS`. On that KR210: 3 on
-the forearm (341 mm at most), 10 on the whole arm.
+tightest capsule it finds (:func:`_capsule`). More capsules fit tighter and
+cost more in every solve; it takes the fewest that come within :data:`SLACK`
+of the tightest of up to :data:`MAX_PARTS`. On that KR210: 4 on the forearm
+(401 mm at most), 14 on the whole arm.
+
+A capsule is fitted as a capsule, not as PyRoki's ``Capsule.from_trimesh``
+fits one: the narrowest cylinder round the points (trimesh's
+``minimum_cylinder``) with its ends rounded. Each rounded end then stands a
+whole radius past a face the cylinder fitted exactly, and on a squat link the
+narrowest cylinder stands on its shortest side.
 
 Each capsule is kept in its bone's frame, as the segment between two points
 and a radius. Blender places the bone on every frame, so the capsules move
@@ -91,17 +96,33 @@ class Obstacle:
 # --------------------------------------------------------------------------
 # fitting
 # --------------------------------------------------------------------------
-def fit(points: np.ndarray, max_parts: int = MAX_PARTS, slack: float = SLACK) -> list:
+def fit(
+    points: np.ndarray,
+    max_parts: int = MAX_PARTS,
+    slack: float = SLACK,
+    parts: int | None = None,
+) -> list:
     """Capsules around ``points``, as ``(a, b, radius)``, in the points' own frame.
 
     Every point is inside one of them. They are fitted to the points thinned,
     which bounds only what thinning kept, so each is then widened to take in
     the points nearest it that it doesn't.
+
+    ``parts`` asks for that many, as set on a link by hand, and gets them where
+    the points can be split that far: the same split the count would be tried
+    with here. Otherwise the count is chosen by volume, which can't see where
+    the bulk sits: a link can still come out with fewer capsules than suit it.
     """
     points = np.asarray(points, dtype=float)
     thinned = thin(points)
     if len(thinned) == 0:
         return []
+    if parts is not None:
+        # One cluster always forms, so this always returns.
+        for count in range(max(int(parts), 1), 0, -1):
+            clusters = _clusters(thinned, count)
+            if clusters is not None:
+                return _covering(points, [_capsule(cluster) for cluster in clusters])
     tries = []
     for parts in range(1, max_parts + 1):
         clusters = _clusters(thinned, parts)
@@ -193,7 +214,19 @@ def _clusters(points: np.ndarray, parts: int) -> list | None:
 
 
 def _capsule(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-    """The capsule on the narrowest cylinder around ``points``.
+    """The tightest capsule round ``points`` along either of two axes.
+
+    The axes: the points' principal one, and the narrowest cylinder's
+    (trimesh's ``minimum_cylinder``, the fit PyRoki's ``Capsule.from_trimesh``
+    uses). Along each, :func:`_along` fits a capsule as a capsule; the smaller
+    is kept. The principal axis is the better one for most links. The
+    cylinder's covers a squat link, which has no clear long direction.
+
+    A capsule is not that cylinder with its ends rounded. Round them and each
+    end stands a whole radius past a face the cylinder fitted exactly. On a
+    squat link the narrowest cylinder stands on the shortest side: a KR120's
+    wrist, 210 mm thick, got a capsule 579 mm tall, which this fits at under
+    half the volume.
 
     trimesh is imported outside the fallback: without it every capsule would
     quietly take the crude fit below, so a missing trimesh has to fail loudly.
@@ -207,15 +240,86 @@ def _capsule(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
         try:
             hull = trimesh.convex.convex_hull(points)
             if hull.volume > 1e-12:
+                corners = np.asarray(hull.vertices, dtype=float)
                 cylinder = trimesh.bounds.minimum_cylinder(hull)
-                transform = np.asarray(cylinder["transform"], dtype=float)
-                half = float(cylinder["height"]) / 2.0
-                a = transform @ np.array([0.0, 0.0, -half, 1.0])
-                b = transform @ np.array([0.0, 0.0, half, 1.0])
-                return a[:3], b[:3], float(cylinder["radius"])
+                axes = [
+                    _principal_axis(points),
+                    np.asarray(cylinder["transform"], dtype=float)[:3, 2],
+                ]
+                fits = []
+                for axis in axes:
+                    try:
+                        fits.append(_along(corners, axis))
+                    except (np.linalg.LinAlgError, QhullError, ValueError):
+                        continue  # flat seen along it: the other axis may do
+                fits = [fit for fit in fits if fit is not None]
+                if fits:
+                    _, a, b, radius = min(fits, key=lambda fit: fit[0])
+                    return a, b, radius
         except (np.linalg.LinAlgError, QhullError, ValueError):
             pass
     return _segment_around(points)
+
+
+#: How far past the least radius round an axis :func:`_along` looks: a wider
+#: capsule can be shorter, and for a squat set of points that pays.
+WIDEST = 1.8
+#: Radii tried between the least and :data:`WIDEST` times it, then again
+#: between the best one's neighbours.
+RADII = 41
+
+
+def _principal_axis(points: np.ndarray) -> np.ndarray:
+    """The direction ``points`` spread furthest along."""
+    return np.linalg.svd(points - points.mean(axis=0), full_matrices=False)[2][0]
+
+
+def _along(points: np.ndarray, axis: np.ndarray):
+    """The least-volume capsule round ``points`` whose segment runs along ``axis``.
+
+    Returns ``(volume, a, b, radius)``, or None if it can't be fitted. The
+    segment lies on the line through the centre of the smallest circle round
+    the points seen along the axis, which gives the least radius. For a given
+    radius, the segment is trimmed to what keeps every point inside: a point
+    ``d`` from the line is inside a rounded end reaching ``sqrt(r^2 - d^2)``
+    past the segment's end. A wider radius trims more, so radii past the least
+    are tried, for the least volume.
+    """
+    from trimesh import nsphere
+
+    axis = np.asarray(axis, dtype=float)
+    axis = axis / np.linalg.norm(axis)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(axis, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    flat = np.c_[points @ u, points @ v]
+    centre, least = nsphere.minimum_nsphere(flat)
+    least = float(least)
+    distance = np.linalg.norm(flat - centre, axis=1)
+    height = points @ axis
+    line = centre[0] * u + centre[1] * v
+
+    def capsule(radius: float):
+        reach = np.sqrt(np.maximum(radius * radius - distance * distance, 0.0))
+        low, high = float(np.min(height + reach)), float(np.max(height - reach))
+        if high < low:
+            # Wider than needs any segment. The least radius never is: the
+            # points furthest from the line reach no way past their own height.
+            return None
+        held = math.pi * radius * radius * (high - low) + 4.0 / 3.0 * math.pi * radius**3
+        return held, line + low * axis, line + high * axis, radius
+
+    radii = least * np.linspace(1.0, WIDEST, RADII)
+    tried = [(capsule(float(radius)), index) for index, radius in enumerate(radii)]
+    tried = [(fit, index) for fit, index in tried if fit is not None]
+    if not tried:
+        return None
+    best, index = min(tried, key=lambda item: item[0][0])
+    # Finer, between the best radius's neighbours.
+    finer = np.linspace(radii[max(index - 1, 0)], radii[min(index + 1, RADII - 1)], RADII)
+    refined = [fit for fit in (capsule(float(radius)) for radius in finer) if fit is not None]
+    return min([best, *refined], key=lambda fit: fit[0])
 
 
 def _segment_around(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
