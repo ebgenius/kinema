@@ -82,7 +82,7 @@ class TestFitting:
 
     @staticmethod
     def _cylinder_rounded(points):
-        """The volume of the narrowest cylinder with its ends rounded, as fitted before."""
+        """The volume of the least-volume cylinder with its ends rounded, as fitted before."""
         import trimesh
 
         cylinder = trimesh.bounds.minimum_cylinder(trimesh.convex.convex_hull(points))
@@ -90,7 +90,7 @@ class TestFitting:
         return math.pi * radius**2 * height + 4.0 / 3.0 * math.pi * radius**3, radius
 
     def test_a_squat_block_s_capsule_doesn_t_stand_a_radius_past_its_faces(self):
-        """A KR120's wrist is about this block. The narrowest cylinder stands on its
+        """A KR120's wrist is about this block. The least-volume cylinder stands on its
         shortest side, and rounding its ends put each a whole radius past a face."""
         half = np.array([0.15, 0.145, 0.105])
         points = self._block(half)
@@ -102,7 +102,7 @@ class TestFitting:
         assert _inside_any(points, [(a, b, r)]).all()
 
     def test_a_plate_s_capsule_lies_along_it(self):
-        """Its narrowest cylinder stands square to it, and rounded, that is nearly a
+        """Its least-volume cylinder stands square to it, and rounded, that is nearly a
         ball 0.5 m across: 0.53 m³. Along the plate's own spread, 0.34."""
         random = np.random.default_rng(7)
         turn, _ = np.linalg.qr(random.normal(size=(3, 3)))
@@ -112,7 +112,7 @@ class TestFitting:
         assert _inside_any(points, [(a, b, r)]).all()
 
     @pytest.mark.parametrize("shape", ["block", "long block", "l", "cylinder", "blob"])
-    def test_never_bigger_than_the_narrowest_cylinder_rounded(self, shape):
+    def test_never_bigger_than_the_least_volume_cylinder_rounded(self, shape):
         """Its axis is one of those tried, with a segment trimmed from its height."""
         random = np.random.default_rng(7)
         points = {
@@ -131,6 +131,29 @@ class TestFitting:
         a, b, r = collision._capsule(thinned)
         before, _ = self._cylinder_rounded(thinned)
         assert collision.volume(r, a, b) <= before * (1.0 + 1e-6)
+
+    def test_the_principal_axis_still_fits_when_the_cylinder_search_fails(self, monkeypatch):
+        """Each axis is tried on its own: a cylinder search that raises loses only its own."""
+        import trimesh
+
+        random = np.random.default_rng(7)
+        turn, _ = np.linalg.qr(random.normal(size=(3, 3)))
+        points = collision.thin(self._block(np.array([0.4, 0.3, 0.03])) @ turn)
+        a, b, r = collision._capsule(points)
+        # A tilted plate: its principal axis's capsule is the one kept.
+        corners = trimesh.convex.convex_hull(points).vertices
+        _, pa, pb, pr = collision._along(corners, collision._principal_axis(points))
+        assert np.allclose([*a, *b, r], [*pa, *pb, pr])
+        # And the crude fit is a different capsule, so falling back to it shows.
+        crude = collision._segment_around(points)
+        assert not np.allclose([*crude[0], *crude[1], crude[2]], [*a, *b, r], atol=1e-3)
+
+        def fails(*_, **__):
+            raise ValueError("no cylinder found")
+
+        monkeypatch.setattr(trimesh.bounds, "minimum_cylinder", fails)
+        fa, fb, fr = collision._capsule(points)
+        assert np.allclose([*fa, *fb, fr], [*a, *b, r])
 
     def test_a_count_asked_for_is_the_count_fitted(self):
         """Fewer than the fit would choose, or more: each holds every point."""
@@ -211,7 +234,7 @@ class TestFitting:
         fit along its spread lies.
 
         A ball 0.503 m across holds a disc 0.5 m in radius and 0.1 m thick in less
-        than the narrowest cylinder rounded, through it: 0.53 m³ against 0.60.
+        than the least-volume cylinder rounded, through it: 0.53 m³ against 0.60.
         """
         random = np.random.default_rng(3)
         angle = random.uniform(0.0, 2.0 * math.pi, 3000)

@@ -235,6 +235,61 @@ class TestCapsules:
         assert all("kinema_capsule_count" in pose_bone.bl_rna.properties for pose_bone in counts)
         assert ("label", "2 fitted") in log and ("label", "1 fitted") in log
 
+    def test_capsules_from_an_older_fit_say_so_until_fitted_again(self, arm6, modules):
+        """A file saved before the fit version was stored has none: older, not stale."""
+        import types
+
+        import bpy
+
+        panel, collision = modules("ui.panel"), modules("ops.collision")
+        hint = "Fitted by an older version: Fit Again"
+
+        def labels():
+            log = []
+
+            class Layout:
+                use_property_split = enabled = alert = active = False
+
+                def row(self, **_):
+                    return self
+
+                column = box = split = row
+
+                def separator(self, **_):
+                    pass
+
+                def label(self, *, text="", icon="NONE"):
+                    log.append(text)
+
+                def prop(self, *_, **__):
+                    pass
+
+                def operator(self, *_, **__):
+                    return types.SimpleNamespace()
+
+            panel.KINEMA_PT_collision.draw(types.SimpleNamespace(layout=Layout()), bpy.context)
+            return log
+
+        _fit(arm6)
+        assert arm6.kinema_capsules_fit_version == modules("rig.collision").FIT_VERSION
+        assert not collision.fitted_by_older(arm6)
+        assert hint not in labels()
+
+        # What such a file holds: capsules and their fingerprint, and no version.
+        arm6.property_unset("kinema_capsules_fit_version")
+        assert arm6.get("kinema_capsules_fit_version") is None
+        assert len(arm6.kinema_capsules)
+        assert not collision.capsules_stale(arm6), "still the meshes they were fitted to"
+        assert collision.fitted_by_older(arm6)
+        assert hint in labels()
+
+        _fit(arm6)
+        assert not collision.fitted_by_older(arm6)
+        assert hint not in labels()
+
+        assert "FINISHED" in bpy.ops.kinema.clear_capsules()
+        assert not collision.fitted_by_older(arm6), "no capsules, nothing to fit again"
+
     def test_posing_the_arm_is_no_change(self, arm6, builder, modules):
         """Playing the job moves every mesh, and changes none of them."""
         collision = modules("ops.collision")

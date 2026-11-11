@@ -323,9 +323,9 @@ bone, and on the TCP for an attached tool:
   401 mm in radius where one would be 513 mm, and the whole arm fourteen, fitted in
   4.5 s. The same meshes give the same capsules in any pose;
 - each capsule the tightest found round its part, along the part's main direction or the
-  narrowest cylinder's, trimmed so its rounded ends only just take in the mesh. Not that
+  least-volume cylinder's, trimmed so its rounded ends only just take in the mesh. Not that
   cylinder with its ends rounded, as PyRoki fits one: each end would stand a whole radius past
-  a face, and a squat link's narrowest cylinder stands on its shortest side. A KR120's wrist,
+  a face, and a squat link's least-volume cylinder stands on its shortest side. A KR120's wrist,
   210 mm thick, got a capsule 579 mm tall that way, and its turret one reaching 0.36 m past
   its meshes;
 - every point of the meshes inside them;
@@ -336,6 +336,10 @@ bulk sits, so a link can still come out with fewer than suit it. **Capsules per 
 the fit, sets a link's count by hand, from 1 to 4, or leaves it on **Auto**. Fit Again after:
 the panel asks for it. Links behind a fixed joint ride on the bone of the joint before them,
 and are listed and counted with it: one count for their meshes together.
+
+Capsules fitted by an earlier version of the fit, as in a file saved before it, are still
+used as they are. The panel says "Fitted by an older version: Fit Again", which fits them
+tighter.
 
 They are kept on the rig and move with it, however the job plays, and scale with it: a robot
 scaled unevenly gets the widest of its scales. After changing a link's meshes, faces, shape keys or tool,
@@ -393,9 +397,13 @@ carried along.
     turret's capsule, fitted as a cylinder with its ends rounded, reached 27 mm into the
     cube whenever the base faced it. The turret itself stood 337 mm clear. The base wound
     back 0.34 rad, crossed at its top speed and overshot by 0.27 rad, at any number of
-    frames. Fitted as it is now, the turret's capsule stands 227 mm clear facing the cube,
-    and the same move came out 52 mm clear within every limit, with no wind-up and no
-    overshoot. Where a capsule still stands far out, give its link more: Capsules per link.
+    frames. Fitted as it is now, the turret's capsule stands 227 mm clear facing the cube.
+    On that scene, with Keep Clear By at 50 mm, the same move came out 52 mm clear within
+    every limit, with no wind-up and no overshoot; at the 10 mm default it ended 62 mm in.
+    The base still holds back, then crosses faster than taught: a tenth of its swing comes
+    14 frames later, and it peaks at 0.68 of its speed limit, against 0.29 as taught
+    ([#98](https://github.com/ebgenius/kinema/issues/98)). Where a capsule still stands far
+    out, give its link more: Capsules per link.
   - Where the hit is real, move the obstacle, or teach the waypoint clear of it.
   - Letting a move take longer to go round is [#93](https://github.com/ebgenius/kinema/issues/93).
 - The obstacles are measured on each frame, as the check measures them. A link could still

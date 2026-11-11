@@ -30,6 +30,7 @@ from bpy.props import (
     EnumProperty,
     FloatProperty,
     FloatVectorProperty,
+    IntProperty,
     StringProperty,
 )
 from bpy.types import Operator, PropertyGroup
@@ -815,6 +816,16 @@ def capsules_stale(rig) -> bool:
     return stale
 
 
+def fitted_by_older(rig) -> bool:
+    """Whether the capsules were fitted by an earlier version of the fit.
+
+    Not stale: they still hold the meshes they were fitted to, and the checks
+    and Optimize Motion still use them. Fit Again fits them tighter. Capsules
+    saved before the version was stored have none, and count as older.
+    """
+    return bool(len(rig.kinema_capsules)) and rig.kinema_capsules_fit_version < geometry.FIT_VERSION
+
+
 class KINEMA_OT_clear_capsules(Operator):
     bl_idname = "kinema.clear_capsules"
     bl_label = "Clear Capsules"
@@ -889,6 +900,7 @@ class KINEMA_OT_fit_capsules(Operator):
             item = rig.kinema_capsules.add()
             item.bone, item.a, item.b, item.radius = bone, tuple(a), tuple(b), radius
         rig.kinema_capsules_source = source_signature(rig)
+        rig.kinema_capsules_fit_version = geometry.FIT_VERSION
         _redraw(context)
         self.report(
             {"INFO"},
@@ -1106,6 +1118,13 @@ def register_props() -> None:
         description="Fingerprint of the meshes the capsules were fitted to",
         default="",
     )
+    # 0 on capsules saved before it was stored: see fitted_by_older().
+    bpy.types.Object.kinema_capsules_fit_version = IntProperty(
+        name="Capsules Fit Version",
+        description="Which version of Fit Capsules fitted the capsules",
+        default=0,
+        min=0,
+    )
     # What a stored check measured the robot's clearance by: see collision_state().
     bpy.types.Object.kinema_motion_check_collision = StringProperty(
         name="Checked Collision",
@@ -1136,6 +1155,7 @@ def unregister_props() -> None:
     del bpy.types.PoseBone.kinema_capsule_count
     del bpy.types.Object.kinema_capsules
     del bpy.types.Object.kinema_capsules_source
+    del bpy.types.Object.kinema_capsules_fit_version
     del bpy.types.Object.kinema_motion_check_collision
     del bpy.types.Object.kinema_obstacle_shape
 

@@ -12,10 +12,10 @@ of the tightest of up to :data:`MAX_PARTS`. On that KR210: 4 on the forearm
 (401 mm at most), 14 on the whole arm.
 
 A capsule is fitted as a capsule, not as PyRoki's ``Capsule.from_trimesh``
-fits one: the narrowest cylinder round the points (trimesh's
+fits one: the least-volume cylinder round the points (trimesh's
 ``minimum_cylinder``) with its ends rounded. Each rounded end then stands a
 whole radius past a face the cylinder fitted exactly, and on a squat link the
-narrowest cylinder stands on its shortest side.
+least-volume cylinder stands on its shortest side.
 
 Each capsule is kept in its bone's frame, as the segment between two points
 and a radius. Blender places the bone on every frame, so the capsules move
@@ -43,6 +43,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
+#: Which fit made a set of capsules, stored with them: raised whenever the same
+#: meshes would fit differently, so capsules fitted before can say so. 1 is
+#: the capsule fitted as a capsule; capsules with none stored came before it.
+FIT_VERSION = 1
 #: The most capsules one link is split into.
 MAX_PARTS = 4
 #: How much more volume than the tightest fit tried is accepted, for fewer capsules.
@@ -216,7 +220,7 @@ def _clusters(points: np.ndarray, parts: int) -> list | None:
 def _capsule(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     """The tightest capsule round ``points`` along either of two axes.
 
-    The axes: the points' principal one, and the narrowest cylinder's
+    The axes: the points' principal one, and the least-volume cylinder's
     (trimesh's ``minimum_cylinder``, the fit PyRoki's ``Capsule.from_trimesh``
     uses). Along each, :func:`_along` fits a capsule as a capsule; the smaller
     is kept. The principal axis is the better one for most links. The
@@ -224,9 +228,12 @@ def _capsule(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
 
     A capsule is not that cylinder with its ends rounded. Round them and each
     end stands a whole radius past a face the cylinder fitted exactly. On a
-    squat link the narrowest cylinder stands on the shortest side: a KR120's
+    squat link the least-volume cylinder stands on the shortest side: a KR120's
     wrist, 210 mm thick, got a capsule 579 mm tall, which this fits at under
     half the volume.
+
+    Each axis is found and fitted on its own, so the cylinder search failing
+    still leaves the principal axis's capsule.
 
     trimesh is imported outside the fallback: without it every capsule would
     quietly take the crude fit below, so a missing trimesh has to fail loudly.
@@ -236,29 +243,31 @@ def _capsule(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     import trimesh
     from scipy.spatial import QhullError
 
-    if len(points) >= 4:
+    failures = (np.linalg.LinAlgError, QhullError, ValueError)
+    if len(points) < 4:
+        return _segment_around(points)
+    try:
+        hull = trimesh.convex.convex_hull(points)
+    except failures:
+        return _segment_around(points)
+    if not hull.volume > 1e-12:
+        return _segment_around(points)
+    corners = np.asarray(hull.vertices, dtype=float)
+    axes = (
+        lambda: _principal_axis(points),
+        lambda: np.asarray(trimesh.bounds.minimum_cylinder(hull)["transform"], dtype=float)[:3, 2],
+    )
+    fits = []
+    for axis in axes:
         try:
-            hull = trimesh.convex.convex_hull(points)
-            if hull.volume > 1e-12:
-                corners = np.asarray(hull.vertices, dtype=float)
-                cylinder = trimesh.bounds.minimum_cylinder(hull)
-                axes = [
-                    _principal_axis(points),
-                    np.asarray(cylinder["transform"], dtype=float)[:3, 2],
-                ]
-                fits = []
-                for axis in axes:
-                    try:
-                        fits.append(_along(corners, axis))
-                    except (np.linalg.LinAlgError, QhullError, ValueError):
-                        continue  # flat seen along it: the other axis may do
-                fits = [fit for fit in fits if fit is not None]
-                if fits:
-                    _, a, b, radius = min(fits, key=lambda fit: fit[0])
-                    return a, b, radius
-        except (np.linalg.LinAlgError, QhullError, ValueError):
-            pass
-    return _segment_around(points)
+            fits.append(_along(corners, axis()))
+        except failures:
+            continue  # flat seen along it, or no cylinder found: the other may do
+    fits = [fit for fit in fits if fit is not None]
+    if not fits:
+        return _segment_around(points)
+    _, a, b, radius = min(fits, key=lambda fit: fit[0])
+    return a, b, radius
 
 
 #: How far past the least radius round an axis :func:`_along` looks: a wider
@@ -275,15 +284,18 @@ def _principal_axis(points: np.ndarray) -> np.ndarray:
 
 
 def _along(points: np.ndarray, axis: np.ndarray):
-    """The least-volume capsule round ``points`` whose segment runs along ``axis``.
+    """A capsule round ``points`` whose segment runs along ``axis``, close to the least volume.
 
-    Returns ``(volume, a, b, radius)``, or None if it can't be fitted. The
-    segment lies on the line through the centre of the smallest circle round
-    the points seen along the axis, which gives the least radius. For a given
-    radius, the segment is trimmed to what keeps every point inside: a point
-    ``d`` from the line is inside a rounded end reaching ``sqrt(r^2 - d^2)``
-    past the segment's end. A wider radius trims more, so radii past the least
-    are tried, for the least volume.
+    Returns ``(volume, a, b, radius)``, or None if it can't be fitted.
+    - The segment lies on the line through the centre of the smallest circle
+      round the points seen along the axis, which gives the least radius. The
+      line stays there: a wider capsule may sit better on a line moved off it,
+      so this is close to the least volume along the axis, not always it.
+    - The segment is trimmed, for a given radius, to what keeps every point
+      inside: a point ``d`` from the line is inside a rounded end reaching
+      ``sqrt(r^2 - d^2)`` past the segment's end.
+    - A wider radius trims more, so radii from the least to :data:`WIDEST`
+      (1.8) times it are tried, and the best refined between its neighbours.
     """
     from trimesh import nsphere
 
