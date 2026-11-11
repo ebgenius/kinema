@@ -42,9 +42,12 @@ nothing else is:
   whenever the base faced it, while the turret's meshes stood 337 mm clear, and
   the base can't swing the other way round. At 100, 150, 200 and 300 frames the
   base still wound back by up to 0.43 rad and crossed at its top speed. Fitted
-  as a capsule (``rig/collision.py``), the turret stands 227 mm clear, and the
-  same move came out 52 mm clear within every limit, with neither the wind-up
-  nor the overshoot. A start or an end pinned
+  as a capsule (``rig/collision.py``), the turret stands 227 mm clear. With
+  Keep Clear By at 50 mm, on that one scene, the same move came out 52 mm clear
+  within every limit, with neither the wind-up nor the overshoot; at 10 mm it
+  ended 62 mm in. The base still holds back, then crosses faster than taught:
+  it peaks at 0.68 of its speed limit, against 0.29 as taught (issue #98). A
+  start or an end pinned
   inside an obstacle does the same. Weighting the depth by how far a capsule
   moves that frame stopped the wind-up, but left the arm 350-410 mm in, or
   still crossing at twice the taught speed (issue #93).

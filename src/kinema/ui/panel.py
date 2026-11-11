@@ -863,6 +863,8 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
             layout.label(text=f"{len(capsules)} capsules on {links} links")
             if collision.capsules_stale(rig):
                 layout.label(text="Changed since the fit: Fit Again", icon="ERROR")
+            elif collision.fitted_by_older(rig):
+                layout.label(text="Fitted by an older version: Fit Again", icon="INFO")
         _draw_capsule_counts(layout, rig, capsules, collision.link_meshes(rig))
 
         layout.separator()
