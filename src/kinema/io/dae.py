@@ -22,10 +22,10 @@ side" bugs seen in other importers, and both are handled here:
 
 from __future__ import annotations
 
+import copy
 import io
 from dataclasses import dataclass, field
 from pathlib import Path
-from xml.etree import ElementTree
 
 import bpy
 import numpy as np
@@ -55,17 +55,24 @@ class DaeImportResult:
         return [obj.data for obj in self.objects]
 
 
-def _without_bindings(filepath: Path) -> io.BytesIO:
-    """The file with every <bind_material> removed, however its tag is prefixed."""
-    root = ElementTree.parse(filepath).getroot()
+def _without_bindings(document) -> io.BytesIO:
+    """The document's XML with every <bind_material> removed, however its tag is prefixed.
+
+    It starts from the tree pycollada already parsed, not from the file: that
+    covers a zipped COLLADA file, and needs no second, different XML parser to
+    accept the file as pycollada's did.
+    """
+    from collada import xmlutil
+
+    root = copy.deepcopy(document.xmlnode.getroot())
     for parent in list(root.iter()):
         for child in list(parent):
             if isinstance(child.tag, str) and child.tag.rpartition("}")[2] == "bind_material":
                 parent.remove(child)
-    return io.BytesIO(ElementTree.tostring(root, encoding="utf-8"))
+    return io.BytesIO(xmlutil.etree.tostring(root))
 
 
-def _load_collada(filepath: Path, *, bind_materials: bool = True):
+def _load_collada(filepath: Path, source=None):
     try:
         import collada
     except ImportError as exc:  # pragma: no cover - dependency is bundled
@@ -73,11 +80,8 @@ def _load_collada(filepath: Path, *, bind_materials: bool = True):
             "pycollada is not available; Kinema cannot read .dae files"
         ) from exc
 
-    source = str(filepath)
-    if not bind_materials:
-        # With no <bind_material> left, no binding can fail: pycollada keeps
-        # every <instance_geometry>, placed by its node, just without material.
-        source = _without_bindings(filepath)
+    if source is None:
+        source = str(filepath)
 
     try:
         # ignore=... keeps a single malformed effect or unsupported controller
@@ -393,10 +397,21 @@ def import_dae(
     # one node or all of them -- and the node placing it goes with it. The
     # failure is among document.errors, so when there are any, read the file
     # again without bindings and import what the first read lost, where its
-    # node puts it, without material.
+    # node puts it, without material. With no <bind_material> left, no binding
+    # can fail. The re-read only adds: if it fails, the import keeps what the
+    # first read gave, as it did before the re-read existed.
+    unbound = None
     if getattr(document, "errors", None):
+        try:
+            unbound = _load_collada(path, source=_without_bindings(document))
+        except Exception as exc:  # noqa: BLE001
+            result.warnings.append(
+                f"{path.name}: could not re-read the file without material "
+                f"bindings ({exc}); an instance whose material failed to bind "
+                f"may be missing"
+            )
+    if unbound is not None:
         lost = 0
-        unbound = _load_collada(path, bind_materials=False)
         for bound_geometry in unbound.scene.objects("geometry"):
             key = _instance_key(bound_geometry)
             if key in placed:

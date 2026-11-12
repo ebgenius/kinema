@@ -184,6 +184,36 @@ def test_one_broken_material_loses_no_instance(dae, fixture_dir, clean_scene):
                for o in result.objects for s in o.material_slots)
 
 
+def test_zipped_file_with_a_broken_material_loses_no_instance(dae, fixture_dir, tmp_path,
+                                                              clean_scene):
+    """pycollada reads a zipped COLLADA file; the binding-free re-read must too."""
+    import zipfile
+
+    zipped = tmp_path / "box_one_broken_material.zae"
+    with zipfile.ZipFile(zipped, "w") as archive:
+        archive.write(fixture_dir / "box_one_broken_material.dae", "box.dae")
+
+    result = dae.import_dae(zipped)
+
+    assert sum(len(o.data.polygons) for o in result.objects) == 24
+    assert any("1 instance(s)" in w for w in result.warnings)
+
+
+def test_failed_reread_keeps_what_the_first_read_gave(dae, fixture_dir, monkeypatch,
+                                                      clean_scene):
+    """The binding-free re-read only adds: if it fails, the import still succeeds."""
+
+    def fail(document):
+        raise ValueError("stand-in parse failure")
+
+    monkeypatch.setattr(dae, "_without_bindings", fail)
+    result = dae.import_dae(fixture_dir / "box_one_broken_material.dae")
+
+    assert sum(len(o.data.polygons) for o in result.objects) == 12
+    assert any("could not re-read" in w and "stand-in parse failure" in w
+               for w in result.warnings)
+
+
 def test_lines_do_not_become_triangles(dae, fixture_dir, clean_scene):
     """Regression: a <lines> primitive was read three indices at a time.
 
@@ -201,8 +231,21 @@ def test_faces_validate_drops_do_not_shift_normals(dae, fixture_dir, clean_scene
     The fixture adds a face that repeats a vertex, before the box's own, and a
     reversed copy of the first face after them. Blender keeps 12 faces, and
     normals and UVs were then read by position from the unfiltered list.
+
+    Each face's three corners share one UV, u = face index / 16, so the faces
+    Blender keeps must carry u = 1/16 .. 12/16: not 0 (the degenerate face) or
+    13/16 (the duplicate).
     """
     result = dae.import_dae(fixture_dir / "box_degenerate_faces.dae")
 
     assert sum(len(o.data.polygons) for o in result.objects) == 12
     assert _worst_normal_angle(result.objects) < 0.5
+
+    face_u = []
+    for obj in result.objects:
+        uv = obj.data.uv_layers["UVMap"].data
+        for polygon in obj.data.polygons:
+            corner_u = {round(uv[i].uv[0] * 16, 3) for i in polygon.loop_indices}
+            assert len(corner_u) == 1, f"one face, several UVs: {corner_u}"
+            face_u.append(corner_u.pop())
+    assert sorted(face_u) == list(range(1, 13))
