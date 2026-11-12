@@ -398,14 +398,17 @@ carried along.
     cube whenever the base faced it. The turret itself stood 337 mm clear. The base wound
     back 0.34 rad, crossed at its top speed and overshot by 0.27 rad, at any number of
     frames. Fitted as it is now, the turret's capsule stands 227 mm clear facing the cube.
-    On that scene, with Keep Clear By at 50 mm, the same move came out 52 mm clear within
-    every limit, with no wind-up and no overshoot; at the 10 mm default it ended 62 mm in.
-    The base still holds back, then crosses faster than taught: a tenth of its swing comes
-    14 frames later, and it peaks at 0.68 of its speed limit, against 0.29 as taught
+    On that scene, with Keep Clear By at 10, 20, 30 and 50 mm, the same move came out 12, 23,
+    31 and 52 mm clear, within every limit, with no wind-up and no overshoot. The base still
+    holds back, then crosses faster than taught: at 50 mm a tenth of its swing comes 5
+    frames later, and it peaks at 0.36 of its speed limit, against 0.29 as taught
     ([#98](https://github.com/ebgenius/kinema/issues/98)). Where a capsule still stands far
     out, give its link more: Capsules per link.
   - Where the hit is real, move the obstacle, or teach the waypoint clear of it.
   - Letting a move take longer to go round is [#93](https://github.com/ebgenius/kinema/issues/93).
+- A solve that stops short of clear is solved again from where it stopped, up to four
+  times, while each pass still lowers the cost. With obstacles, a solve takes about twice as
+  long: 3.7-6.8 s on the KR120 job above, where it was 2.0-4.1 s.
 - The obstacles are measured on each frame, as the check measures them. A link could still
   pass through a thin obstacle between two frames of a fast move.
 - **Avoid Obstacles**, beside it, turns it off. Capsules that no longer fit the meshes are

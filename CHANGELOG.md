@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Where the job itself runs into an obstacle, at a waypoint, on a line or at its ends, the
     job stays as taught and within its limits, and the Motion Check names the hit. Where
     going round would take more than the frames allow, it gets as close as the limits let it.
+  - A solve that stops short is solved again from where it stopped, and the costs' corners
+    are rounded, so a step across one isn't thrown away. On a KR120 job past a 1.2 m cube,
+    Keep Clear By 10, 20, 30 and 50 mm came out 12, 23, 31 and 52 mm clear, where 10 and 30
+    had ended 62 and 34 mm in. With obstacles, solves take about twice as long.
   - A hit it can't avoid changes the move's timing instead: the arm winds back, crosses at
     full speed and passes its waypoint before coming back. A capsule much bigger than its
     link does it; Show Collision Shapes shows one, and Capsules per link gives it more.
