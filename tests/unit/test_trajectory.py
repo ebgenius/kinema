@@ -84,6 +84,57 @@ class TestPadding:
         assert padded.position_weight[own].all()
 
 
+def _rounded(over, band=None):
+    """What the limit costs make of ``over``: a hinge with its corner rounded."""
+    band = trajectory.LIMIT_BAND if band is None else band
+    over = np.asarray(over, dtype=float)
+    return np.where(over < band, np.clip(over, 0.0, band) ** 2 / (2.0 * band), over - band / 2.0)
+
+
+class TestTheHinge:
+    """Nothing within, the excess past, and no corner for a step to fall off."""
+
+    jnp = pytest.importorskip("jax.numpy")
+
+    def test_nothing_within_and_the_excess_past_the_band(self):
+        over = np.array([-1.0, -1e-3, 0.0, 0.3, 0.5])
+        got = np.asarray(trajectory.hinge(self.jnp, self.jnp.asarray(over), 0.1))
+        np.testing.assert_allclose(got, [0.0, 0.0, 0.0, 0.25, 0.45], atol=1e-7)
+
+    def test_its_slope_rises_without_a_jump(self):
+        """A plain hinge's slope jumps from 0 to 1 at its corner; this one's doesn't."""
+        jax = pytest.importorskip("jax")
+        band = 0.1
+        slope = jax.vmap(jax.grad(lambda x: trajectory.hinge(self.jnp, x, band)))
+        over = self.jnp.linspace(-0.05, 0.2, 251)
+        slopes = np.asarray(slope(over))
+        assert slopes.min() == 0.0 and slopes.max() == pytest.approx(1.0)
+        assert np.abs(np.diff(slopes)).max() < 0.02, "no jump anywhere"
+        np.testing.assert_allclose(slopes[over <= 0.0], 0.0)
+        np.testing.assert_allclose(slopes[over >= band + 1e-6], 1.0, rtol=1e-6)
+
+
+class TestPasses:
+    def test_each_pass_is_read_from_the_kernel_s_account(self):
+        """Only the passes taken, each starting from the best cost before it."""
+        why = (
+            np.float32(10.0), np.int32(3),
+            np.array([2.0, 0.5, 0.5, np.nan, np.nan]),
+            np.array([[0, 0, 1], [0, 0, 0], [1, 0, 0], [0, 0, 0], [0, 0, 0]], dtype=bool),
+            np.array([40, 17, 8, 0, 0]),
+        )
+        pending = trajectory.Pending(q=np.zeros((4, 2)), iterations=65, own=slice(1, 3), why=why)
+        passes = pending.passes()
+        assert [(p.before, p.after) for p in passes] == [(10.0, 2.0), (2.0, 0.5), (0.5, 0.5)]
+        assert [p.iterations for p in passes] == [40, 17, 8]
+        assert [(p.settled, p.stopped_on_step) for p in passes] == [
+            (False, True), (False, False), (True, False),
+        ]
+
+    def test_a_pending_solve_without_an_account_has_no_passes(self):
+        assert trajectory.Pending(q=np.zeros((2, 1)), iterations=0, own=slice(0, 2)).passes() == []
+
+
 class TestLimitCosts:
     """The residuals against the Motion Check's own measures, on the same values."""
 
@@ -97,7 +148,7 @@ class TestLimitCosts:
         measured = np.array(
             [velocity.speed(n, b, 1, fps) for n, b in zip(now, before, strict=True)]
         )
-        np.testing.assert_allclose(over, np.maximum(0.0, measured / limit - 1.0), rtol=1e-6)
+        np.testing.assert_allclose(over, _rounded(measured / limit - 1.0), rtol=1e-6)
         assert over[0] > 0.0 and over[1] == 0.0, "precondition: one over its limit, one within"
 
     def test_acceleration_is_measured_as_the_check_measures_it(self):
@@ -110,7 +161,7 @@ class TestLimitCosts:
         measured = np.array(
             [velocity.acceleration([(f, q[f, j]) for f in range(3)], fps) for j in range(2)]
         )
-        np.testing.assert_allclose(over, np.maximum(0.0, measured / limit - 1.0), rtol=1e-5)
+        np.testing.assert_allclose(over, _rounded(measured / limit - 1.0), rtol=1e-5)
         assert over[0] > 0.0 and over[1] == 0.0, "precondition: one over its limit, one within"
 
     def test_each_is_weighted(self):
@@ -359,9 +410,11 @@ class TestKeepingClear:
         }
         short = np.asarray(trajectory.clearance_short({"q": jnp.zeros(1)}, Robot, "q", shared, own))
         # 50 mm clear of the ball, 5 mm clear, and a padded capsule inside it.
+        # 5 mm clear is 5 short of the 10 asked: past the rounded corner.
         level = trajectory.SATURATION
+        rounded = 0.005 - trajectory.CLEARANCE_BAND / 2.0
         np.testing.assert_allclose(
-            short, [0.0, 7.0 * level * np.log1p(0.005 / level), 0.0], atol=1e-6
+            short, [0.0, 7.0 * level * np.log1p(rounded / level), 0.0], atol=1e-6
         )
 
 

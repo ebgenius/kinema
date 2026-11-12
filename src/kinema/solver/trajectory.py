@@ -43,16 +43,18 @@ nothing else is:
   the base can't swing the other way round. At 100, 150, 200 and 300 frames the
   base still wound back by up to 0.43 rad and crossed at its top speed. Fitted
   as a capsule (``rig/collision.py``), the turret stands 227 mm clear. With
-  Keep Clear By at 50 mm, on that one scene, the same move came out 52 mm clear
-  within every limit, with neither the wind-up nor the overshoot; at 10 mm it
-  ended 62 mm in. The base still holds back, then crosses faster than taught:
-  it peaks at 0.68 of its speed limit, against 0.29 as taught (issue #98). A
-  start or an end pinned
-  inside an obstacle does the same. Weighting the depth by how far a capsule
-  moves that frame stopped the wind-up, but left the arm 350-410 mm in, or
-  still crossing at twice the taught speed (issue #93).
-Only with capsules and obstacles both: a kernel without them is the one there
-was before.
+  Keep Clear By at 10, 20, 30 and 50 mm, on that one scene, the same move came
+  out 12, 23, 31 and 52 mm clear within every limit, with neither the wind-up
+  nor the overshoot. The base still holds back, then crosses faster than
+  taught: at 50 mm it peaks at 0.36 of its speed limit, against 0.29 as taught.
+  Where a capsule can't get clear at all, the hurry is all there: on arm6, a
+  lug on joint 1 swept through a post winds back 0.28 rad and overshoots 0.07
+  (issue #98). A start or an end pinned inside an obstacle does the same.
+  Weighting the depth by how far a capsule moves that frame stopped the
+  wind-up, but left the arm 350-410 mm in, or still crossing at twice the
+  taught speed (issue #93).
+Only with capsules and obstacles both: a kernel without them has no clearance
+cost.
 
 It runs on PyRoki's solver, jaxls, over the PyRoki model the rig's IK already
 uses, limits included (``manager.bone_limits``). Deliberately free of ``bpy``:
@@ -91,6 +93,28 @@ acceleration limit, a move with 150 frames was said to need 244, and the
 waypoints were 0.2 mm out. At :data:`STEP_TOLERANCE` every move was within its
 limits, at 26-78% of one, with the waypoints within 0.002 mm, in 3.2 s where
 the inexact steps took 0.3.
+
+**A solve that stops short is solved again.** The limit and clearance costs
+are hinges, nothing on one side of a corner and a slope on the other. jaxls
+predicts a step's gain from the slope where it stands, so a step that takes a
+frame across a corner gains less than predicted, or costs, and is thrown away.
+After enough of those its damping is at its ceiling and the steps it takes are
+tiny, and it ends on the size of a step, the iteration cap, or no step left to
+take, with the cost still falling. Two things answer that:
+- each hinge's corner is rounded (:func:`hinge`): over :data:`CLEARANCE_BAND`
+  short of a clearance, :data:`LIMIT_BAND` of a limit past it;
+- a solve that ended on neither jaxls's cost rule nor its gradient rule, and
+  cut the cost by more than :data:`RESTART_GAIN`, is solved again from where
+  it ended, its damping reset, up to :data:`RESTARTS` times.
+
+Each alone left jobs inside an obstacle. On a KR120 job past a 1.2 m cube,
+Keep Clear By 10, 20, 30 and 50 mm came out 62 mm in, 22 mm clear, 34 mm in
+and 52 mm clear in one solve, and 12, 23, 31 and 52 mm clear with both, the
+solve taking 4-8 s where it took 2-4. Rounded but solved once, 20 mm
+ended 45 mm in; solved again with plain corners, the arm6 crate in
+``tests/integration/test_optimize.py`` ended 63 mm in. ``Pending.passes``
+reads back how each pass ended: jaxls's own iteration count is one per
+damping it tries, and its cost history holds the steps it threw away.
 
 **One compile per robot and length.** A job is padded to the next of
 :data:`BUCKETS`, with the padding held still, so jobs of 90 and 121 frames share
@@ -153,6 +177,15 @@ MAX_ITERATIONS = 100
 STEP_TOLERANCE = 1e-5
 #: Compiled kernels kept, the most recently used.
 KEEP = 1
+#: How many times a solve that stopped short is solved again from where it
+#: stopped, at most, and the fraction of its cost the last pass has to have
+#: cut to earn another. See the module's docstring.
+RESTARTS = 4
+RESTART_GAIN = 0.01
+#: How far past a limit, as a fraction of it, and how far short of a
+#: clearance, in metres, a hinge's corner is rounded over: see :func:`hinge`.
+LIMIT_BAND = 0.01
+CLEARANCE_BAND = 0.002
 
 #: What coming closer to an obstacle than the robot is to keep costs, per metre
 #: closer, before it levels off: a tenth of a whole limit over per 10 mm. See
@@ -332,15 +365,58 @@ class Pending:
     q: object
     iterations: object
     own: slice
+    #: The kernel's account of the solve, for :meth:`passes`: the cost it
+    #: started from, how many passes it took, and per pass the cost it ended
+    #: on, which of jaxls's stopping rules fired, and its iterations.
+    why: tuple | None = None
 
     def ready(self) -> bool:
         is_ready = getattr(self.q, "is_ready", None)
         return bool(is_ready()) if is_ready is not None else True
 
     def result(self) -> tuple[np.ndarray, int]:
-        """The job's own frames, (frames, dof), and the iterations taken. Waits if needed."""
+        """The job's own frames, (frames, dof), and the iterations taken. Waits if needed.
+
+        jaxls counts an iteration per damping it tries, taken or not: a count,
+        not a measure of progress.
+        """
         q = np.asarray(self.q, dtype=np.float64)[self.own]
         return q, int(np.asarray(self.iterations))
+
+    def passes(self) -> list[Pass]:
+        """Each pass of the solve, in order. Waits if needed."""
+        if self.why is None:
+            return []
+        start, solves, costs, criteria, iterations = (np.asarray(x) for x in self.why)
+        found, before = [], float(start)
+        for index in range(int(solves)):
+            cost_ended, gradient_ended, step_ended = (bool(x) for x in criteria[index])
+            found.append(
+                Pass(
+                    before=before,
+                    after=float(costs[index]),
+                    iterations=int(iterations[index]),
+                    settled=cost_ended or gradient_ended,
+                    stopped_on_step=step_ended,
+                )
+            )
+            before = min(before, float(costs[index]))
+        return found
+
+
+@dataclass(frozen=True)
+class Pass:
+    """One of jaxls's solves within a solve: see :data:`RESTARTS`."""
+
+    #: The cost it started from and ended on.
+    before: float
+    after: float
+    #: jaxls's iterations: one per damping tried.
+    iterations: int
+    #: Whether it ended on jaxls's cost or gradient rule: nothing left to gain.
+    settled: bool
+    #: Whether it ended on the size of a step, which a stall also ends on.
+    stopped_on_step: bool
 
 
 class Optimizer:
@@ -413,15 +489,62 @@ class Optimizer:
                 shared = {key: collision[key][None] for key in _SHARED}
                 own = {key: collision[key] for key in _PER_FRAME}
                 costs.append(collision_cost(batched, joint(ids), shared, own))
-            problem = jaxls.LeastSquaresProblem(costs=costs, variables=[joint(ids)])
-            solution, summary = problem.analyze().solve(
-                initial_vals=jaxls.VarValues.make([joint(ids).with_value(q_init)]),
-                linear_solver=jaxls.ConjugateGradientConfig(tolerance_max=STEP_TOLERANCE),
-                termination=jaxls.TerminationConfig(max_iterations=MAX_ITERATIONS),
-                verbose=self.verbose,
-                return_summary=True,
+            problem = jaxls.LeastSquaresProblem(costs=costs, variables=[joint(ids)]).analyze()
+
+            def cost_at(q):
+                values = jaxls.VarValues.make([joint(ids).with_value(q)])
+                return jnp.sum(problem.compute_residual_vector(values) ** 2)
+
+            # Solved again from where it stopped while it stopped short: see
+            # the module's docstring.
+            def again(state):
+                _, _, solves, gained, settled, _ = state
+                return (solves == 0) | ((solves <= RESTARTS) & gained & ~settled)
+
+            def once(state):
+                q, cost, solves, _, _, why = state
+                solution, summary = problem.solve(
+                    initial_vals=jaxls.VarValues.make([joint(ids).with_value(q)]),
+                    linear_solver=jaxls.ConjugateGradientConfig(tolerance_max=STEP_TOLERANCE),
+                    termination=jaxls.TerminationConfig(max_iterations=MAX_ITERATIONS),
+                    verbose=self.verbose,
+                    return_summary=True,
+                )
+                found = solution[joint(ids)]
+                # The cost where it ended, not jaxls's history of it, which
+                # holds the steps it proposed and threw away too.
+                reached = cost_at(found)
+                cost_ended, gradient_ended, _ = summary.termination_criteria
+                better = reached < cost
+                why = (
+                    why[0].at[solves].set(reached),
+                    why[1].at[solves].set(summary.termination_criteria),
+                    why[2].at[solves].set(summary.iterations),
+                )
+                return (
+                    jnp.where(better, found, q),
+                    jnp.minimum(reached, cost),
+                    solves + 1,
+                    reached < cost * (1.0 - RESTART_GAIN),
+                    cost_ended | gradient_ended,
+                    why,
+                )
+
+            start = cost_at(q_init)
+            passes = RESTARTS + 1
+            q, _, solves, _, _, why = jax.lax.while_loop(
+                again,
+                once,
+                (
+                    q_init, start, jnp.array(0), jnp.array(True), jnp.array(False),
+                    (
+                        jnp.full(passes, jnp.nan),
+                        jnp.zeros((passes, 3), dtype=bool),
+                        jnp.zeros(passes, dtype=jnp.int32),
+                    ),
+                ),
             )
-            return solution[joint(ids)], summary.iterations
+            return q, jnp.sum(why[2]), (start, solves, *why)
 
         self._fn = (solve, jnp, jaxlie)
         return self._fn
@@ -441,7 +564,7 @@ class Optimizer:
         targets = np.asarray(
             jaxlie.SE3.from_matrix(jnp.asarray(padded.targets, dtype=jnp.float32)).wxyz_xyz
         )
-        q, iterations = solve(
+        q, iterations, why = solve(
             robot,
             jnp.asarray(padded.q_init, dtype=jnp.float32),
             jnp.asarray(targets, dtype=jnp.float32),
@@ -456,19 +579,33 @@ class Optimizer:
             _collision_arrays(jnp, padded.collision),
         )
         self.compiled = True
-        return Pending(q=q, iterations=iterations, own=own)
+        return Pending(q=q, iterations=iterations, own=own, why=why)
+
+
+def hinge(jnp, over, band: float):
+    """``over`` where it is positive, nothing where it isn't, the corner rounded over ``band``.
+
+    A plain hinge's slope jumps from nothing to one at zero. jaxls steps by
+    the slope where it stands, so a step that takes a frame across the corner
+    costs what the step never saw coming, and is thrown away. Rounded, the
+    slope rises from nothing to one across ``band``: a parabola up to it, then
+    the line, half a band lower.
+    """
+    inside = jnp.clip(over, 0.0, band)
+    return jnp.where(over < band, inside * inside / (2.0 * band), over - band / 2.0)
 
 
 def speed_over(vals, var, previous, dt, limit, weight):
     """How far past its limit each joint's speed is, as a fraction of the limit.
 
     From the frame before, as the Motion Check measures a speed, so what is
-    kept within here is what the check passes.
+    kept within here is what the check passes. Its corner is rounded over
+    :data:`LIMIT_BAND`.
     """
     from jax import numpy as jnp
 
     speed = jnp.abs(vals[var] - vals[previous]) / dt
-    return (jnp.maximum(0.0, speed / limit - 1.0) * weight).flatten()
+    return (hinge(jnp, speed / limit - 1.0, LIMIT_BAND) * weight).flatten()
 
 
 def acceleration_over(vals, before, now, after, dt, limit, weight):
@@ -476,12 +613,12 @@ def acceleration_over(vals, before, now, after, dt, limit, weight):
 
     From the frames either side, as the Motion Check measures one. PyRoki's own
     residual reaches two frames each way, and a path within it can still fail
-    the check.
+    the check. Its corner is rounded over :data:`LIMIT_BAND`.
     """
     from jax import numpy as jnp
 
     acceleration = jnp.abs(vals[before] - 2.0 * vals[now] + vals[after]) / dt**2
-    return (jnp.maximum(0.0, acceleration / limit - 1.0) * weight).flatten()
+    return (hinge(jnp, acceleration / limit - 1.0, LIMIT_BAND) * weight).flatten()
 
 
 #: Collision arrays every frame shares, and those with a value per frame.
@@ -604,7 +741,7 @@ def clearance_short(vals, robot, var, shared, own):
         jax, jnp, world(shared["a"]), world(shared["b"]), shared["kind"],
         own["rotation"], own["centre"], own["size"],
     )
-    short = jnp.maximum(0.0, shared["aim"] - (distance - shared["radius"][:, None]))
+    short = hinge(jnp, shared["aim"] - (distance - shared["radius"][:, None]), CLEARANCE_BAND)
     # The same as the depth, near the surface; its logarithm, deep in.
     short = SATURATION * jnp.log1p(short / SATURATION)
     mask = shared["capsule_mask"][:, None] * shared["obstacle_mask"][None, :]

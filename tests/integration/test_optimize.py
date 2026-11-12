@@ -24,6 +24,7 @@ as a script does, which waits for the result.
 from __future__ import annotations
 
 import importlib
+import itertools
 
 import numpy as np
 import pytest
@@ -56,6 +57,12 @@ LONG = (1, 151, 301, 451)
 LONG_ACCELERATION = 0.5
 #: How far above the forearm's middle a post clips it, part-way into it.
 CLIPPED = 0.06
+#: Half the size of a crate on the arm's outermost capsule, 160 mm into it: big enough
+#: that going round it takes the whole move.
+CRATE = 0.12
+SMALL_CRATE = 0.08
+#: The most a joint may wind back before a move or overshoot its end, in radians.
+LUG_BOUND = 0.02
 
 
 @pytest.fixture
@@ -476,6 +483,62 @@ def _closest(rig):
     )
 
 
+def _lug(builder, rig, radius=0.2, height=0.1, size=0.03):
+    """A cube riding on joint 1, ``radius`` out from its axis and ``height`` up."""
+    import bpy
+    from mathutils import Matrix
+
+    from .test_collision import CUBE_FACES
+
+    mesh = bpy.data.meshes.new("Lug")
+    side = (-size, size)
+    mesh.from_pydata([(x, y, z) for x in side for y in side for z in side], [], CUBE_FACES)
+    lug = bpy.data.objects.new("Lug", mesh)
+    bpy.context.scene.collection.objects.link(lug)
+    lug.parent, lug.parent_type = rig, "BONE"
+    lug.parent_bone = builder.joint_bones(rig)[0].name
+    bpy.context.view_layer.update()
+    lug.matrix_world = Matrix.Translation((radius, 0.0, height))
+    bpy.context.view_layer.update()
+    return lug
+
+
+def _joint_path(modules, builder, rig, frames):
+    """(frames, joints): every joint's value on each frame, as it plays."""
+    import bpy
+
+    velocity = modules("ops.velocity")
+    path = []
+    for frame in frames:
+        bpy.context.scene.frame_set(frame)
+        path.append([velocity.joint_value(bone) for bone in builder.joint_bones(rig)])
+    return np.array(path)
+
+
+class HurriedPast(AssertionError):
+    """The lug went past its bound: the one failure the lug test's mark expects.
+
+    Its own setup and preconditions fail as plain assertions, and so as failures.
+    """
+
+
+def _wind_back_and_overshoot(path):
+    """How far a joint's ``path`` over one move goes back before it starts, and past its end."""
+    sign = np.sign(path[-1] - path[0])
+    return (
+        max(0.0, float(-(sign * (path - path[0])).min())),
+        max(0.0, float((sign * (path - path[-1])).max())),
+    )
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_wind_back_and_overshoot_are_measured_along_the_move(sign):
+    """Either way the joint turns: back past its start, and on past its end."""
+    path = sign * np.array([0.0, -0.2, 1.0, 2.3, 2.0])
+    assert _wind_back_and_overshoot(path) == pytest.approx((0.2, 0.3))
+    assert _wind_back_and_overshoot(sign * np.array([0.0, 1.0, 2.0])) == (0.0, 0.0)
+
+
 class TestKeepingClear:
     @pytest.mark.parametrize(
         "robot", ["arm6", "arm6 with a tool", "arm6 on a track", "rail6", "mjcf_arm"]
@@ -620,6 +683,128 @@ class TestKeepingClear:
         if frame == 1:
             row = next(row for row in arm6.kinema_motion_check if row.name == "D")
             assert row.clearance >= arm6.kinema_keep_clear
+
+    @pytest.mark.parametrize("keep", [0.01, 0.02, 0.03, 0.05])
+    def test_a_sweep_of_keep_clear_by_never_ends_inside_the_crate(
+        self, arm6, builder, modules, keep
+    ):
+        """A crate the arm swings 160 mm into, on move B and back on D.
+
+        Every solve has to go round it. Before a stalled solve was solved again
+        and the hinges rounded, it ended 63 mm in at 20 mm: jaxls gave up while
+        the cost was still falling.
+
+        Move D starts and ends far from the crate, so it keeps all that's asked,
+        within the half millimetre the report allows. Move B starts on the job's
+        pinned first frame, 7.5 mm from it, and can only be clear.
+        """
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6, up=0.0, size=CRATE)
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert _closest(arm6).clearance < -0.15, "precondition: deep in"
+        before = {row.name: row.clearance for row in arm6.kinema_motion_check}
+        assert before["D"] < -0.1, "precondition: deep in on the way back too"
+
+        arm6.kinema_keep_clear = keep
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert _closest(arm6).clearance > 0.0
+        rows = {row.name: row for row in arm6.kinema_motion_check}
+        assert rows["D"].clearance >= keep - 0.0005
+        assert _waypoint_error_mm(modules, arm6) < 0.01
+
+    def test_a_solve_that_stops_short_is_solved_again(self, arm6, builder, modules):
+        """A smaller crate, and a last move with barely the frames for its swing.
+
+        jaxls's first pass ends after 10 iterations on the size of its last
+        step, with the cost still falling and, left there, the arm 115 mm in.
+        Solved again from there, with its damping reset, it goes round.
+        """
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _job(builder, arm6, TIGHT)
+        _in_the_way(builder, modules, arm6, up=0.0, size=SMALL_CRATE)
+        arm6.kinema_keep_clear = 0.03
+        job = optimize.prepare(bpy.context, arm6)
+        optimize.dispatch(job)
+        written, _, _ = optimize.finish(bpy.context, job)
+        assert written
+        passes = job.pending.passes()
+        assert not passes[0].settled, "precondition: the first pass stopped short"
+        assert len(passes) > 1
+        for before, after in itertools.pairwise(passes):
+            assert after.before == min(before.before, before.after)
+        assert _closest(arm6).clearance > 0.025
+
+    def test_more_frames_past_this_crate_is_never_worse(self, arm6, builder, modules):
+        """The same job past the same crate, its last move, D, given more frames each time.
+
+        Room to spare should only help. Before, at 30 mm, 161 frames ended 3 mm
+        clear and 166 ended 90 mm in. Now move D comes out 6.8 mm in at 161
+        frames, then 26.9, 29.5, 30.4, 30.6 and 30.9 mm clear.
+
+        This holds for this scene, not every scene: on the 80 mm crate with a
+        short last move, at Keep Clear By 50 mm, 161 frames end 39.7 mm clear
+        and 166 end 65.1 mm in. Steps 3 and 4 of #98 are for that.
+        """
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6, up=0.0, size=CRATE)
+        arm6.kinema_keep_clear = 0.03
+        last = max(arm6.kinema_waypoints, key=lambda waypoint: waypoint.frame)
+        reached = []
+        for end in (161, 166, 171, 176, 181, 211):
+            last.frame = end
+            assert "FINISHED" in bpy.ops.kinema.generate_motion()
+            assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+            rows = {row.name: row for row in arm6.kinema_motion_check}
+            reached.append(rows["D"].clearance)
+        for fewer, more in itertools.pairwise(reached):
+            assert more >= fewer - 0.001, [round(1000 * r, 1) for r in reached]
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=HurriedPast,
+        reason="#98's steps 3 and 4: what a pair can be asked for, and conceding it",
+    )
+    def test_a_lug_that_can_t_get_clear_doesn_t_hurry_past(self, arm6, builder, modules):
+        """A lug on joint 1, swept through a post on move B and back through it on D.
+
+        Only joint 1 moves the lug, and it can't turn the other way round, so
+        the lug can't get clear. Each frame it spends in the post costs, and
+        fewer such frames is all a solve can do about it: it winds joint 1
+        back, crosses at the speed limit and overshoots. Measured with this
+        kernel, at 10 mm: 0.28 rad back and 0.07 over on move B, at 1.03 times
+        the speed limit. The prototype of steps 1-4 on #98 kept it to none of
+        either, within the limits; steps 1-3 alone, 0.24 rad back.
+        """
+        import bpy
+
+        from .test_collision import _fit, _obstacle
+
+        lug = _lug(builder, arm6)
+        _job(builder, arm6, ROOMY)
+        _fit(arm6)
+        bpy.context.scene.frame_set(31)
+        _obstacle("Post", tuple(lug.matrix_world.translation), size=0.03)
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert _closest(arm6).clearance_bone == builder.joint_bones(arm6)[0].name
+        assert _closest(arm6).clearance < -0.05, "precondition: the lug goes through it"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        path = _joint_path(modules, builder, arm6, range(ROOMY[0], ROOMY[-1] + 1))[:, 0]
+        assert np.isfinite(path).all()
+        for start, end in itertools.pairwise(ROOMY):
+            wind, over = _wind_back_and_overshoot(path[start - 1 : end])
+            if wind > LUG_BOUND or over > LUG_BOUND:
+                raise HurriedPast((start, end, wind, over))
+        for row in arm6.kinema_motion_check:
+            if row.speed_ratio > 1.0:
+                raise HurriedPast((row.name, row.speed_ratio))
 
     def test_unticked_it_goes_through_as_before(self, arm6, builder, modules):
         import bpy
