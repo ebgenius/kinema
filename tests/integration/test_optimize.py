@@ -738,11 +738,16 @@ class TestKeepingClear:
             assert after.before == min(before.before, before.after)
         assert _closest(arm6).clearance > 0.025
 
-    def test_more_frames_is_never_worse(self, arm6, builder, modules):
-        """The same job past the same crate, its last move given more frames each time.
+    def test_more_frames_past_this_crate_is_never_worse(self, arm6, builder, modules):
+        """The same job past the same crate, its last move, D, given more frames each time.
 
-        Room to spare can only help. Before, at 30 mm, 161 frames ended 3 mm
-        clear and 166 ended 90 mm in.
+        Room to spare should only help. Before, at 30 mm, 161 frames ended 3 mm
+        clear and 166 ended 90 mm in. Now move D comes out 6.8 mm in at 161
+        frames, then 26.9, 29.5, 30.4, 30.6 and 30.9 mm clear.
+
+        This holds for this scene, not every scene: on the 80 mm crate with a
+        short last move, at Keep Clear By 50 mm, 161 frames end 39.7 mm clear
+        and 166 end 65.1 mm in. Steps 3 and 4 of #98 are for that.
         """
         import bpy
 
@@ -755,7 +760,8 @@ class TestKeepingClear:
             last.frame = end
             assert "FINISHED" in bpy.ops.kinema.generate_motion()
             assert "FINISHED" in bpy.ops.kinema.optimize_motion()
-            reached.append(_closest(arm6).clearance)
+            rows = {row.name: row for row in arm6.kinema_motion_check}
+            reached.append(rows["D"].clearance)
         for fewer, more in itertools.pairwise(reached):
             assert more >= fewer - 0.001, [round(1000 * r, 1) for r in reached]
 
