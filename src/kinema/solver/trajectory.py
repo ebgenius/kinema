@@ -110,7 +110,7 @@ take, with the cost still falling. Two things answer that:
 Each alone left jobs inside an obstacle. On a KR120 job past a 1.2 m cube,
 Keep Clear By 10, 20, 30 and 50 mm came out 62 mm in, 22 mm clear, 34 mm in
 and 52 mm clear in one solve, and 12, 23, 31 and 52 mm clear with both, the
-solve taking 3.7-6.8 s where it took 2.0-4.1. Rounded but solved once, 20 mm
+solve taking 4-8 s where it took 2-4. Rounded but solved once, 20 mm
 ended 45 mm in; solved again with plain corners, the arm6 crate in
 ``tests/integration/test_optimize.py`` ended 63 mm in. ``Pending.passes``
 reads back how each pass ended: jaxls's own iteration count is one per

@@ -515,13 +515,28 @@ def _joint_path(modules, builder, rig, frames):
     return np.array(path)
 
 
+class HurriedPast(AssertionError):
+    """The lug went past its bound: the one failure the lug test's mark expects.
+
+    Its own setup and preconditions fail as plain assertions, and so as failures.
+    """
+
+
 def _wind_back_and_overshoot(path):
     """How far a joint's ``path`` over one move goes back before it starts, and past its end."""
     sign = np.sign(path[-1] - path[0])
     return (
-        max(0.0, float(-sign * (path - path[0]).min())),
-        max(0.0, float(sign * (path - path[-1]).max())),
+        max(0.0, float(-(sign * (path - path[0])).min())),
+        max(0.0, float((sign * (path - path[-1])).max())),
     )
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_wind_back_and_overshoot_are_measured_along_the_move(sign):
+    """Either way the joint turns: back past its start, and on past its end."""
+    path = sign * np.array([0.0, -0.2, 1.0, 2.3, 2.0])
+    assert _wind_back_and_overshoot(path) == pytest.approx((0.2, 0.3))
+    assert _wind_back_and_overshoot(sign * np.array([0.0, 1.0, 2.0])) == (0.0, 0.0)
 
 
 class TestKeepingClear:
@@ -678,6 +693,10 @@ class TestKeepingClear:
         Every solve has to go round it. Before a stalled solve was solved again
         and the hinges rounded, it ended 63 mm in at 20 mm: jaxls gave up while
         the cost was still falling.
+
+        Move D starts and ends far from the crate, so it keeps all that's asked,
+        within the half millimetre the report allows. Move B starts on the job's
+        pinned first frame, 7.5 mm from it, and can only be clear.
         """
         import bpy
 
@@ -685,10 +704,14 @@ class TestKeepingClear:
         _in_the_way(builder, modules, arm6, up=0.0, size=CRATE)
         assert "FINISHED" in bpy.ops.kinema.check_motion()
         assert _closest(arm6).clearance < -0.15, "precondition: deep in"
+        before = {row.name: row.clearance for row in arm6.kinema_motion_check}
+        assert before["D"] < -0.1, "precondition: deep in on the way back too"
 
         arm6.kinema_keep_clear = keep
         assert "FINISHED" in bpy.ops.kinema.optimize_motion()
         assert _closest(arm6).clearance > 0.0
+        rows = {row.name: row for row in arm6.kinema_motion_check}
+        assert rows["D"].clearance >= keep - 0.0005
         assert _waypoint_error_mm(modules, arm6) < 0.01
 
     def test_a_solve_that_stops_short_is_solved_again(self, arm6, builder, modules):
@@ -738,6 +761,7 @@ class TestKeepingClear:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=HurriedPast,
         reason="#98's steps 3 and 4: what a pair can be asked for, and conceding it",
     )
     def test_a_lug_that_can_t_get_clear_doesn_t_hurry_past(self, arm6, builder, modules):
@@ -767,11 +791,14 @@ class TestKeepingClear:
 
         assert "FINISHED" in bpy.ops.kinema.optimize_motion()
         path = _joint_path(modules, builder, arm6, range(ROOMY[0], ROOMY[-1] + 1))[:, 0]
+        assert np.isfinite(path).all()
         for start, end in itertools.pairwise(ROOMY):
             wind, over = _wind_back_and_overshoot(path[start - 1 : end])
-            assert wind <= LUG_BOUND and over <= LUG_BOUND, (start, end, wind, over)
+            if wind > LUG_BOUND or over > LUG_BOUND:
+                raise HurriedPast((start, end, wind, over))
         for row in arm6.kinema_motion_check:
-            assert row.speed_ratio <= 1.0, row.name
+            if row.speed_ratio > 1.0:
+                raise HurriedPast((row.name, row.speed_ratio))
 
     def test_unticked_it_goes_through_as_before(self, arm6, builder, modules):
         import bpy

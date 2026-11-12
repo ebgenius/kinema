@@ -406,9 +406,10 @@ carried along.
     out, give its link more: Capsules per link.
   - Where the hit is real, move the obstacle, or teach the waypoint clear of it.
   - Letting a move take longer to go round is [#93](https://github.com/ebgenius/kinema/issues/93).
-- A solve that stops short of clear is solved again from where it stopped, up to four
-  times, while each pass still lowers the cost. With obstacles, a solve takes about twice as
-  long: 3.7-6.8 s on the KR120 job above, where it was 2.0-4.1 s.
+- A solve that ends without its cost or its gradient having settled, having cut the cost by
+  more than 1%, is solved again from where it stopped, up to four times. Whether the robot
+  is clear yet doesn't enter into it. With obstacles, a solve takes about twice as long:
+  4-8 s on the KR120 job above, where it was 2-4 s.
 - The obstacles are measured on each frame, as the check measures them. A link could still
   pass through a thin obstacle between two frames of a fast move.
 - **Avoid Obstacles**, beside it, turns it off. Capsules that no longer fit the meshes are
