@@ -22,10 +22,13 @@ side" bugs seen in other importers, and both are handled here:
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.etree import ElementTree
 
 import bpy
+import numpy as np
 from mathutils import Matrix
 
 # Rotations that bring each COLLADA up-axis into Blender's Z-up world.
@@ -52,7 +55,17 @@ class DaeImportResult:
         return [obj.data for obj in self.objects]
 
 
-def _load_collada(filepath: Path):
+def _without_bindings(filepath: Path) -> io.BytesIO:
+    """The file with every <bind_material> removed, however its tag is prefixed."""
+    root = ElementTree.parse(filepath).getroot()
+    for parent in list(root.iter()):
+        for child in list(parent):
+            if isinstance(child.tag, str) and child.tag.rpartition("}")[2] == "bind_material":
+                parent.remove(child)
+    return io.BytesIO(ElementTree.tostring(root, encoding="utf-8"))
+
+
+def _load_collada(filepath: Path, *, bind_materials: bool = True):
     try:
         import collada
     except ImportError as exc:  # pragma: no cover - dependency is bundled
@@ -60,12 +73,18 @@ def _load_collada(filepath: Path):
             "pycollada is not available; Kinema cannot read .dae files"
         ) from exc
 
+    source = str(filepath)
+    if not bind_materials:
+        # With no <bind_material> left, no binding can fail: pycollada keeps
+        # every <instance_geometry>, placed by its node, just without material.
+        source = _without_bindings(filepath)
+
     try:
         # ignore=... keeps a single malformed effect or unsupported controller
         # from aborting the whole file. Robot meshes are frequently exported by
         # CAD tools that emit slightly non-conformant COLLADA.
         return collada.Collada(
-            str(filepath),
+            source,
             ignore=[
                 collada.common.DaeUnsupportedError,
                 collada.common.DaeBrokenRefError,
@@ -140,6 +159,14 @@ def _material_for(primitive, cache: dict[str, bpy.types.Material]):
     return blender_material
 
 
+def _instance_key(bound_geometry) -> tuple:
+    """Which geometry, placed where: one instance, whichever read found it."""
+    return (
+        getattr(bound_geometry.original, "id", None),
+        tuple(round(float(v), 9) for v in bound_geometry.matrix.flat),
+    )
+
+
 def _iter_triangle_sets(bound_geometry):
     """Yield bound triangle sets, converting polylists as needed."""
     for primitive in bound_geometry.primitives():
@@ -184,7 +211,7 @@ def _node_transforms(document) -> dict[int, Matrix]:
 
 
 def _iter_unbound_geometries(document):
-    """Fallback: read geometry straight from the library, ignoring materials.
+    """Last resort: read geometry straight from the library, ignoring materials.
 
     ``scene.objects('geometry')`` resolves each ``<instance_geometry>`` through
     its ``<bind_material>``. If an effect fails to load -- most often a
@@ -194,7 +221,10 @@ def _iter_unbound_geometries(document):
     triangles are perfectly readable.
 
     Reading ``document.geometries`` directly bypasses material resolution
-    entirely, so a missing texture costs the material rather than the mesh.
+    entirely, so a missing texture costs the material rather than the mesh --
+    but a geometry whose instance pycollada dropped also loses its node, and
+    lands once, unplaced. So ``import_dae`` re-reads the file without
+    bindings first, and only comes here when even that places nothing.
     """
     transforms = _node_transforms(document)
     for geometry in getattr(document, "geometries", ()) or ():
@@ -210,15 +240,38 @@ def _iter_unbound_geometries(document):
             yield primitive, matrix
 
 
+def _kept_faces(faces):
+    """Which of these (n, 3) faces a Blender mesh keeps, as a boolean mask.
+
+    ``mesh.validate()`` removes a face that repeats a vertex, and all but one
+    of the faces on the same three vertices, in any order or winding. This
+    keeps the first of those.
+    """
+    ordered = np.sort(faces, axis=1)
+    keep = np.zeros(len(faces), dtype=bool)
+    keep[np.unique(ordered, axis=0, return_index=True)[1]] = True
+    return keep & (ordered[:, 0] != ordered[:, 1]) & (ordered[:, 1] != ordered[:, 2])
+
+
 def _build_mesh(name: str, triangle_set, material_cache) -> bpy.types.Mesh | None:
     """Convert one bound triangle set into a Blender mesh."""
     vertices = getattr(triangle_set, "vertex", None)
     indices = getattr(triangle_set, "vertex_index", None)
     if vertices is None or indices is None or len(indices) == 0:
         return None
+    if indices.ndim == 2 and indices.shape[1] != 3:
+        # <lines>: two indices per element. Read three at a time below, they
+        # would make triangles out of edge endpoints that the file never had.
+        return None
 
     mesh = bpy.data.meshes.new(name)
     faces = indices.reshape(-1, 3)
+    # CAD exports carry degenerate and duplicate faces, which validate() below
+    # would remove. The UVs and normals are set after it, by position, so each
+    # face after a removed one would take the next one's. Leave them out here,
+    # and their corners with them.
+    kept = _kept_faces(faces)
+    faces = faces[kept]
 
     mesh.from_pydata(
         [tuple(v) for v in vertices],
@@ -227,8 +280,8 @@ def _build_mesh(name: str, triangle_set, material_cache) -> bpy.types.Mesh | Non
     )
     mesh.update()
     if mesh.validate(verbose=False):
-        # validate() returns True when it had to remove invalid geometry --
-        # common with CAD exports containing degenerate triangles.
+        # validate() returns True when it had to repair the mesh; the faces it
+        # removes most often are already gone (_kept_faces).
         mesh.update()
 
     # UVs, if the file carries any.
@@ -238,7 +291,7 @@ def _build_mesh(name: str, triangle_set, material_cache) -> bpy.types.Mesh | Non
         try:
             uv_layer = mesh.uv_layers.new(name="UVMap")
             uvs = texcoords[0]
-            uv_index = texcoord_indices[0].reshape(-1)
+            uv_index = texcoord_indices[0].reshape(-1, 3)[kept].reshape(-1)
             flat = [0.0] * (len(mesh.loops) * 2)
             for loop_index in range(min(len(mesh.loops), len(uv_index))):
                 u, v = uvs[uv_index[loop_index]][:2]
@@ -254,13 +307,16 @@ def _build_mesh(name: str, triangle_set, material_cache) -> bpy.types.Mesh | Non
     normal_indices = getattr(triangle_set, "normal_index", None)
     if normals is not None and normal_indices is not None and len(normals):
         try:
-            flat_indices = normal_indices.reshape(-1)
+            flat_indices = normal_indices.reshape(-1, 3)[kept].reshape(-1)
             loop_normals = [
                 tuple(normals[flat_indices[i]]) for i in range(len(mesh.loops))
             ]
-            mesh.normals_split_custom_set(loop_normals)
+            # Smooth first: custom normals are stored relative to the smoothing
+            # fans that exist when they are set. Marking faces smooth afterwards
+            # merges those fans and Blender averages the normals across them.
             for polygon in mesh.polygons:
                 polygon.use_smooth = True
+            mesh.normals_split_custom_set(loop_normals)
         except Exception:  # noqa: BLE001 - bad normals should not fail import
             pass
 
@@ -327,14 +383,38 @@ def import_dae(
 
     # Preferred path: scene traversal bakes each node's transform into the
     # vertices and resolves materials, so only the file-level correction remains.
+    placed = []
     for bound_geometry in document.scene.objects("geometry"):
+        placed.append(_instance_key(bound_geometry))
         for triangle_set in _iter_triangle_sets(bound_geometry):
             emit(triangle_set, Matrix.Identity(4))
 
+    # pycollada drops each <instance_geometry> whose material fails to bind --
+    # one node or all of them -- and the node placing it goes with it. The
+    # failure is among document.errors, so when there are any, read the file
+    # again without bindings and import what the first read lost, where its
+    # node puts it, without material.
+    if getattr(document, "errors", None):
+        lost = 0
+        unbound = _load_collada(path, bind_materials=False)
+        for bound_geometry in unbound.scene.objects("geometry"):
+            key = _instance_key(bound_geometry)
+            if key in placed:
+                placed.remove(key)
+                continue
+            lost += 1
+            for triangle_set in _iter_triangle_sets(bound_geometry):
+                emit(triangle_set, Matrix.Identity(4))
+        if lost:
+            result.warnings.append(
+                f"{path.name}: material binding failed for {lost} instance(s) "
+                f"(often a missing texture); imported them without materials"
+            )
+
     if not result.objects and getattr(document, "geometries", None):
         result.warnings.append(
-            f"{path.name}: material binding failed (often a missing texture); "
-            f"imported geometry without materials"
+            f"{path.name}: no geometry instance could be read; imported the "
+            f"library geometry without placement or materials"
         )
         for triangle_set, matrix in _iter_unbound_geometries(document):
             emit(triangle_set, matrix)
