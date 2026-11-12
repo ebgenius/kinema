@@ -515,6 +515,26 @@ def _joint_path(modules, builder, rig, frames):
     return np.array(path)
 
 
+def _least_between_waypoints(modules, rig):
+    """How close the robot comes to an obstacle on any frame but a waypoint's, in metres."""
+    import bpy
+
+    collision = modules("ops.collision")
+    geometry = modules("rig.collision")
+    obstacles = collision.obstacles(bpy.context)
+    held = {int(waypoint.frame) for waypoint in rig.kinema_waypoints}
+    first, last = min(held), max(held)
+    least = np.inf
+    for frame in range(first, last + 1):
+        if frame in held:
+            continue
+        bpy.context.scene.frame_set(frame)
+        capsules = collision.capsules_of(rig)
+        a, b, radii = collision.capsule_ends(rig, capsules)
+        least = min(least, float(geometry.clearances(a, b, radii, obstacles).min()))
+    return least
+
+
 class HurriedPast(AssertionError):
     """The lug went past its bound: the one failure the lug test's mark expects.
 
@@ -731,7 +751,8 @@ class TestKeepingClear:
         optimize.dispatch(job)
         written, _, _ = optimize.finish(bpy.context, job)
         assert written
-        passes = job.pending.passes()
+        # The start at the one saturation throughout: the restarts, unmixed.
+        passes = job.pending.passes(start=0)
         assert not passes[0].settled, "precondition: the first pass stopped short"
         assert len(passes) > 1
         for before, after in itertools.pairwise(passes):
@@ -764,6 +785,66 @@ class TestKeepingClear:
             reached.append(rows["D"].clearance)
         for fewer, more in itertools.pairwise(reached):
             assert more >= fewer - 0.001, [round(1000 * r, 1) for r in reached]
+
+    @pytest.mark.parametrize("keep", [0.01, 0.02, 0.03])
+    def test_where_one_solve_settles_inside_the_other_goes_round(
+        self, arm6, builder, modules, keep
+    ):
+        """The crate 60 mm higher: move B can go round it, but a solve settles inside.
+
+        Solved one way only, from the job as it plays, B ended 42 to 47 mm in
+        at each of these, the same before and after the solve was solved two
+        ways: no flip, but somewhere a solve stops, the pull having levelled
+        off. The second start, its pull stronger for its first passes, goes
+        round, and costs less, so it is kept.
+        """
+        import bpy
+
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6, up=0.06, size=CRATE)
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        assert _closest(arm6).clearance < -0.1, "precondition: deep in"
+
+        arm6.kinema_keep_clear = keep
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        assert _least_between_waypoints(modules, arm6) > 0.0
+        assert _waypoint_error_mm(modules, arm6) < 0.01
+
+    @pytest.mark.parametrize("keep, change", [(0.01, "one frame more"), (0.03, "B 1 mm along x")])
+    def test_a_small_change_to_the_job_doesn_t_flip_it(self, arm6, builder, modules, keep, change):
+        """The crate again, move D ending at 171: a frame more, or waypoint B 1 mm over.
+
+        Solved one way only, from the job as it plays, the job as it was came
+        out 8.2 and 9.9 mm clear, and these 90.6 and 109.3 mm in: the solve
+        settled inside the crate, where the pull levels off. Solved a second
+        way too, a larger saturation first, and the cheaper kept, each comes
+        out as clear as before.
+        """
+        import bpy
+        from mathutils import Vector
+
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6, up=0.0, size=CRATE)
+        arm6.kinema_keep_clear = keep
+        last = max(arm6.kinema_waypoints, key=lambda waypoint: waypoint.frame)
+        last.frame = 171
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        before = _least_between_waypoints(modules, arm6)
+        assert before > 0.0, "precondition: the job as it was comes out clear"
+
+        if change == "one frame more":
+            last.frame = 172
+        else:
+            marker = next(w for w in arm6.kinema_waypoints if w.name == "B").marker
+            moved = marker.matrix_basis.copy()
+            moved.translation = moved.translation + Vector((0.001, 0.0, 0.0))
+            marker.matrix_basis = moved
+            bpy.context.view_layer.update()
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        after = _least_between_waypoints(modules, arm6)
+        assert after > 0.0 and abs(after - before) < 0.002, (before, after)
 
     @pytest.mark.xfail(
         strict=True,

@@ -44,9 +44,9 @@ nothing else is:
   base still wound back by up to 0.43 rad and crossed at its top speed. Fitted
   as a capsule (``rig/collision.py``), the turret stands 227 mm clear. With
   Keep Clear By at 10, 20, 30 and 50 mm, on that one scene, the same move came
-  out 12, 23, 31 and 52 mm clear within every limit, with neither the wind-up
+  out 12, 22, 32 and 51 mm clear within every limit, with neither the wind-up
   nor the overshoot. The base still holds back, then crosses faster than
-  taught: at 50 mm it peaks at 0.36 of its speed limit, against 0.29 as taught.
+  taught: at 50 mm it peaks at 0.33 of its speed limit, against 0.29 as taught.
   Where a capsule can't get clear at all, the hurry is all there: on arm6, a
   lug on joint 1 swept through a post winds back 0.28 rad and overshoots 0.07
   (issue #98). A start or an end pinned inside an obstacle does the same.
@@ -115,6 +115,35 @@ ended 45 mm in; solved again with plain corners, the arm6 crate in
 ``tests/integration/test_optimize.py`` ended 63 mm in. ``Pending.passes``
 reads back how each pass ended: jaxls's own iteration count is one per
 damping it tries, and its cost history holds the steps it threw away.
+
+**Solved two ways, the cheaper kept.** Even so, a solve could settle with the
+arm deep in an obstacle: on arm6, a crate the arm swings 160 mm into, 16 of 64
+jobs (crate height x Keep Clear By x frames) ended inside, and a frame more or
+a waypoint moved 1 mm sent one from 8 mm clear to 91 mm in. One such solve,
+started again from where it ended with its damping reset, went nowhere: every
+step was thrown away up to the damping's ceiling, with the cost where it was.
+A local minimum, where the pull has levelled off (:data:`SATURATION`). So with
+obstacles there are two starts from the job as it plays, one after the other,
+and the one that ends at the lower cost is kept:
+- the solve above;
+- a pass at each of :data:`SATURATION_SCHEDULE` first, the pull from deep in
+  stronger, then the solve above from there.
+Every pass of either start is kept only where it lowers the cost at
+:data:`SATURATION`, and a start goes on only while its passes stop short and
+gain, as restarts do. Taking the schedule's passes whatever they cost, or
+always taking all of them, changed none of the 64 but the time.
+Either alone left jobs inside: the first 16 or 17 of the 64, depending on how
+it was compiled; the schedule 11 to 26, depending on its values, among them 6
+to 13 that the first had brought clear. Kept by cost, 3 end inside, and none
+that the first brought clear. Run apart, wherever one start was clear and the
+other inside, the clear one had ended at the lower cost. The strong pull is
+why the saturation exists, and keeping by cost keeps it in hand: a lug on
+joint 1 that can't get clear winds back as much as before, 0.28 rad, and the
+KR120 job above comes out 12, 22, 32 and 51 mm clear.
+Both starts run in one kernel, ``jax.lax.map`` over :func:`saturations`, so it
+compiles once, and a solve takes longer: 7-10 s on the KR120 job, where it
+took 4-8.
+``Pending.kept`` says which start was kept, and ``Pending.passes`` reads either.
 
 **One compile per robot and length.** A job is padded to the next of
 :data:`BUCKETS`, with the padding held still, so jobs of 90 and 121 frames share
@@ -204,12 +233,34 @@ SEARCH_STEPS = 24
 #: logarithm of the depth: an obstacle half a metre into an arm that can't
 #: leave it pulls little harder than one 20 mm in.
 SATURATION = 0.02
+#: The second start's first passes, one at each saturation, before its passes
+#: at :data:`SATURATION`: see :func:`saturations` and the module's docstring.
+#: Kept by cost, it leaves 3 of the 64 arm6 jobs inside.
+SATURATION_SCHEDULE = (0.2, 0.05)
 #: Capsules and obstacles are padded to these counts, so a kernel serves a
 #: scene until it outgrows one.
 CAPSULE_BUCKETS = (8, 16, 32, 64, 128, 256)
 OBSTACLE_BUCKETS = (4, 8, 16, 32, 64, 128, 256)
 #: Obstacle shapes, by the names ``rig/collision.py`` gives them.
 SHAPES = ("BOX", "SPHERE", "FLOOR")
+
+
+def saturations(collision: bool) -> tuple[np.ndarray, np.ndarray]:
+    """Each start's saturation on each pass it can take, (starts, passes), and
+    how many passes it may take at most, (starts,).
+
+    With obstacles, two starts: one at :data:`SATURATION` throughout, and one
+    with a pass at each of :data:`SATURATION_SCHEDULE` first. Without, the
+    first alone. Each may take :data:`RESTARTS` passes past its schedule's.
+    Arrays the kernel takes, so the values change without compiling it again.
+    """
+    passes = len(SATURATION_SCHEDULE) + RESTARTS + 1 if collision else RESTARTS + 1
+    rows = [np.full(passes, SATURATION)]
+    most = [RESTARTS + 1]
+    if collision:
+        rows.append(np.array([*SATURATION_SCHEDULE, *[SATURATION] * (RESTARTS + 1)]))
+        most.append(passes)
+    return np.array(rows, dtype=float), np.array(most, dtype=np.int32)
 
 
 def bucket(frames: int) -> int:
@@ -365,10 +416,13 @@ class Pending:
     q: object
     iterations: object
     own: slice
-    #: The kernel's account of the solve, for :meth:`passes`: the cost it
-    #: started from, how many passes it took, and per pass the cost it ended
-    #: on, which of jaxls's stopping rules fired, and its iterations.
+    #: The kernel's account of the solve, for :meth:`passes`: the start kept,
+    #: and per start the cost it ended on, the cost it began from, how many
+    #: passes it took, and per pass the cost it ended on, which of jaxls's
+    #: stopping rules fired, and its iterations.
     why: tuple | None = None
+    #: Each start's saturation on each pass, (starts, passes): :func:`saturations`.
+    saturation: np.ndarray | None = None
 
     def ready(self) -> bool:
         is_ready = getattr(self.q, "is_ready", None)
@@ -383,12 +437,26 @@ class Pending:
         q = np.asarray(self.q, dtype=np.float64)[self.own]
         return q, int(np.asarray(self.iterations))
 
-    def passes(self) -> list[Pass]:
-        """Each pass of the solve, in order. Waits if needed."""
+    def kept(self) -> int:
+        """Which start's result the solve kept: the one that ended cheaper. Waits if needed."""
+        return 0 if self.why is None else int(np.asarray(self.why[0]))
+
+    def ended(self) -> list[float]:
+        """The cost each start ended on, at :data:`SATURATION`. Waits if needed."""
+        return [] if self.why is None else [float(x) for x in np.asarray(self.why[1])]
+
+    def passes(self, start: int | None = None) -> list[Pass]:
+        """Each pass of a start, in order: the kept one's unless ``start`` says. Waits if needed."""
         if self.why is None:
             return []
-        start, solves, costs, criteria, iterations = (np.asarray(x) for x in self.why)
-        found, before = [], float(start)
+        which = self.kept() if start is None else start
+        begun, solves, costs, criteria, iterations = (
+            np.asarray(x)[which] for x in self.why[2:]
+        )
+        saturation = np.full(len(costs), SATURATION)
+        if self.saturation is not None:
+            saturation = self.saturation[which]
+        found, before = [], float(begun)
         for index in range(int(solves)):
             cost_ended, gradient_ended, step_ended = (bool(x) for x in criteria[index])
             found.append(
@@ -398,6 +466,7 @@ class Pending:
                     iterations=int(iterations[index]),
                     settled=cost_ended or gradient_ended,
                     stopped_on_step=step_ended,
+                    saturation=float(saturation[index]),
                 )
             )
             before = min(before, float(costs[index]))
@@ -417,6 +486,9 @@ class Pass:
     settled: bool
     #: Whether it ended on the size of a step, which a stall also ends on.
     stopped_on_step: bool
+    #: The collision cost's saturation it solved with: see :func:`saturations`.
+    #: Its costs, ``before`` and ``after``, are at :data:`SATURATION` all the same.
+    saturation: float = SATURATION
 
 
 class Optimizer:
@@ -453,7 +525,7 @@ class Optimizer:
         @jdc.jit
         def solve(robot, q_init, targets, position_weight, orientation_weight,
                   prior, prior_weight, speed_limit, acceleration_limit, dt, link_index,
-                  collision):
+                  collision, saturation, most):
             frames = q_init.shape[0]
             joint = robot.joint_var_cls
             ids = np.arange(frames)
@@ -484,25 +556,59 @@ class Optimizer:
                     position_weight, orientation_weight,
                 ),
             ]
-            if collision is not None:
-                # Per frame: the capsules and the robot's placement are shared.
-                shared = {key: collision[key][None] for key in _SHARED}
-                own = {key: collision[key] for key in _PER_FRAME}
-                costs.append(collision_cost(batched, joint(ids), shared, own))
-            problem = jaxls.LeastSquaresProblem(costs=costs, variables=[joint(ids)]).analyze()
+
+            def problem_at(level):
+                """The problem with the collision cost levelling off past ``level``."""
+                every = list(costs)
+                if collision is not None:
+                    # Per frame: the capsules and the robot's placement are shared.
+                    shared = {key: collision[key][None] for key in _SHARED}
+                    shared["saturation"] = level[None]
+                    own = {key: collision[key] for key in _PER_FRAME}
+                    every.append(collision_cost(batched, joint(ids), shared, own))
+                return jaxls.LeastSquaresProblem(costs=every, variables=[joint(ids)]).analyze()
+
+            # Every pass of every start is judged at the saturation each ends
+            # on, :data:`SATURATION`: the cost the result is chosen by.
+            final = problem_at(saturation[0, -1])
 
             def cost_at(q):
                 values = jaxls.VarValues.make([joint(ids).with_value(q)])
-                return jnp.sum(problem.compute_residual_vector(values) ** 2)
+                return jnp.sum(final.compute_residual_vector(values) ** 2)
 
-            # Solved again from where it stopped while it stopped short: see
-            # the module's docstring.
-            def again(state):
-                _, _, solves, gained, settled, _ = state
-                return (solves == 0) | ((solves <= RESTARTS) & gained & ~settled)
+            def run(start_with):
+                """One start: a pass at each saturation of its ``row`` in turn,
+                each from where the last stopped, while the last stopped
+                short, up to ``most``. Each is kept where it lowers the cost.
+                See the module's docstring."""
+                row, most = start_with
 
-            def once(state):
+                def again(state):
+                    _, _, solves, gained, settled, _ = state
+                    return (solves == 0) | ((solves < most) & gained & ~settled)
+
+                def once(state):
+                    return one_pass(state, row)
+
+                begun = cost_at(q_init)
+                passes = row.shape[0]
+                q, cost, solves, _, _, why = jax.lax.while_loop(
+                    again,
+                    once,
+                    (
+                        q_init, begun, jnp.array(0), jnp.array(True), jnp.array(False),
+                        (
+                            jnp.full(passes, jnp.nan),
+                            jnp.zeros((passes, 3), dtype=bool),
+                            jnp.zeros(passes, dtype=jnp.int32),
+                        ),
+                    ),
+                )
+                return q, cost, (begun, solves, *why)
+
+            def one_pass(state, row):
                 q, cost, solves, _, _, why = state
+                problem = problem_at(row[solves])
                 solution, summary = problem.solve(
                     initial_vals=jaxls.VarValues.make([joint(ids).with_value(q)]),
                     linear_solver=jaxls.ConjugateGradientConfig(tolerance_max=STEP_TOLERANCE),
@@ -530,21 +636,10 @@ class Optimizer:
                     why,
                 )
 
-            start = cost_at(q_init)
-            passes = RESTARTS + 1
-            q, _, solves, _, _, why = jax.lax.while_loop(
-                again,
-                once,
-                (
-                    q_init, start, jnp.array(0), jnp.array(True), jnp.array(False),
-                    (
-                        jnp.full(passes, jnp.nan),
-                        jnp.zeros((passes, 3), dtype=bool),
-                        jnp.zeros(passes, dtype=jnp.int32),
-                    ),
-                ),
-            )
-            return q, jnp.sum(why[2]), (start, solves, *why)
+            # Each start in turn, from the job as it plays; the cheaper kept.
+            found, reached, why = jax.lax.map(run, (saturation, most))
+            best = jnp.argmin(reached)
+            return found[best], jnp.sum(why[4]), (best, reached, *why)
 
         self._fn = (solve, jnp, jaxlie)
         return self._fn
@@ -564,6 +659,7 @@ class Optimizer:
         targets = np.asarray(
             jaxlie.SE3.from_matrix(jnp.asarray(padded.targets, dtype=jnp.float32)).wxyz_xyz
         )
+        levels, most = saturations(padded.collision is not None)
         q, iterations, why = solve(
             robot,
             jnp.asarray(padded.q_init, dtype=jnp.float32),
@@ -577,9 +673,11 @@ class Optimizer:
             jnp.asarray(padded.dt, dtype=jnp.float32),
             jnp.asarray(padded.link_index, dtype=jnp.int32),
             _collision_arrays(jnp, padded.collision),
+            jnp.asarray(levels, dtype=jnp.float32),
+            jnp.asarray(most, dtype=jnp.int32),
         )
         self.compiled = True
-        return Pending(q=q, iterations=iterations, own=own, why=why)
+        return Pending(q=q, iterations=iterations, own=own, why=why, saturation=levels)
 
 
 def hinge(jnp, over, band: float):
@@ -743,7 +841,8 @@ def clearance_short(vals, robot, var, shared, own):
     )
     short = hinge(jnp, shared["aim"] - (distance - shared["radius"][:, None]), CLEARANCE_BAND)
     # The same as the depth, near the surface; its logarithm, deep in.
-    short = SATURATION * jnp.log1p(short / SATURATION)
+    level = shared["saturation"]
+    short = level * jnp.log1p(short / level)
     mask = shared["capsule_mask"][:, None] * shared["obstacle_mask"][None, :]
     return (short * mask * own["weight"]).flatten()
 
