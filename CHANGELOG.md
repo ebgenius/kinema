@@ -128,6 +128,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **COLLADA (`.dae`) meshes import as the file describes them.** Four bugs in the importer,
+  found by kinema_catalog's mesh converter, which converts through it and measures the
+  result:
+  - **A file's own normals were lost.** They were set before the faces were marked smooth,
+    and marking them smooth made Blender average them across every hard edge. Every `.dae`
+    with normals came in with its seams and panel edges smeared; a flat-shaded box's corners
+    sat 54.7° off its faces.
+  - **A mesh whose material failed to load lost its placement.** Most often the material
+    names a texture the file never declares. Where every material failed, the geometry came
+    in once, without its node's position; where only some did, those parts were dropped
+    without a warning. They are now read again without materials and placed where their
+    nodes put them, with a warning naming how many.
+  - **A `<lines>` primitive became triangles** that the file never had: two on Franka's
+    link7.
+  - **After a degenerate or duplicate face, every later face took the next one's normals
+    and UVs.** Blender drops such faces, which CAD exports often carry, and the normals and
+    UVs were then read by position. They are now dropped before the mesh is built.
 - The **Default Solver** preference was never read: every new rig started on PyRoki,
   whatever it said. A new rig now starts on the solver it names.
 - A robot whose linear move ended at a dragged marker jumped back to where that waypoint was

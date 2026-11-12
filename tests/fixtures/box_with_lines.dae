@@ -1,0 +1,106 @@
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <created>2026-11-12T17:35:35.281500</created>
+    <modified>2026-11-12T17:35:35.281502</modified>
+    <unit name="centimeter" meter="0.01" />
+    <up_axis>Z_UP</up_axis>
+  </asset>
+  <library_effects>
+    <effect id="fx" name="fx">
+      <profile_COMMON>
+        <technique sid="common">
+          <phong>
+            <emission>
+              <color>0.0 0.0 0.0 1.0</color>
+            </emission>
+            <ambient>
+              <color>0.0 0.0 0.0 1.0</color>
+            </ambient>
+            <diffuse>
+              <color>0.25 0.25 0.25 1.0</color>
+            </diffuse>
+            <specular>
+              <color>0.0 0.0 0.0 1.0</color>
+            </specular>
+            <shininess>
+              <float>0.0</float>
+            </shininess>
+            <reflective>
+              <color>0.0 0.0 0.0 1.0</color>
+            </reflective>
+            <reflectivity>
+              <float>0.0</float>
+            </reflectivity>
+            <transparent>
+              <color>0.0 0.0 0.0 1.0</color>
+            </transparent>
+            <transparency>
+              <float>1.0</float>
+            </transparency>
+          </phong>
+        </technique>
+        <extra>
+          <technique profile="GOOGLEEARTH">
+            <double_sided>0</double_sided>
+          </technique>
+        </extra>
+      </profile_COMMON>
+    </effect>
+  </library_effects>
+  <library_geometries>
+    <geometry id="box" name="box">
+      <mesh>
+        <source id="v">
+          <float_array count="24" id="v-array">-5 -5 0 -5 -5 20 -5 5 0 -5 5 20 5 -5 0 5 -5 20 5 5 0 5 5 20</float_array>
+          <technique_common>
+            <accessor count="8" source="#v-array" stride="3">
+              <param type="float" name="X" />
+              <param type="float" name="Y" />
+              <param type="float" name="Z" />
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="n">
+          <float_array count="18" id="n-array">-1 0 0 1 0 0 0 -1 0 0 1 0 0 0 -1 0 0 1</float_array>
+          <technique_common>
+            <accessor count="6" source="#n-array" stride="3">
+              <param type="float" name="X" />
+              <param type="float" name="Y" />
+              <param type="float" name="Z" />
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="v-vertices">
+          <input semantic="POSITION" source="#v" />
+        </vertices>
+        <triangles count="12" material="m">
+          <input offset="0" semantic="VERTEX" source="#v-vertices" />
+          <input offset="1" semantic="NORMAL" source="#n" />
+          <p>0 0 1 0 3 0 0 0 3 0 2 0 4 1 6 1 7 1 4 1 7 1 5 1 0 2 4 2 5 2 0 2 5 2 1 2 2 3 3 3 7 3 2 3 7 3 6 3 0 4 2 4 6 4 0 4 6 4 4 4 1 5 5 5 7 5 1 5 7 5 3 5</p>
+        </triangles><lines count="3"><input offset="0" semantic="VERTEX" source="#v-vertices" /><p>0 1 2 3 4 5</p></lines>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_materials>
+    <material id="mat" name="mat">
+      <instance_effect url="#fx" />
+    </material>
+  </library_materials>
+  <library_visual_scenes>
+    <visual_scene id="scene">
+      <node id="box" name="box">
+        <translate>0 0 19.2</translate>
+        <instance_geometry url="#box">
+          <bind_material>
+            <technique_common>
+              <instance_material symbol="m" target="#mat" />
+            </technique_common>
+          </bind_material>
+        </instance_geometry>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene>
+    <instance_visual_scene url="#scene" />
+  </scene>
+</COLLADA>
