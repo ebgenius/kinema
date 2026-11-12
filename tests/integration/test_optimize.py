@@ -810,6 +810,37 @@ class TestKeepingClear:
         assert _least_between_waypoints(modules, arm6) > 0.0
         assert _waypoint_error_mm(modules, arm6) < 0.01
 
+    def test_the_second_start_doesn_t_end_settled_on_its_schedule(self, arm6, builder, modules):
+        """The crate 60 mm higher at 20 mm, where the second start's first pass,
+        at the schedule's 0.2, ends on jaxls's cost or gradient rule.
+
+        That settles the problem at 0.2, not the one each pass is judged by, so
+        the start goes on, as it would after any pass that stopped short and
+        gained. It used to end there. And the iterations reported are the kept
+        start's alone, where they were both starts' together.
+        """
+        import bpy
+
+        optimize = modules("ops.optimize")
+        trajectory = modules("solver.trajectory")
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6, up=0.06, size=CRATE)
+        arm6.kinema_keep_clear = 0.02
+        job = optimize.prepare(bpy.context, arm6)
+        optimize.dispatch(job)
+        written, _, _ = optimize.finish(bpy.context, job)
+        assert written
+        passes = job.pending.passes(start=1)
+        assert passes[0].saturation > trajectory.SATURATION
+        assert passes[0].settled, "precondition: the first scheduled pass settles"
+        gained = passes[0].after < passes[0].before * (1.0 - trajectory.RESTART_GAIN)
+        assert gained, "precondition: settling is the only reason to stop"
+        assert len(passes) > 1
+
+        _, iterations = job.pending.result()
+        assert iterations == sum(each.iterations for each in job.pending.passes())
+        assert len(job.pending.ended()) == 2
+
     @pytest.mark.parametrize("keep, change", [(0.01, "one frame more"), (0.03, "B 1 mm along x")])
     def test_a_small_change_to_the_job_doesn_t_flip_it(self, arm6, builder, modules, keep, change):
         """The crate again, move D ending at 171: a frame more, or waypoint B 1 mm over.

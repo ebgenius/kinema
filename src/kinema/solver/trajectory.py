@@ -130,8 +130,10 @@ and the one that ends at the lower cost is kept:
   stronger, then the solve above from there.
 Every pass of either start is kept only where it lowers the cost at
 :data:`SATURATION`, and a start goes on only while its passes stop short and
-gain, as restarts do. Taking the schedule's passes whatever they cost, or
-always taking all of them, changed none of the 64 but the time.
+gain, as restarts do; a pass that settles at a saturation of the schedule
+hasn't settled the problem judged, so it doesn't end the start. Taking the
+schedule's passes whatever they cost, or always taking all of them, changed
+none of the 64 but the time.
 Either alone left jobs inside: the first 16 or 17 of the 64, depending on how
 it was compiled; the schedule 11 to 26, depending on its values, among them 6
 to 13 that the first had brought clear. Kept by cost, 3 end inside, and none
@@ -429,7 +431,7 @@ class Pending:
         return bool(is_ready()) if is_ready is not None else True
 
     def result(self) -> tuple[np.ndarray, int]:
-        """The job's own frames, (frames, dof), and the iterations taken. Waits if needed.
+        """The job's own frames, (frames, dof), and the kept start's iterations. Waits if needed.
 
         jaxls counts an iteration per damping it tries, taken or not: a count,
         not a measure of progress.
@@ -632,14 +634,17 @@ class Optimizer:
                     jnp.minimum(reached, cost),
                     solves + 1,
                     reached < cost * (1.0 - RESTART_GAIN),
-                    cost_ended | gradient_ended,
+                    # Settled at a saturation of the schedule is settled on a
+                    # problem that isn't the one judged: the start goes on.
+                    (cost_ended | gradient_ended) & (row[solves] == row[-1]),
                     why,
                 )
 
             # Each start in turn, from the job as it plays; the cheaper kept.
             found, reached, why = jax.lax.map(run, (saturation, most))
             best = jnp.argmin(reached)
-            return found[best], jnp.sum(why[4]), (best, reached, *why)
+            # The kept start's iterations: the other's went into nothing kept.
+            return found[best], jnp.sum(why[4][best]), (best, reached, *why)
 
         self._fn = (solve, jnp, jaxlie)
         return self._fn
