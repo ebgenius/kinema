@@ -370,12 +370,12 @@ though: move that, and neither the check nor Optimize Motion notices. Check Agai
 
 **The check** names, for each move, the link that came closest, to which obstacle, and on
 which frame. A link reaching into an obstacle is flagged: "joint_3 hits Fixture by 40 mm at
-frame 134". Where a capsule moves further than its radius against an obstacle from one frame
-to the next, either of them moving, the check measures between them too, at up to 16 points:
-"joint_3 hits Plate by 12 mm between frames 40 and 41". Up to 16 radii a frame, a capsule
-can't pass through an obstacle unseen; faster than that, one thinner than the gap between
-two points can still slip through. The panel shows the closest approach over the whole
-job, until the waypoints,
+frame 134". Where a capsule is further than its radius from where it was against an obstacle
+on the frame before, either of them having moved, the check measures between the two frames
+too, in up to 16 even parts: "joint_3 hits Plate by 12 mm between frames 40 and 41". That's
+sampling, not a continuous check: a capsule moving more than 16 radii in a frame, or going
+out and back within one, can still pass a thin obstacle unseen. The panel shows the closest
+approach over the whole job, until the waypoints,
 the obstacles, the capsules or where the robot stands change, when it asks for Check Again. **Show Collision
 Shapes** draws the capsules and obstacles as the check sees them, red where they touch on the
 current frame. That's the way to see a capsule that fits its link badly.

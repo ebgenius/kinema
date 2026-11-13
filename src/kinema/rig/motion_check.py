@@ -248,7 +248,9 @@ def between_frames(
     Where a capsule's end moves further than its radius against an obstacle,
     the capsule could pass through an obstacle thinner than that without
     touching it on either frame; measured where it has moved no further than
-    its radius from the last, it can't. Moving against an obstacle is moving
+    its radius from the last, it can't, if it moves steadily between the two.
+    Only where it is on each frame is compared: a capsule that goes out and
+    back within a frame isn't measured between. Moving against an obstacle is moving
     in its own frame, which it does when either of them moves, and an
     obstacle that grows or shrinks moves its faces by that much too. Without
     obstacles, how far it moves. At most :data:`MOST_BETWEEN`.
