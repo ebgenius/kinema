@@ -392,6 +392,20 @@ carried along.
   measured frame by frame, so where a link can't get clear, crossing in fewer frames is all
   that's left to lower it. The arm winds back first, crosses at full speed, and passes its
   next waypoint before coming back to it. A start or an end inside an obstacle does the same.
+  - Where a solve leaves a capsule short of clear on a move, and no further out than it was
+    taught, the job is solved once more, asking that capsule on that move to keep no further
+    from that obstacle than it came closest. Its frames then cost nothing, so the move isn't
+    hurried. That capsule may come as close anywhere on the move.
+    - A lug on joint 1 swept through a post, solved once, wound the joint back 0.28 rad and
+      crossed at 1.03 times its speed limit. Solved again, it keeps its taught path, at 0.43
+      of the limit.
+    - A waypoint taught 8.7 mm from a post, with Keep Clear By at 50 mm, is left at the same
+      pace as with Avoid Obstacles off, where solved once the arm left it 3.5 times as fast.
+    - The second solve takes as long as the first, and the report says when there was one.
+  - Where the solve did bring that capsule further out somewhere on the move, nothing is
+    conceded, and the frames next to a waypoint taught closer than Keep Clear By still
+    hurry: on the KR120 job below, its last frame 57 mm from the cube, asking for 100 mm
+    winds the base back 0.09 rad ([#98](https://github.com/ebgenius/kinema/issues/98)).
   - A capsule much bigger than its link does it: Show Collision Shapes shows one. On a KR120
     at 24 fps, a joint move swinging the tool 2.4 m past a 1.2 m cube went over it, but the
     turret's capsule, fitted as a cylinder with its ends rounded, reached 27 mm into the

@@ -535,10 +535,28 @@ def _least_between_waypoints(modules, rig):
     return least
 
 
-class HurriedPast(AssertionError):
-    """The lug went past its bound: the one failure the lug test's mark expects.
+def _lug_through_a_post(builder, rig):
+    """A lug on joint 1 and a post where it sweeps through on move B, and back on D."""
+    import bpy
 
-    Its own setup and preconditions fail as plain assertions, and so as failures.
+    from .test_collision import _fit, _obstacle
+
+    lug = _lug(builder, rig)
+    _job(builder, rig, ROOMY)
+    _fit(rig)
+    bpy.context.scene.frame_set(31)
+    _obstacle("Post", tuple(lug.matrix_world.translation), size=0.03)
+    bpy.context.view_layer.objects.active = rig
+    assert "FINISHED" in bpy.ops.kinema.check_motion()
+    assert _closest(rig).clearance_bone == builder.joint_bones(rig)[0].name
+    assert _closest(rig).clearance < -0.05, "precondition: the lug goes through it"
+
+
+class HurriedPast(AssertionError):
+    """A joint hurried where a capsule can't be as far as asked: the one failure
+    an expected-failure mark here expects.
+
+    A test's own setup and preconditions fail as plain assertions, and so as failures.
     """
 
 
@@ -877,36 +895,58 @@ class TestKeepingClear:
         after = _least_between_waypoints(modules, arm6)
         assert after > 0.0 and abs(after - before) < 0.002, (before, after)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=HurriedPast,
-        reason="#98's steps 3 and 4: what a pair can be asked for, and conceding it",
-    )
+    def test_a_waypoint_taught_closer_than_asked_leaves_the_frames_round_it_alone(
+        self, arm6, builder, modules
+    ):
+        """A post 8.7 mm from the arm at waypoint C, with Keep Clear By at 50 mm.
+
+        The waypoint holds the arm there, so the frames either side can't be
+        50 mm clear either. Asked to be, each costs, and leaving C faster is
+        all that lowers it. Measured from C, 2, 5 and 10 frames into move D:
+        0.015, 0.031 and 0.069 rad with obstacles off; solved once, asked for
+        50 mm, 0.030, 0.111 and 0.241. Solved again with that pair asked on
+        move D for no more than its 8.7 mm at C, the same as with obstacles off.
+        """
+        import bpy
+
+        c = ROOMY[2] - ROOMY[0]
+        frames = range(ROOMY[0], ROOMY[-1] + 1)
+        _job(builder, arm6, ROOMY)
+        _in_the_way(builder, modules, arm6, frame=ROOMY[2], up=0.10)
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        row = next(row for row in arm6.kinema_motion_check if row.name == "D")
+        assert row.clearance_frame == ROOMY[2], "precondition: closest at C"
+        assert 0.0 < row.clearance < 0.02, "precondition: taught closer than asked"
+
+        arm6.kinema_avoid_obstacles = False
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        free = _joint_path(modules, builder, arm6, frames)
+        arm6.kinema_avoid_obstacles = True
+        arm6.kinema_keep_clear = 0.05
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        kept = _joint_path(modules, builder, arm6, frames)
+        for k in (2, 5, 10):
+            left_free = np.abs(free[c + k] - free[c]).max()
+            left_kept = np.abs(kept[c + k] - kept[c]).max()
+            if left_kept > 1.25 * left_free + 0.005:
+                raise HurriedPast((k, left_kept, left_free))
+
     def test_a_lug_that_can_t_get_clear_doesn_t_hurry_past(self, arm6, builder, modules):
         """A lug on joint 1, swept through a post on move B and back through it on D.
 
         Only joint 1 moves the lug, and it can't turn the other way round, so
         the lug can't get clear. Each frame it spends in the post costs, and
-        fewer such frames is all a solve can do about it: it winds joint 1
-        back, crosses at the speed limit and overshoots. Measured with this
-        kernel, at 10 mm: 0.28 rad back and 0.07 over on move B, at 1.03 times
-        the speed limit. The prototype of steps 1-4 on #98 kept it to none of
-        either, within the limits; steps 1-3 alone, 0.24 rad back.
+        fewer such frames is all a solve can do about it. Solved once, at
+        10 mm, it winds joint 1 back 0.28 rad and overshoots 0.07 on move B, at
+        1.03 times the speed limit. The solve leaves the lug where it was in
+        the post, so it is solved again asking that pair for no more than it
+        had: no wind-back or overshoot on B, 0.006 rad back on D, and 0.43 and
+        0.93 of the speed limit.
         """
         import bpy
 
-        from .test_collision import _fit, _obstacle
-
-        lug = _lug(builder, arm6)
-        _job(builder, arm6, ROOMY)
-        _fit(arm6)
-        bpy.context.scene.frame_set(31)
-        _obstacle("Post", tuple(lug.matrix_world.translation), size=0.03)
-        bpy.context.view_layer.objects.active = arm6
-        assert "FINISHED" in bpy.ops.kinema.check_motion()
-        assert _closest(arm6).clearance_bone == builder.joint_bones(arm6)[0].name
-        assert _closest(arm6).clearance < -0.05, "precondition: the lug goes through it"
-
+        _lug_through_a_post(builder, arm6)
         assert "FINISHED" in bpy.ops.kinema.optimize_motion()
         path = _joint_path(modules, builder, arm6, range(ROOMY[0], ROOMY[-1] + 1))[:, 0]
         assert np.isfinite(path).all()
@@ -917,6 +957,27 @@ class TestKeepingClear:
         for row in arm6.kinema_motion_check:
             if row.speed_ratio > 1.0:
                 raise HurriedPast((row.name, row.speed_ratio))
+
+    def test_from_the_panel_it_is_solved_again_too(self, arm6, builder, modules, monkeypatch):
+        """The lug again, the operator run as the panel runs it: a solve, then one more."""
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _lug_through_a_post(builder, arm6)
+        reports = []
+        running = _operator(optimize, optimize.prepare(bpy.context, arm6), reports)
+        monkeypatch.setattr(optimize, "_running", {arm6.name})
+        timer = type("Event", (), {"type": "TIMER", "value": "NOTHING"})()
+        operator = optimize.KINEMA_OT_optimize_motion
+        assert operator.modal(running, bpy.context, timer) == {"RUNNING_MODAL"}
+        running._job.pending.result()
+        assert operator.modal(running, bpy.context, timer) == {"RUNNING_MODAL"}
+        assert running._job.solves == 2
+        running._job.pending.result()
+        assert operator.modal(running, bpy.context, timer) == {"FINISHED"}
+        assert not optimize.optimizing(arm6)
+        kind, message = reports[-1]
+        assert "solved again, asking less of what couldn't get clear" in message, message
 
     def test_unticked_it_goes_through_as_before(self, arm6, builder, modules):
         import bpy

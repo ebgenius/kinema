@@ -432,7 +432,6 @@ class TestKeepingClear:
             "capsule_mask": jnp.asarray([1.0, 1.0, 0.0]),
             "kind": kind,
             "obstacle_mask": jnp.asarray([1.0]),
-            "aim": jnp.asarray(0.01),
             "saturation": jnp.asarray(trajectory.SATURATION),
         }
         own = {
@@ -441,6 +440,7 @@ class TestKeepingClear:
             "centre": centre,
             "size": size,
             "weight": jnp.asarray(7.0),
+            "aim": jnp.full((3, 1), 0.01),
         }
         short = np.asarray(trajectory.clearance_short({"q": jnp.zeros(1)}, Robot, "q", shared, own))
         # 50 mm clear of the ball, 5 mm clear, and a padded capsule inside it.
@@ -450,6 +450,94 @@ class TestKeepingClear:
         np.testing.assert_allclose(
             short, [0.0, 7.0 * level * np.log1p(rounded / level), 0.0], atol=1e-6
         )
+
+
+class TestConceding:
+    """A pair a solve couldn't bring clear is asked for what it had, over its move."""
+
+    ASKED = 0.05 + trajectory.CLEARANCE_MARGIN
+
+    def _collision(self, frames=9):
+        return replace(_collision(frames=frames, capsules=1, obstacles=1), keep_clear=0.05)
+
+    def _clearances(self, *values):
+        return np.asarray(values, dtype=float)[:, None, None]
+
+    #: Two moves, pinned at rows 0, 4 and 8.
+    STRETCHES = [(0, 4), (4, 8)]
+
+    def test_a_pair_short_and_no_further_out_is_conceded_over_its_move(self):
+        """Taught 80 mm in at worst on the first move; the solve got it 1 mm out there.
+
+        Every frame of that move is asked for no more than its closest, less
+        the slack; the second move is asked as before.
+        """
+        collision = self._collision()
+        taught = self._clearances(0.06, 0.0, -0.08, -0.01, 0.06, 0.1, 0.1, 0.1, 0.1)
+        reached = self._clearances(0.06, 0.02, -0.079, 0.03, 0.06, 0.1, 0.1, 0.1, 0.1)
+        eased = trajectory.conceded(collision, taught, reached, self.STRETCHES)
+        asked = trajectory.asked(eased)[:, 0, 0]
+        np.testing.assert_allclose(asked[:5], -0.08 - trajectory.CONCEDE_SLACK)
+        np.testing.assert_allclose(asked[5:], self.ASKED)
+
+    def test_a_pair_the_solve_brought_closer_to_clear_is_left_asked(self):
+        """80 mm in, lacking 132: a tenth of that is 13 mm, and it got 20 mm out."""
+        collision = self._collision()
+        taught = self._clearances(0.06, 0.0, -0.08, -0.01, 0.06, 0.1, 0.1, 0.1, 0.1)
+        reached = self._clearances(0.06, 0.02, -0.06, 0.03, 0.06, 0.1, 0.1, 0.1, 0.1)
+        assert trajectory.conceded(collision, taught, reached, self.STRETCHES) is None
+
+    def test_a_pair_that_ends_clear_is_left_asked(self):
+        collision = self._collision()
+        taught = self._clearances(0.06, 0.06, 0.06, 0.06, 0.06, 0.1, 0.1, 0.1, 0.1)
+        assert trajectory.conceded(collision, taught, taught.copy(), self.STRETCHES) is None
+
+    def test_a_waypoint_taught_closer_than_asked_concedes_the_moves_either_side(self):
+        """10 mm at the pin between the moves, which no solve can move: both moves are
+        asked for 9, so leaving it faster gains nothing."""
+        collision = self._collision()
+        taught = self._clearances(0.06, 0.03, 0.02, 0.015, 0.01, 0.015, 0.02, 0.03, 0.06)
+        reached = self._clearances(0.06, 0.04, 0.03, 0.02, 0.01, 0.02, 0.03, 0.04, 0.06)
+        eased = trajectory.conceded(collision, taught, reached, self.STRETCHES)
+        np.testing.assert_allclose(
+            trajectory.asked(eased)[:, 0, 0], 0.01 - trajectory.CONCEDE_SLACK
+        )
+
+    def test_a_little_way_short_it_needs_the_least_gain_to_be_left(self):
+        """15 mm short: a tenth of that is under :data:`CONCEDE_LEAST`, 2 mm, which counts.
+
+        1.5 mm further out is conceded; 2.5 mm, still short, is left asked.
+        """
+        collision = self._collision()
+        near = self.ASKED - 0.015
+
+        def at(gained):
+            return self._clearances(0.06, near + gained, near + gained, near + gained, 0.06,
+                                    0.1, 0.1, 0.1, 0.1)
+
+        taught = at(0.0)
+        assert trajectory.conceded(collision, taught, at(0.0015), self.STRETCHES) is not None
+        assert trajectory.conceded(collision, taught, at(0.0025), self.STRETCHES) is None
+
+    def test_what_is_asked_is_the_less_of_keep_clear_and_what_is_allowed(self):
+        collision = _collision(frames=3, capsules=2, obstacles=1)
+        full = 0.01 + trajectory.CLEARANCE_MARGIN
+        np.testing.assert_allclose(trajectory.asked(collision), full)
+        allow = np.array([[[0.0], [0.5]], [[0.005], [0.5]], [[0.5], [0.5]]])
+        asked = trajectory.asked(replace(collision, allow=allow))
+        np.testing.assert_allclose(asked[:, :, 0], [[0.0, full], [0.005, full], [full, full]])
+
+    def test_what_is_allowed_is_held_on_the_rest_frames_and_padded(self):
+        jnp = pytest.importorskip("jax.numpy")
+        collision = _collision(frames=4, capsules=3, obstacles=2)
+        allow = np.full((4, 3, 2), 0.001)
+        problem = replace(_problem(frames=4), collision=replace(collision, allow=allow))
+        padded, own = trajectory.at_rest(problem)
+        np.testing.assert_array_equal(padded.collision.allow[own], allow)
+        assert len(padded.collision.allow) == padded.frames
+        aim = np.asarray(trajectory._collision_arrays(jnp, padded.collision)["aim"])
+        assert aim.shape == (padded.frames, 8, 4)
+        np.testing.assert_allclose(aim[:, :3, :2], 0.001)
 
 
 class TestPaddingTheCell:
@@ -486,7 +574,9 @@ class TestPaddingTheCell:
         assert arrays["a"].shape == (8, 3) and arrays["rotation"].shape == (4, 4, 3, 3)
         np.testing.assert_array_equal(np.asarray(arrays["capsule_mask"]), [1] * 3 + [0] * 5)
         np.testing.assert_array_equal(np.asarray(arrays["obstacle_mask"]), [1, 1, 0, 0])
-        assert float(arrays["aim"]) == pytest.approx(0.01 + trajectory.CLEARANCE_MARGIN)
+        aim = np.asarray(arrays["aim"])
+        assert aim.shape == (4, 8, 4)
+        np.testing.assert_allclose(aim[:, :3, :2], 0.01 + trajectory.CLEARANCE_MARGIN)
         np.testing.assert_allclose(
             np.asarray(arrays["weight"]), collision.weight * trajectory.COLLISION_WEIGHT
         )
