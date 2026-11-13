@@ -566,6 +566,39 @@ class TestGltfMeshes:
         )
         assert np.abs(corners - faces).max() < 1e-4
 
+    def test_a_skinned_file_is_refused_and_leaves_nothing(self, addon, tmp_path, clean_scene):
+        """A mesh deformed by an armature can't ride a link rigidly: refused, and cleaned up."""
+        import bpy
+
+        meshes = importlib.import_module(f"{addon.__name__}.io.meshes")
+        scene = bpy.context.scene
+        armature = bpy.data.objects.new("Skeleton", bpy.data.armatures.new("Skeleton"))
+        scene.collection.objects.link(armature)
+        bpy.context.view_layer.objects.active = armature
+        bpy.ops.object.mode_set(mode="EDIT")
+        bone = armature.data.edit_bones.new("Bone")
+        bone.head, bone.tail = (0.0, 0.0, 0.0), (0.0, 0.0, 0.2)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        skin = bpy.data.objects.new("Skin", _painted("skin"))
+        scene.collection.objects.link(skin)
+        skin.parent = armature
+        group = skin.vertex_groups.new(name="Bone")
+        group.add([v.index for v in skin.data.vertices], 1.0, "REPLACE")
+        skin.modifiers.new("Armature", "ARMATURE").object = armature
+        for obj in scene.objects:
+            obj.select_set(obj in (armature, skin))
+        path = tmp_path / "skinned.glb"
+        bpy.ops.export_scene.gltf(filepath=str(path), export_format="GLB", use_selection=True)
+        for obj in (skin, armature):
+            bpy.data.objects.remove(obj)
+
+        target = bpy.data.collections.new("Visuals")
+        objects, collections = set(bpy.data.objects), set(bpy.data.collections)
+        with pytest.raises(meshes.MeshLoadError, match="skinned"):
+            meshes.load_mesh(path, collection=target, name="link")
+        assert set(bpy.data.objects) == objects
+        assert set(bpy.data.collections) == collections
+
     def test_only_its_meshes_are_kept(self, gltf_rig):
         """No empty from the node tree, and each placed copy with a mesh of its own."""
         import bpy

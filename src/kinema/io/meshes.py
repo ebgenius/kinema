@@ -75,6 +75,10 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
     one datablock in Blender, so each object after the first gets a copy:
     baking moves the vertices, and the copies would move together. The file's
     normals and materials are kept as the importer reads them.
+
+    A skinned file is refused, with everything it made removed: its meshes
+    come parented to an armature and deformed by it, and a link's mesh rides
+    its link rigidly.
     """
     if not hasattr(bpy.ops.import_scene, "gltf"):
         raise MeshLoadError(f"{path.name}: Blender's glTF importer isn't enabled")
@@ -83,6 +87,17 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
         bpy.ops.import_scene.gltf, path, collection,
         import_shading="NORMALS", merge_vertices=False, import_scene_as_collection=False,
     )
+    skinned = any(
+        obj.type == "ARMATURE"
+        or any(modifier.type == "ARMATURE" for modifier in getattr(obj, "modifiers", ()))
+        for obj in created
+    )
+    if skinned:
+        _remove(created, collections)
+        raise MeshLoadError(
+            f"{path.name}: a skinned glTF mesh, deformed by an armature; a link's mesh "
+            "has to be rigid"
+        )
     meshes = [obj for obj in created if obj.type == "MESH"]
     placed = {obj: _world(obj) for obj in meshes}
     shared = set()
@@ -92,13 +107,17 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
         if obj.data in shared:
             obj.data = obj.data.copy()
         shared.add(obj.data)
-    for obj in created:
-        if obj.type != "MESH":
-            bpy.data.objects.remove(obj)
+    _remove([obj for obj in created if obj.type != "MESH"], collections)
+    return meshes
+
+
+def _remove(objects, collections: set) -> None:
+    """Remove ``objects``, and any collection made since ``collections`` left empty."""
+    for obj in objects:
+        bpy.data.objects.remove(obj)
     for made in set(bpy.data.collections) - collections:
         if not made.objects and not made.children:
             bpy.data.collections.remove(made)
-    return meshes
 
 
 def load_mesh(
