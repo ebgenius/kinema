@@ -238,12 +238,14 @@ def _closest_approach(result: MoveCheck, own: list[Sample], capsules) -> None:
 
 def between_frames(
     before: np.ndarray, after: np.ndarray, radii: np.ndarray,
-    obstacles_before: tuple = (), obstacles_after: tuple = (),
+    obstacles_before: tuple = (), obstacles_after: tuple = (), radii_after=None,
 ) -> int:
     """How many parts to measure the robot in between two frames: 1 for none between.
 
     ``before`` and ``after`` are the capsules' ends on each, (C, 2, 3), and
-    ``radii`` theirs, (C,). ``obstacles_before`` and ``obstacles_after`` are
+    ``radii`` theirs, (C,), or on the first frame where ``radii_after`` are
+    on the second: the smaller is taken, since a robot scaled down between
+    the two has thinner capsules. ``obstacles_before`` and ``obstacles_after`` are
     the obstacles on each, in the same order: what a capsule moves against.
     Where a capsule's end moves further than its radius against an obstacle,
     the capsule could pass through an obstacle thinner than that without
@@ -268,7 +270,10 @@ def between_frames(
             moved = np.maximum(moved, shift + grown)
     else:
         moved = np.linalg.norm(after - before, axis=-1).max(axis=-1)
-    parts = int(np.ceil((moved / np.maximum(np.asarray(radii, dtype=float), 1e-6)).max()))
+    radii = np.asarray(radii, dtype=float)
+    if radii_after is not None:
+        radii = np.minimum(radii, np.asarray(radii_after, dtype=float))
+    parts = int(np.ceil((moved / np.maximum(radii, 1e-6)).max()))
     return int(min(max(parts, 1), MOST_BETWEEN))
 
 

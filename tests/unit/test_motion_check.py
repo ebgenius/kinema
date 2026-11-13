@@ -325,6 +325,14 @@ class TestBetweenFrames:
         after[1, 1] = [0.1, 0.0, 0.0]
         assert check.between_frames(before, after, np.array([0.05, 0.02])) == 5
 
+    def test_a_capsule_that_thins_is_measured_by_its_thinner_end(self):
+        """100 mm in a frame while the robot's scale takes its radius from 50 to 20 mm."""
+        before = np.zeros((1, 2, 3))
+        after = before + [0.1, 0.0, 0.0]
+        radii = np.array([0.05])
+        assert check.between_frames(before, after, radii) == 2
+        assert check.between_frames(before, after, radii, radii_after=np.array([0.02])) == 5
+
     def test_however_fast_at_most_so_many_parts(self):
         before = np.zeros((1, 2, 3))
         after = before + [10.0, 0.0, 0.0]

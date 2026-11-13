@@ -1094,7 +1094,8 @@ def _measured_between(
             if not first <= now.frame < last:
                 continue
             parts = motion_check.between_frames(
-                now.segments, then.segments, now.radii, now.obstacles, then.obstacles
+                now.segments, then.segments, now.radii, now.obstacles, then.obstacles,
+                radii_after=then.radii,
             )
             measured = []
             for part in range(1, parts):
