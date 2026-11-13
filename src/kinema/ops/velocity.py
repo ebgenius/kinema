@@ -20,6 +20,8 @@ history.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import bpy
 from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
@@ -274,11 +276,33 @@ def warnings(rig, scene) -> list[Reading]:
     ]
 
 
+_unobserved = False
+
+
+@contextmanager
+def unobserved():
+    """Record nothing for the duration of the block.
+
+    For poses set between frames, which :func:`observe` would record as the
+    whole frame they sit in.
+    """
+    global _unobserved
+    previous = _unobserved
+    _unobserved = True
+    try:
+        yield
+    finally:
+        _unobserved = previous
+
+
 def observe(scene) -> None:
     """Record where every checked rig stands, after the frame has solved.
 
     A rig whose limits are ignored is skipped: nothing is read back from it.
+    Nothing at all inside :func:`unobserved`.
     """
+    if _unobserved:
+        return
     # Whatever changed -- the frame, a pose, a key, the solver's answer -- what
     # is shown next is worked out again.
     _readings.clear()

@@ -27,7 +27,7 @@ from bpy.types import Panel, PropertyGroup, UIList
 
 from .. import runtime
 from ..ops.import_robot import SETTING_NAMES, import_settings
-from ..rig import builder
+from ..rig import builder, motion_check
 from ..rig.waypoints import MOVE_LINEAR
 
 CATEGORY = "Kinema"
@@ -895,7 +895,7 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
             layout.separator()
             layout.label(
                 text=f"Closest: {closest.clearance * 1000:.0f} mm, {closest.clearance_bone} "
-                f"to {closest.clearance_obstacle} at frame {closest.clearance_frame}",
+                f"to {closest.clearance_obstacle} {motion_check.clearance_when(closest)}",
                 icon="ERROR" if closest.clearance < 0.0 else "CHECKMARK",
             )
 

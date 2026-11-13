@@ -583,14 +583,12 @@ def _closest(checks, keep_clear: float) -> str:
     )
     if closest is None:
         return "no obstacle measured"
-    where = (
-        f"{closest.clearance_bone} to {closest.clearance_obstacle} at frame "
-        f"{closest.clearance_frame}"
-    )
+    when = motion_check.clearance_when(closest)
+    where = f"{closest.clearance_bone} to {closest.clearance_obstacle} {when}"
     if closest.clearance < 0.0:
         return (
             f"{closest.clearance_bone} hits {closest.clearance_obstacle} by "
-            f"{-closest.clearance * 1000:.0f} mm at frame {closest.clearance_frame}"
+            f"{-closest.clearance * 1000:.0f} mm {when}"
         )
     # Within half a millimetre of what was asked counts as keeping it.
     if closest.clearance < keep_clear - 0.0005:

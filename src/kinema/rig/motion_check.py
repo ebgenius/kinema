@@ -53,6 +53,10 @@ LIMIT_MARGIN = 1e-3
 #: half-turn. A prismatic axis covering a quarter metre is 6 m/s.
 JUMP_REVOLUTE = 1.0
 JUMP_PRISMATIC = 0.25
+#: The most parts a frame is measured in, for clearance, between it and the
+#: next: see :func:`between_frames`. A capsule moving more than this many
+#: radii in a frame can still step over something thinner than that.
+MOST_BETWEEN = 16
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,12 @@ class Sample:
     #: World space from the solvers' frame on this frame, 4x4: the robot's
     #: object and its Root. None where nothing was measured.
     placement: np.ndarray | None = None
+    #: The robot against the obstacles between this frame and the next, where
+    #: a capsule moved further than its radius: samples at even fractions of
+    #: the frame, each with ``frame`` this one and its fraction in ``subframe``.
+    #: Read for clearance only. See :func:`between_frames`.
+    between: tuple = ()
+    subframe: float = 0.0
 
 
 @dataclass
@@ -127,6 +137,8 @@ class MoveCheck:
     clearance_bone: str = ""
     clearance_obstacle: str = ""
     clearance_frame: int = 0
+    #: Whether that was between ``clearance_frame`` and the next.
+    clearance_between: bool = False
 
 
 def check_move(
@@ -199,9 +211,15 @@ def check_move(
 
 
 def _closest_approach(result: MoveCheck, own: list[Sample], capsules) -> None:
-    """Where the robot came closest to an obstacle over the move's own frames."""
+    """Where the robot came closest to an obstacle over the move's own frames,
+    and between them: not after its last, which is the next move's."""
     fitted = np.array([capsule.radius for capsule in capsules], dtype=float)
-    for sample in own:
+    measured = [
+        part
+        for sample in own
+        for part in (sample, *(sample.between if sample.frame < result.end_frame else ()))
+    ]
+    for sample in measured:
         if sample.segments is None or not len(fitted) or not sample.obstacles:
             continue
         radii = fitted if sample.radii is None else sample.radii
@@ -215,6 +233,62 @@ def _closest_approach(result: MoveCheck, own: list[Sample], capsules) -> None:
             result.clearance_bone = capsules[which[0]].bone
             result.clearance_obstacle = sample.obstacles[which[1]].name
             result.clearance_frame = int(sample.frame)
+            result.clearance_between = sample.subframe > 0.0
+
+
+def between_frames(
+    before: np.ndarray, after: np.ndarray, radii: np.ndarray,
+    obstacles_before: tuple = (), obstacles_after: tuple = (), radii_after=None,
+) -> int:
+    """How many parts to measure the robot in between two frames: 1 for none between.
+
+    ``before`` and ``after`` are the capsules' ends on each, (C, 2, 3), and
+    ``radii`` theirs, (C,), or on the first frame where ``radii_after`` are
+    on the second: the smaller is taken, since a robot scaled down between
+    the two has thinner capsules. ``obstacles_before`` and ``obstacles_after`` are
+    the obstacles on each, in the same order: what a capsule moves against.
+    Where a capsule's end moves further than its radius against an obstacle,
+    the capsule could pass through an obstacle thinner than that without
+    touching it on either frame; measured where it has moved no further than
+    its radius from the last, it can't, if it moves steadily between the two.
+    Only where it is on each frame is compared: a capsule that goes out and
+    back within a frame isn't measured between. Moving against an obstacle is moving
+    in its own frame, which it does when either of them moves, and an
+    obstacle that grows or shrinks moves its faces by that much too. Without
+    obstacles, how far it moves. At most :data:`MOST_BETWEEN`.
+    """
+    before, after = np.asarray(before, dtype=float), np.asarray(after, dtype=float)
+    if obstacles_before and len(obstacles_before) == len(obstacles_after):
+        moved = np.zeros(len(before))
+        for was, now in zip(obstacles_before, obstacles_after, strict=True):
+            then = _in_frame_of(before, was.matrix)
+            later = _in_frame_of(after, now.matrix)
+            shift = np.linalg.norm(later - then, axis=-1).max(axis=-1)
+            grown = 0.0
+            if np.shape(was.size) == np.shape(now.size):
+                grown = float(np.abs(np.asarray(now.size) - np.asarray(was.size)).max(initial=0.0))
+            moved = np.maximum(moved, shift + grown)
+    else:
+        moved = np.linalg.norm(after - before, axis=-1).max(axis=-1)
+    radii = np.asarray(radii, dtype=float)
+    if radii_after is not None:
+        radii = np.minimum(radii, np.asarray(radii_after, dtype=float))
+    parts = int(np.ceil((moved / np.maximum(radii, 1e-6)).max()))
+    return int(min(max(parts, 1), MOST_BETWEEN))
+
+
+def _in_frame_of(points: np.ndarray, matrix) -> np.ndarray:
+    """``points`` in the frame of ``matrix``: an obstacle's rotation and centre."""
+    matrix = np.asarray(matrix, dtype=float)
+    return (points - matrix[:3, 3]) @ matrix[:3, :3]
+
+
+def clearance_when(check) -> str:
+    """When ``check``'s closest approach was, in words: at a frame or just after it."""
+    frame = check.clearance_frame
+    if getattr(check, "clearance_between", False):
+        return f"between frames {frame} and {frame + 1}"
+    return f"at frame {frame}"
 
 
 def _hardest_acceleration(samples, start_frame, end_frame, joints, fps) -> tuple[float, str]:
@@ -272,12 +346,10 @@ def problems(check) -> list[str]:
         found.append(f"needs about {needed} frames, has {check.end_frame - check.start_frame}")
     if getattr(check, "clearance_obstacle", "") and check.clearance < 0.0:
         depth = -check.clearance * 1000
+        amount = f"{depth:.0f} mm" if depth >= 10 else f"{depth:.1f} mm"
         found.append(
-            f"{check.clearance_bone} hits {check.clearance_obstacle} by "
-            f"{depth:.0f} mm at frame {check.clearance_frame}"
-            if depth >= 10
-            else f"{check.clearance_bone} hits {check.clearance_obstacle} by "
-            f"{depth:.1f} mm at frame {check.clearance_frame}"
+            f"{check.clearance_bone} hits {check.clearance_obstacle} by {amount} "
+            f"{clearance_when(check)}"
         )
     threshold = JUMP_PRISMATIC if check.jump_prismatic else JUMP_REVOLUTE
     if check.jump > threshold:

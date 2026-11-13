@@ -856,8 +856,8 @@ class TestObstacles:
 
 
 class TestChecking:
-    def _job(self, arm6, builder, modules):
-        """Two waypoints, a joint move between them, generated."""
+    def _job(self, arm6, builder, modules, end=31):
+        """Two waypoints, a joint move between them from frame 1 to ``end``, generated."""
         import bpy
 
         manager = modules("solver.manager")
@@ -865,7 +865,7 @@ class TestChecking:
         assert "FINISHED" in bpy.ops.kinema.add_ik()
         arm6.kinema_ik_enabled = False
         ik_name = arm6[builder.PROP_IK_BONE]
-        for name, frame, q in (("A", 1, HOME), ("B", 31, TURNED)):
+        for name, frame, q in (("A", 1, HOME), ("B", end, TURNED)):
             bpy.context.scene.frame_set(frame)
             _set_q(builder, arm6, q)
             arm6.pose.bones[ik_name].matrix = arm6.pose.bones[manager.tip_bone(arm6)].matrix.copy()
@@ -913,6 +913,123 @@ class TestChecking:
         depth = (capsule.radius * scale + 0.02) * 1000
         expected = f"{capsule.bone} hits Post by {depth:.0f} mm at frame 16"
         assert expected in modules("rig.motion_check").problems(row)
+
+    def test_an_obstacle_crossed_between_two_frames_is_reported(self, arm6, builder, modules):
+        """The same move in 3 frames: the forearm steps over a 10 mm plate between
+        frames 2 and 3, clear of it on both."""
+        import bpy
+        from mathutils import Vector
+
+        collision, geometry = modules("ops.collision"), modules("rig.collision")
+        self._job(arm6, builder, modules, end=4)
+        _fit(arm6)
+        capsule, before = self._halfway(arm6, builder, modules, frame=2)
+        _, after = self._halfway(arm6, builder, modules, frame=3)
+        travel = after - before
+        assert np.linalg.norm(travel) > 2 * capsule.radius + 0.03, (
+            "precondition: fast enough to step over the plate"
+        )
+        plate = _obstacle("Plate", tuple((before + after) / 2.0), size=1.0)
+        across = Vector((1.0, 0.0, 0.0)).rotation_difference(Vector(travel))
+        plate.rotation_euler = across.to_euler()
+        plate.scale = (0.005, 0.03, 0.03)
+        bpy.context.view_layer.update()
+        for frame in range(1, 5):
+            bpy.context.scene.frame_set(frame)
+            a, b, radii = collision.capsule_ends(arm6, collision.capsules_of(arm6))
+            obstacles = list(collision.obstacles(bpy.context))
+            assert geometry.clearances(a, b, radii, obstacles).min() > 0.0, (
+                f"precondition: clear of it on frame {frame}"
+            )
+
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        row = arm6.kinema_motion_check[0]
+        assert (row.clearance_obstacle, row.clearance_bone) == ("Plate", capsule.bone)
+        assert row.clearance < 0.0
+        assert (row.clearance_frame, row.clearance_between) == (2, True)
+        found = modules("rig.motion_check").problems(row)
+        assert any("between frames 2 and 3" in each for each in found), found
+
+    def test_an_obstacle_crossing_a_slow_arm_between_two_frames_is_reported(
+        self, arm6, builder, modules
+    ):
+        """A 10 mm plate keyed to jump 200 mm across the forearm from frame 16 to 17,
+        clear of it on both; the arm itself moves less than a capsule's radius a frame."""
+        import bpy
+        from mathutils import Vector
+
+        collision, geometry = modules("ops.collision"), modules("rig.collision")
+        check = modules("rig.motion_check")
+        self._job(arm6, builder, modules)
+        _fit(arm6)
+        capsule, middle = self._halfway(arm6, builder, modules, frame=16)
+        a16, b16, radii = collision.capsule_ends(arm6, collision.capsules_of(arm6))
+        bpy.context.scene.frame_set(17)
+        a17, b17, _ = collision.capsule_ends(arm6, collision.capsules_of(arm6))
+        still = check.between_frames(
+            np.stack([a16, b16], axis=1), np.stack([a17, b17], axis=1), radii
+        )
+        assert still == 1, "precondition: the arm alone moves too little to be measured between"
+        # Square to the forearm, and across it level.
+        index = next(
+            i for i in range(len(a16)) if np.allclose((a16[i] + b16[i]) / 2.0, middle, atol=1e-6)
+        )
+        across = np.cross(b16[index] - a16[index], (0.0, 0.0, 1.0))
+        across /= np.linalg.norm(across)
+        plate = _obstacle("Plate", tuple(middle), size=1.0)
+        facing = Vector((1.0, 0.0, 0.0)).rotation_difference(Vector(across))
+        plate.rotation_euler = facing.to_euler()
+        plate.scale = (0.005, 0.03, 0.03)
+        for frame, side in ((16, -0.1), (17, 0.1)):
+            plate.location = Vector(middle + side * across)
+            plate.keyframe_insert("location", frame=frame)
+        for frame in range(1, 32):
+            bpy.context.scene.frame_set(frame)
+            a, b, found = collision.capsule_ends(arm6, collision.capsules_of(arm6))
+            obstacles = list(collision.obstacles(bpy.context))
+            assert geometry.clearances(a, b, found, obstacles).min() > 0.0, (
+                f"precondition: clear of it on frame {frame}"
+            )
+
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        row = arm6.kinema_motion_check[0]
+        assert (row.clearance_obstacle, row.clearance_bone) == ("Plate", capsule.bone)
+        assert row.clearance < 0.0
+        assert (row.clearance_frame, row.clearance_between) == (16, True)
+
+    def test_what_is_measured_between_frames_isn_t_recorded_as_a_frame(
+        self, arm6, builder, modules
+    ):
+        """The limit check's history keeps each whole frame's pose, not one just after it."""
+        import bpy
+
+        velocity = modules("ops.velocity")
+        self._job(arm6, builder, modules, end=4)
+        _fit(arm6)
+        capsule, before = self._halfway(arm6, builder, modules, frame=2)
+        _, after = self._halfway(arm6, builder, modules, frame=3)
+        parts = modules("rig.motion_check").between_frames(
+            np.array([[before, before]]), np.array([[after, after]]), np.array([capsule.radius])
+        )
+        assert parts > 1, "precondition: frame 2 is measured in parts"
+        _obstacle("FarAway", (5.0, 5.0, 5.0), size=0.1)
+        on_frame = {}
+        for frame in range(0, 6):
+            bpy.context.scene.frame_set(frame)
+            on_frame[frame] = {
+                pose_bone.name: velocity.joint_value(pose_bone)
+                for pose_bone in builder.joint_bones(arm6)
+            }
+
+        bpy.context.view_layer.objects.active = arm6
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        records = velocity._history._seen[velocity._key(arm6)]
+        assert records
+        for frame, seen in records:
+            for name, value in seen.items():
+                assert value == pytest.approx(on_frame[frame][name], abs=1e-6), (frame, name)
 
     def test_a_job_clear_of_everything_passes(self, arm6, builder, modules):
         import bpy
