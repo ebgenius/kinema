@@ -1067,14 +1067,16 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
             )
             window.progress_update(frame)
         if measured:
-            samples = _measured_between(context, rig, capsules, samples, first, last)
+            samples = _measured_between(context, rig, capsules, samples, first, last, window)
     finally:
         window.progress_end()
         scene.frame_set(original)
     return samples
 
 
-def _measured_between(context, rig, capsules, samples, first: int, last: int) -> list:
+def _measured_between(
+    context, rig, capsules, samples, first: int, last: int, window=None
+) -> list:
     """``samples`` with the robot against the obstacles measured between frames too.
 
     Only where a capsule moved further than its radius against an obstacle
@@ -1082,7 +1084,8 @@ def _measured_between(context, rig, capsules, samples, first: int, last: int) ->
     (``motion_check.between_frames``). Each part is set as a
     subframe, so the joints come as playback interpolates them, and live IK
     solves a line from its goal there. Nothing is recorded for the limit
-    check, which reads whole frames.
+    check, which reads whole frames. ``window``'s progress goes over the job's
+    frames again, part by part.
     """
     scene = context.scene
     out = list(samples)
@@ -1097,6 +1100,8 @@ def _measured_between(context, rig, capsules, samples, first: int, last: int) ->
             for part in range(1, parts):
                 scene.frame_set(now.frame, subframe=part / parts)
                 context.view_layer.update()
+                if window is not None:
+                    window.progress_update(now.frame + part / parts)
                 a, b, radii = collision_ops.capsule_ends(rig, capsules)
                 measured.append(
                     replace(
