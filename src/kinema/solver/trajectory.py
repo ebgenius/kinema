@@ -258,6 +258,11 @@ SHORT = 0.0005
 CONCEDE_GAIN = 0.1
 CONCEDE_LEAST = 0.002
 CONCEDE_SLACK = 0.001
+#: Nor is a pair conceded where the solve took its closest frame between the
+#: pinned ones this fraction or more of the way to what was asked: a pinned
+#: frame can be the move's closest and hide that. Where a pair was conceded on
+#: arm6 and the KR120 job, the solve had gained 0 to 11% of the way there.
+CONCEDE_BETWEEN = 0.25
 #: Capsules and obstacles are padded to these counts, so a kernel serves a
 #: scene until it outgrows one.
 CAPSULE_BUCKETS = (8, 16, 32, 64, 128, 256)
@@ -400,9 +405,15 @@ def conceded(
     hurries. That happens where the capsule has to pass through, as a lug that
     only one joint moves does, and next to a waypoint taught closer than Keep
     Clear By, where the frames beside it can't be as far either. Such a pair
-    shows in what the solve ended with: short on a move, and its closest
-    approach on that move no further from the obstacle than the taught job's,
-    within :data:`CONCEDE_GAIN` of what that lacked or :data:`CONCEDE_LEAST`.
+    shows in what the solve ended with, on a move:
+    - still short on a frame between its pinned ones, whose cost no solve can
+      change;
+    - its closest approach on the move, pinned frames and all, no further out
+      than taught, within :data:`CONCEDE_GAIN` of what that lacked or
+      :data:`CONCEDE_LEAST`;
+    - and its closest frame between the pinned ones not taken
+      :data:`CONCEDE_BETWEEN` of the way to what was asked, since a waypoint
+      taught close can be the move's closest whatever the solve did between.
 
     On that move, the pair is then asked for no more than the closer of the
     two, less :data:`CONCEDE_SLACK`, on every frame, so no frame of it costs
@@ -414,12 +425,16 @@ def conceded(
     allow = aim.copy()
     found = False
     for first, last in stretches:
-        rows = slice(first, last + 1)
-        short = (reached[rows] < aim[rows] - SHORT).any(axis=0)
+        if last - first < 2:
+            continue  # nothing between the pins for a solve to move
+        rows, inner = slice(first, last + 1), slice(first + 1, last)
+        short = (reached[inner] < aim[inner] - SHORT).any(axis=0)
         was, now = taught[rows].min(axis=0), reached[rows].min(axis=0)
         lacking = np.maximum(aim[rows] - taught[rows], 0.0).max(axis=0)
         gain = np.maximum(CONCEDE_LEAST, CONCEDE_GAIN * lacking)
-        give = short & (np.abs(now - was) < gain)
+        between = np.maximum(aim[inner] - taught[inner], 0.0).max(axis=0)
+        gained = reached[inner].min(axis=0) - taught[inner].min(axis=0)
+        give = short & (np.abs(now - was) < gain) & ~(gained > CONCEDE_BETWEEN * between)
         if not give.any():
             continue
         found = True

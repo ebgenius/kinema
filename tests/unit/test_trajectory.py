@@ -503,6 +503,23 @@ class TestConceding:
             trajectory.asked(eased)[:, 0, 0], 0.01 - trajectory.CONCEDE_SLACK
         )
 
+    def test_a_pinned_frame_doesn_t_hide_what_the_solve_gained_between(self):
+        """Pinned at 5 mm, taught 3 mm at worst between, solved out to 40 mm there.
+
+        The move's closest is the pin's 5 mm, 2 mm from the taught 3, but the
+        solve took the frames it could move most of the way to clear.
+        """
+        collision = self._collision()
+        taught = self._clearances(0.005, 0.02, 0.003, 0.02, 0.005, 0.1, 0.1, 0.1, 0.1)
+        reached = self._clearances(0.005, 0.045, 0.04, 0.045, 0.005, 0.1, 0.1, 0.1, 0.1)
+        assert trajectory.conceded(collision, taught, reached, self.STRETCHES) is None
+
+    def test_short_only_on_its_pinned_frames_a_move_concedes_nothing(self):
+        """5 mm at the pin between the moves, 100 mm clear on every frame either side."""
+        collision = self._collision()
+        taught = self._clearances(0.1, 0.1, 0.1, 0.1, 0.005, 0.1, 0.1, 0.1, 0.1)
+        assert trajectory.conceded(collision, taught, taught.copy(), self.STRETCHES) is None
+
     def test_a_little_way_short_it_needs_the_least_gain_to_be_left(self):
         """15 mm short: a tenth of that is under :data:`CONCEDE_LEAST`, 2 mm, which counts.
 
