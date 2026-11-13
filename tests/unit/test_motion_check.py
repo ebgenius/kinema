@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -276,3 +277,74 @@ class TestProblems:
             "joint6 at +73°, taught at -287°: kept as the line arrives",
             "0.5 mm off the line",
         ]
+
+
+geometry = load_addon_module("rig.collision")
+
+
+def _crossing(frames=(1, 2, 3), between=True, end=3):
+    """A capsule of radius 20 mm moving 100 mm a frame along x, over a 10 mm plate
+    at x = 150 mm: 50 mm short of it on frame 2, 50 mm past on frame 3.
+
+    ``between`` measures it half-way from frame 2 to 3 too, through the plate.
+    """
+    capsule = geometry.Capsule("forearm", np.zeros(3), np.array([0.0, 0.0, 0.1]), 0.02)
+    plate = geometry.Obstacle(
+        "Plate", geometry.KIND_BOX, _pose((0.15, 0.0, 0.05)), np.array([0.005, 0.2, 0.2])
+    )
+
+    def at(x, subframe=0.0, frame=0):
+        ends = np.array([[[x, 0.0, 0.0], [x, 0.0, 0.1]]])
+        return check.Sample(
+            frame=frame, q=np.zeros(1), tool=_pose(), segments=ends,
+            radii=np.array([0.02]), obstacles=(plate,), subframe=subframe,
+        )
+
+    samples = []
+    for frame in frames:
+        x = 0.1 * (frame - 1)
+        sample = at(x, frame=frame)
+        if between and frame == 2:
+            sample = replace(sample, between=(at(x + 0.05, 0.5, frame),))
+        samples.append(sample)
+    return check.check_move(
+        "B", "JOINT", frames[0], end, _pose(), _pose(), samples, [JOINT], FPS, (capsule,)
+    )
+
+
+class TestBetweenFrames:
+    def test_a_capsule_that_moves_less_than_its_radius_is_measured_on_frames_only(self):
+        before = np.zeros((1, 2, 3))
+        after = before + [0.015, 0.0, 0.0]
+        assert check.between_frames(before, after, np.array([0.02])) == 1
+
+    def test_it_is_measured_where_it_has_moved_no_further_than_its_radius(self):
+        """100 mm in a frame at 20 mm: five parts, 20 mm each."""
+        before = np.zeros((2, 2, 3))
+        after = before.copy()
+        after[1, 1] = [0.1, 0.0, 0.0]
+        assert check.between_frames(before, after, np.array([0.05, 0.02])) == 5
+
+    def test_however_fast_at_most_so_many_parts(self):
+        before = np.zeros((1, 2, 3))
+        after = before + [10.0, 0.0, 0.0]
+        assert check.between_frames(before, after, np.array([0.02])) == check.MOST_BETWEEN
+
+    def test_a_plate_crossed_between_two_frames_is_reported_after_the_first(self):
+        found = _crossing()
+        assert found.clearance_obstacle == "Plate" and found.clearance < 0.0
+        assert (found.clearance_frame, found.clearance_between) == (2, True)
+        assert "forearm hits Plate by 25 mm between frames 2 and 3" in check.problems(found)
+
+    def test_measured_on_frames_only_it_isn_t_seen(self):
+        found = _crossing(between=False)
+        assert found.clearance == pytest.approx(0.025)
+        assert not found.clearance_between
+
+    def test_after_a_move_s_last_frame_it_is_the_next_move_s(self):
+        found = _crossing(end=2)
+        assert found.clearance > 0.0 and not found.clearance_between
+
+    def test_on_a_frame_it_says_so(self):
+        found = check.MoveCheck("B", "JOINT", 1, 3, clearance_frame=2)
+        assert check.clearance_when(found) == "at frame 2"

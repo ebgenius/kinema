@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from dataclasses import replace
 
 import bpy
 import numpy as np
@@ -84,6 +85,7 @@ from ..solver import branches, manager, numpy_backend
 from ..solver.chain import chain_from_rig
 from ..ui.panel import active_rig
 from . import collision as collision_ops
+from . import velocity
 from .ik import key_joint_value, own_fcurve_containers
 from .velocity import acceleration_limit_of, joint_value, limit_of
 
@@ -958,6 +960,9 @@ class KinemaMoveCheck(PropertyGroup):
     clearance_bone: StringProperty(name="Closest Link")
     clearance_obstacle: StringProperty(name="Closest Obstacle")
     clearance_frame: IntProperty(name="Closest Frame")
+    clearance_between: BoolProperty(
+        name="Between Frames", description="The closest approach was just after that frame"
+    )
 
 
 def check_job(context, rig, plan, samples=None) -> list[motion_check.MoveCheck] | None:
@@ -1061,10 +1066,47 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
                 )
             )
             window.progress_update(frame)
+        if measured:
+            samples = _measured_between(context, rig, capsules, samples, first, last)
     finally:
         window.progress_end()
         scene.frame_set(original)
     return samples
+
+
+def _measured_between(context, rig, capsules, samples, first: int, last: int) -> list:
+    """``samples`` with the robot against the obstacles measured between frames too.
+
+    Only where a capsule moved further than its radius from one frame of the
+    job to the next (``motion_check.between_frames``). Each part is set as a
+    subframe, so the joints come as playback interpolates them, and live IK
+    solves a line from its goal there. Nothing is recorded for the limit
+    check, which reads whole frames.
+    """
+    scene = context.scene
+    out = list(samples)
+    with velocity.unobserved():
+        for index, (now, then) in enumerate(zip(samples, samples[1:], strict=False)):
+            if not first <= now.frame < last:
+                continue
+            parts = motion_check.between_frames(now.segments, then.segments, now.radii)
+            measured = []
+            for part in range(1, parts):
+                scene.frame_set(now.frame, subframe=part / parts)
+                context.view_layer.update()
+                a, b, radii = collision_ops.capsule_ends(rig, capsules)
+                measured.append(
+                    replace(
+                        now,
+                        segments=np.stack([a, b], axis=1),
+                        radii=radii,
+                        obstacles=tuple(collision_ops.obstacles(context)),
+                        subframe=part / parts,
+                    )
+                )
+            if measured:
+                out[index] = replace(now, between=tuple(measured))
+    return out
 
 
 def estimate_frames_needed(context, rig, checks, samples) -> None:
