@@ -434,6 +434,147 @@ def scale_rig(kin, builder, addon, fixture_dir, clean_scene):
     return {obj.name.split(".")[0]: obj for obj in result.mesh_objects}, result
 
 
+def _painted(name):
+    """A lopsided cone, its lower half one material and its upper half another."""
+    import bmesh
+    import bpy
+
+    mesh = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    bmesh.ops.create_cone(
+        bm, cap_ends=True, segments=6, radius1=0.05, radius2=0.02, depth=0.12
+    )
+    bmesh.ops.translate(bm, vec=(0.03, 0.0, 0.01), verts=bm.verts)
+    bm.to_mesh(mesh)
+    bm.free()
+    for material in ("Paint", "Rubber"):
+        mesh.materials.append(bpy.data.materials.get(material) or bpy.data.materials.new(material))
+    for polygon in mesh.polygons:
+        polygon.material_index = int(polygon.center.z > 0.01)
+    return mesh
+
+
+def _write_both(folder, variant):
+    """The same meshes written as ``<variant>.stl`` and ``<variant>.glb``, then removed.
+
+    ``plain``: one mesh at the origin. ``nested``: one under an empty, both
+    turned and moved, so the glTF has a node tree. ``twice``: one mesh used by
+    two objects, which glTF writes once and places twice.
+    """
+    import bpy
+
+    scene = bpy.context.scene
+    made = []
+    mesh = _painted(variant)
+    first = bpy.data.objects.new(variant, mesh)
+    made.append(first)
+    if variant == "nested":
+        holder = bpy.data.objects.new(f"{variant}_holder", None)
+        holder.location, holder.rotation_euler = (0.1, 0.2, 0.3), (0.3, 0.5, 0.7)
+        first.parent = holder
+        first.location, first.rotation_euler = (0.05, -0.02, 0.04), (0.9, 0.0, -0.4)
+        made.append(holder)
+    elif variant == "twice":
+        second = bpy.data.objects.new(f"{variant}_second", mesh)
+        second.location, second.rotation_euler = (0.2, 0.0, 0.1), (0.0, 0.6, 0.0)
+        made.append(second)
+    for obj in made:
+        scene.collection.objects.link(obj)
+    bpy.context.view_layer.update()
+    for obj in scene.objects:
+        obj.select_set(obj in made)
+    bpy.ops.wm.stl_export(
+        filepath=str(folder / f"{variant}.stl"), export_selected_objects=True,
+        forward_axis="Y", up_axis="Z", global_scale=1.0,
+    )
+    bpy.ops.export_scene.gltf(
+        filepath=str(folder / f"{variant}.glb"), export_format="GLB", use_selection=True
+    )
+    for obj in made:
+        bpy.data.objects.remove(obj)
+    bpy.data.meshes.remove(mesh)
+
+
+@pytest.fixture
+def gltf_rig(kin, builder, addon, tmp_path, clean_scene):
+    """A one-link rig with each variant on it twice: as ``.stl`` and as ``.glb``."""
+    yourdfpy = pytest.importorskip("yourdfpy")
+    resolve = importlib.import_module(f"{addon.__name__}.io.resolve")
+    variants = ("plain", "nested", "twice")
+    for variant in variants:
+        _write_both(tmp_path, variant)
+    visuals = "".join(
+        f'<visual name="{v}_{kind}"><geometry><mesh filename="{v}.{kind}"/></geometry></visual>'
+        for v in variants
+        for kind in ("stl", "glb")
+    )
+    path = tmp_path / "gltf.urdf"
+    path.write_text(f'<robot name="gltf"><link name="base">{visuals}</link></robot>')
+    urdf = yourdfpy.URDF.load(str(path))
+    model = kin.model_from_urdf(urdf, resolve.make_mesh_resolver(path))
+    result = builder.build_rig(model, builder.RigBuildOptions())
+    assert not result.warnings, f"visuals failed to load: {result.warnings}"
+    return result
+
+
+def _points_of(result, label) -> np.ndarray:
+    return np.array(
+        [
+            tuple(point)
+            for obj in result.mesh_objects
+            if obj.name.split(".")[0] == label
+            for point in _world_points(obj)
+        ]
+    )
+
+
+def _loops_by_face(mesh):
+    """Each corner with the face it belongs to, in corner order."""
+    owner = [None] * len(mesh.loops)
+    for polygon in mesh.polygons:
+        for index in polygon.loop_indices:
+            owner[index] = polygon.index
+    return [type("Corner", (), {"polygon_index": face})() for face in owner]
+
+
+class TestGltfMeshes:
+    @pytest.mark.parametrize("variant", ["plain", "nested", "twice"])
+    def test_a_glb_lands_where_the_same_mesh_as_stl_does(self, gltf_rig, variant):
+        stl = _points_of(gltf_rig, f"{variant}_stl")
+        glb = _points_of(gltf_rig, f"{variant}_glb")
+        assert len(stl) and len(glb)
+        apart = np.linalg.norm(glb[:, None, :] - stl[None, :, :], axis=-1)
+        assert apart.min(axis=1).max() < 1e-6, "a GLB vertex the STL doesn't have"
+        assert apart.min(axis=0).max() < 1e-6, "an STL vertex the GLB doesn't have"
+
+    def test_its_materials_arrive(self, gltf_rig):
+        for obj in gltf_rig.mesh_objects:
+            if obj.name.startswith("plain_glb"):
+                names = sorted(m.name.split(".")[0] for m in obj.data.materials)
+                assert names == ["Paint", "Rubber"]
+                break
+        else:
+            pytest.fail("no plain_glb object")
+
+    def test_its_normals_arrive_as_written(self, gltf_rig):
+        """The cone was written flat: every corner keeps its face's normal."""
+        obj = next(o for o in gltf_rig.mesh_objects if o.name.startswith("plain_glb"))
+        mesh = obj.data
+        corners = np.array([tuple(n.vector) for n in mesh.corner_normals])
+        faces = np.array(
+            [tuple(mesh.polygons[loop.polygon_index].normal) for loop in _loops_by_face(mesh)]
+        )
+        assert np.abs(corners - faces).max() < 1e-4
+
+    def test_only_its_meshes_are_kept(self, gltf_rig):
+        """No empty from the node tree, and each placed copy with a mesh of its own."""
+        import bpy
+
+        assert not any(obj.type == "EMPTY" and "holder" in obj.name for obj in bpy.data.objects)
+        twice = [obj for obj in gltf_rig.mesh_objects if obj.name.startswith("twice_glb")]
+        assert len(twice) == 2 and twice[0].data is not twice[1].data
+
+
 class TestMeshScale:
     def test_the_files_own_units_survive_the_build(self, scale_rig):
         """Regression: the DAE correction was computed and then overwritten.

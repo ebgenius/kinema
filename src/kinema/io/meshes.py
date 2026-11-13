@@ -1,13 +1,19 @@
 """Load a link's visual geometry, whatever format the URDF points at.
 
 Robot descriptions reference a small set of mesh formats. Blender 5.2 still
-ships importers for STL, OBJ and PLY; COLLADA is handled by Kinema's own
-importer because Blender 5.0 removed the native one.
+ships importers for STL, OBJ and PLY, and glTF through its bundled add-on;
+COLLADA is handled by Kinema's own importer because Blender 5.0 removed the
+native one.
 
 Every importer here is asked to leave the mesh in *file* coordinates. The URDF
 already says where the geometry belongs via the link frame, the ``<visual>``
 origin and the ``<mesh scale>`` attribute, so any extra "helpful" axis
 conversion by an importer has to be switched off or it fights the URDF.
+
+glTF is the exception: it is Y-up by definition, so a ``.glb`` made from a
+Z-up mesh, as Blender's exporter makes it, holds the mesh turned, and the
+importer's conversion is what turns it back. Left on, the mesh lands where
+the same mesh as ``.stl`` does.
 """
 
 from __future__ import annotations
@@ -15,11 +21,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import bpy
+from mathutils import Matrix
 
 from . import dae
 
 #: Extensions we can load, lowercase, including the dot.
-SUPPORTED_SUFFIXES = frozenset({".dae", ".stl", ".obj", ".ply"})
+SUPPORTED_SUFFIXES = frozenset({".dae", ".stl", ".obj", ".ply", ".glb", ".gltf"})
 
 
 class MeshLoadError(RuntimeError):
@@ -45,6 +52,53 @@ def _import_via_operator(operator, filepath: Path, collection, **kwargs):
     if "CANCELLED" in result:
         raise MeshLoadError(f"{filepath.name}: importer cancelled")
     return _new_objects_from(before, collection)
+
+
+def _world(obj) -> Matrix:
+    """``obj``'s placement in the file, through its parents, without the depsgraph.
+
+    Read from each object's own transform: the objects just imported are in a
+    collection that need not be in the view layer, where ``matrix_world``
+    would never be worked out.
+    """
+    local = obj.matrix_parent_inverse @ obj.matrix_basis if obj.parent else obj.matrix_basis
+    return _world(obj.parent) @ local if obj.parent else local.copy()
+
+
+def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
+    """A glTF file's meshes, each placed as its nodes place it, and nothing else.
+
+    The importer builds the file's node tree: empties, and meshes under them.
+    Each mesh keeps its own placement through the tree, unparented, as the
+    COLLADA path leaves its objects; the caller bakes it with the URDF's.
+    Empties, cameras, lights and armatures go. A mesh the file uses twice is
+    one datablock in Blender, so each object after the first gets a copy:
+    baking moves the vertices, and the copies would move together. The file's
+    normals and materials are kept as the importer reads them.
+    """
+    if not hasattr(bpy.ops.import_scene, "gltf"):
+        raise MeshLoadError(f"{path.name}: Blender's glTF importer isn't enabled")
+    collections = set(bpy.data.collections)
+    created = _import_via_operator(
+        bpy.ops.import_scene.gltf, path, collection,
+        import_shading="NORMALS", merge_vertices=False, import_scene_as_collection=False,
+    )
+    meshes = [obj for obj in created if obj.type == "MESH"]
+    placed = {obj: _world(obj) for obj in meshes}
+    shared = set()
+    for obj in meshes:
+        obj.parent = None
+        obj.matrix_world = placed[obj]
+        if obj.data in shared:
+            obj.data = obj.data.copy()
+        shared.add(obj.data)
+    for obj in created:
+        if obj.type != "MESH":
+            bpy.data.objects.remove(obj)
+    for made in set(bpy.data.collections) - collections:
+        if not made.objects and not made.children:
+            bpy.data.collections.remove(made)
+    return meshes
 
 
 def load_mesh(
@@ -82,6 +136,8 @@ def load_mesh(
             bpy.ops.wm.stl_import, path, collection,
             global_scale=1.0, forward_axis="Y", up_axis="Z",
         )
+    elif suffix in (".glb", ".gltf"):
+        objects = _import_gltf(path, collection)
     elif suffix == ".obj":
         objects = _import_via_operator(
             bpy.ops.wm.obj_import, path, collection,
