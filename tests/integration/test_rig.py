@@ -642,6 +642,37 @@ class TestGltfMeshes:
         for kind in kinds:
             assert set(getattr(bpy.data, kind)) == before[kind], kind
 
+    @pytest.mark.parametrize("fault", ["truncated", "fails after making things"])
+    def test_a_failing_import_is_one_refused_visual_and_leaves_nothing(
+        self, addon, tmp_path, clean_scene, monkeypatch, fault
+    ):
+        """Whatever the importer raises, and wherever it stops: a MeshLoadError, and
+        nothing it made left behind."""
+        import bpy
+
+        meshes = importlib.import_module(f"{addon.__name__}.io.meshes")
+        _write_both(tmp_path, "plain")
+        path = tmp_path / "plain.glb"
+        if fault == "truncated":
+            whole = path.read_bytes()
+            path.write_bytes(whole[: len(whole) // 2])
+        else:
+            importing = meshes._import_via_operator
+
+            def then_fails(*args, **kwargs):
+                made = importing(*args, **kwargs)
+                assert made, "precondition: the import made something before failing"
+                raise KeyError("a buffer the file doesn't have")
+
+            monkeypatch.setattr(meshes, "_import_via_operator", then_fails)
+        target = bpy.data.collections.new("Visuals")
+        kinds = ("objects", "collections", "meshes", "materials", "actions", "images")
+        before = {kind: set(getattr(bpy.data, kind)) for kind in kinds}
+        with pytest.raises(meshes.MeshLoadError, match="plain.glb"):
+            meshes.load_mesh(path, collection=target, name="link")
+        for kind in kinds:
+            assert set(getattr(bpy.data, kind)) == before[kind], kind
+
     def test_the_scene_s_unit_scale_changes_nothing(
         self, kin, builder, addon, tmp_path, clean_scene
     ):

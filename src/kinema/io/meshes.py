@@ -87,6 +87,10 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
     The importer scales by the scene's unit scale, which the URDF already
     accounts for, so it imports at 1.
 
+    An import that fails part-way has what it made removed, and whatever the
+    importer raised becomes a :class:`MeshLoadError`, so one bad file fails
+    one visual.
+
     A link's mesh rides its link rigidly, so two kinds of file are refused:
     - an animated one, before it is read: the importer puts the file's first
       animation on what it moves, and by the time the import returns that has
@@ -100,7 +104,7 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
         raise MeshLoadError(
             f"{path.name}: an animated glTF file; a link's mesh moves only with its link"
         )
-    collections = set(bpy.data.collections)
+    objects, collections = set(bpy.data.objects), set(bpy.data.collections)
     before = {kind: set(getattr(bpy.data, kind)) for kind in _GLTF_DATA}
     units = bpy.context.scene.unit_settings
     scale_length = units.scale_length
@@ -110,6 +114,12 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
             bpy.ops.import_scene.gltf, path, collection,
             import_shading="NORMALS", merge_vertices=False, import_scene_as_collection=False,
         )
+    except Exception as exc:  # noqa: BLE001 - whatever the add-on raises, one visual fails
+        # Failed part-way, it leaves what it had made: take that out again.
+        _remove(set(bpy.data.objects) - objects, collections, before)
+        if isinstance(exc, MeshLoadError):
+            raise
+        raise MeshLoadError(f"{path.name}: {exc}") from exc
     finally:
         units.scale_length = scale_length
     skinned = any(
