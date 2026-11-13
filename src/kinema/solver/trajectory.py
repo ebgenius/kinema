@@ -434,7 +434,7 @@ def conceded(
         gain = np.maximum(CONCEDE_LEAST, CONCEDE_GAIN * lacking)
         between = np.maximum(aim[inner] - taught[inner], 0.0).max(axis=0)
         gained = reached[inner].min(axis=0) - taught[inner].min(axis=0)
-        give = short & (np.abs(now - was) < gain) & ~(gained > CONCEDE_BETWEEN * between)
+        give = short & (np.abs(now - was) < gain) & ~(gained >= CONCEDE_BETWEEN * between)
         if not give.any():
             continue
         found = True

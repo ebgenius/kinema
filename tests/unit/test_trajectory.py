@@ -514,6 +514,19 @@ class TestConceding:
         reached = self._clearances(0.005, 0.045, 0.04, 0.045, 0.005, 0.1, 0.1, 0.1, 0.1)
         assert trajectory.conceded(collision, taught, reached, self.STRETCHES) is None
 
+    def test_a_quarter_of_the_way_between_the_pins_is_enough_to_be_left(self):
+        """Asked 62.5 mm, taught 0 throughout, solved out to exactly a quarter of that."""
+        collision = replace(
+            self._collision(), keep_clear=0.1, allow=np.full((9, 1, 1), 0.0625)
+        )
+        quarter = trajectory.CONCEDE_BETWEEN * 0.0625
+        taught = self._clearances(*[0.0] * 9)
+        reached = self._clearances(0.0, 0.03, quarter, 0.03, 0.0, 0.0, 0.0, 0.0, 0.0)
+        eased = trajectory.conceded(collision, taught, reached, [(0, 4)])
+        assert eased is None
+        just_under = self._clearances(0.0, 0.03, quarter - 1e-6, 0.03, 0.0, 0.0, 0.0, 0.0, 0.0)
+        assert trajectory.conceded(collision, taught, just_under, [(0, 4)]) is not None
+
     def test_short_only_on_its_pinned_frames_a_move_concedes_nothing(self):
         """5 mm at the pin between the moves, 100 mm clear on every frame either side."""
         collision = self._collision()
