@@ -50,6 +50,15 @@ nothing else is:
   Where a capsule can't get clear at all, the hurry is all there: on arm6, a
   lug on joint 1 swept through a post winds back 0.28 rad and overshoots 0.07
   (issue #98). A start or an end pinned inside an obstacle does the same.
+  So where a solve leaves a pair short on a move, and no further out than
+  taught, the job is solved once more with that pair asked on that move for
+  no more than it had (:func:`conceded`, from ``ops/optimize.py``). The lug
+  then keeps its taught path, at 0.43 of the speed limit, and on arm6 a
+  waypoint taught 8.7 mm from a post, asked for 50 mm, is left at the pace it
+  has with obstacles off, where solved once the arm left it 3.5 times as
+  fast. Where the solve did bring the pair further out elsewhere on the move,
+  nothing is conceded: the KR120 job above, its last frame 57 mm from the
+  cube, still winds back 0.09 rad asked for 100 mm.
   Weighting the depth by how far a capsule moves that frame stopped the
   wind-up, but left the arm 350-410 mm in, or still crossing at twice the
   taught speed (issue #93).
@@ -239,6 +248,21 @@ SATURATION = 0.02
 #: at :data:`SATURATION`: see :func:`saturations` and the module's docstring.
 #: Kept by cost, it leaves 3 of the 64 arm6 jobs inside.
 SATURATION_SCHEDULE = (0.2, 0.05)
+#: How far short of what it was asked a pair has to end to count as short, in
+#: metres: half a millimetre is the solve's own noise, as the report has it.
+SHORT = 0.0005
+#: A pair still short is conceded where the solve moved its closest approach
+#: by less than this fraction of what the taught job lacked, or than
+#: :data:`CONCEDE_LEAST` metres: it was never going to get clear. Conceded, it
+#: is asked for what it had less :data:`CONCEDE_SLACK`. See :func:`conceded`.
+CONCEDE_GAIN = 0.1
+CONCEDE_LEAST = 0.002
+CONCEDE_SLACK = 0.001
+#: Nor is a pair conceded where the solve took its closest frame between the
+#: pinned ones this fraction or more of the way to what was asked: a pinned
+#: frame can be the move's closest and hide that. Where a pair was conceded on
+#: arm6 and the KR120 job, the solve had gained 0 to 11% of the way there.
+CONCEDE_BETWEEN = 0.25
 #: Capsules and obstacles are padded to these counts, so a kernel serves a
 #: scene until it outgrows one.
 CAPSULE_BUCKETS = (8, 16, 32, 64, 128, 256)
@@ -342,11 +366,81 @@ class Collision:
     weight: np.ndarray
     #: Metres the robot is to keep from every obstacle.
     keep_clear: float
+    #: (frames, C, O) the most each capsule is asked to keep from each obstacle
+    #: on each frame, in metres, where that is less than ``keep_clear``: see
+    #: :func:`conceded`. None asks ``keep_clear`` of every pair on every frame.
+    allow: np.ndarray | None = None
 
     @property
     def shape(self) -> tuple[int, int]:
         """Capsules and obstacles, padded: what a kernel is compiled for."""
         return padded(len(self.link), CAPSULE_BUCKETS), padded(len(self.kind), OBSTACLE_BUCKETS)
+
+
+def asked(collision: Collision) -> np.ndarray:
+    """What each capsule is asked to keep from each obstacle on each frame: (frames, C, O).
+
+    ``keep_clear`` and :data:`CLEARANCE_MARGIN`, or what :attr:`Collision.allow`
+    allows where that is less.
+    """
+    shape = (len(collision.frame), len(collision.link), len(collision.kind))
+    full = np.full(shape, collision.keep_clear + CLEARANCE_MARGIN)
+    if collision.allow is None:
+        return full
+    return np.minimum(full, np.asarray(collision.allow, dtype=float))
+
+
+def conceded(
+    collision: Collision, taught: np.ndarray, reached: np.ndarray, stretches
+) -> Collision | None:
+    """``collision`` with the pairs a solve couldn't bring clear no longer asked to be.
+
+    ``taught`` and ``reached`` are (frames, C, O): each capsule's clearance from
+    each obstacle in the job as it plays, and in the job a solve ended with.
+    ``stretches`` are the ``(first row, last row)`` of each move, between the
+    frames the robot is pinned on. Returns None where nothing is conceded.
+
+    A capsule that can't get clear of an obstacle still costs on every frame
+    it is short, and fewer such frames is all a solve can do about it: it
+    hurries. That happens where the capsule has to pass through, as a lug that
+    only one joint moves does, and next to a waypoint taught closer than Keep
+    Clear By, where the frames beside it can't be as far either. Such a pair
+    shows in what the solve ended with, on a move:
+    - still short on a frame between its pinned ones, whose cost no solve can
+      change;
+    - its closest approach on the move, pinned frames and all, no further out
+      than taught, within :data:`CONCEDE_GAIN` of what that lacked or
+      :data:`CONCEDE_LEAST`;
+    - and its closest frame between the pinned ones not taken
+      :data:`CONCEDE_BETWEEN` of the way to what was asked, since a waypoint
+      taught close can be the move's closest whatever the solve did between.
+
+    On that move, the pair is then asked for no more than the closer of the
+    two, less :data:`CONCEDE_SLACK`, on every frame, so no frame of it costs
+    and hurrying gains nothing. That capsule may then come as close to that
+    obstacle anywhere on the move. A pair the solve did bring closer to clear,
+    and every pair on the other moves, is asked for what it was.
+    """
+    aim = asked(collision)
+    allow = aim.copy()
+    found = False
+    for first, last in stretches:
+        if last - first < 2:
+            continue  # nothing between the pins for a solve to move
+        rows, inner = slice(first, last + 1), slice(first + 1, last)
+        short = (reached[inner] < aim[inner] - SHORT).any(axis=0)
+        was, now = taught[rows].min(axis=0), reached[rows].min(axis=0)
+        lacking = np.maximum(aim[rows] - taught[rows], 0.0).max(axis=0)
+        gain = np.maximum(CONCEDE_LEAST, CONCEDE_GAIN * lacking)
+        between = np.maximum(aim[inner] - taught[inner], 0.0).max(axis=0)
+        gained = reached[inner].min(axis=0) - taught[inner].min(axis=0)
+        give = short & (np.abs(now - was) < gain) & ~(gained >= CONCEDE_BETWEEN * between)
+        if not give.any():
+            continue
+        found = True
+        floor = np.minimum(was, now) - CONCEDE_SLACK
+        allow[rows] = np.where(give[None], np.minimum(allow[rows], floor[None]), allow[rows])
+    return replace(collision, allow=allow) if found else None
 
 
 def padded(count: int, buckets: tuple) -> int:
@@ -394,6 +488,7 @@ def at_rest(problem: Problem) -> tuple[Problem, slice]:
             frame=held(collision.frame),
             size=held(collision.size),
             weight=zero(collision.weight),
+            allow=None if collision.allow is None else held(collision.allow),
         )
     padded_problem = replace(
         problem,
@@ -425,6 +520,11 @@ class Pending:
     why: tuple | None = None
     #: Each start's saturation on each pass, (starts, passes): :func:`saturations`.
     saturation: np.ndarray | None = None
+    #: Each pair's clearance on each padded frame, as taught and as solved, and
+    #: how many capsules and obstacles are real: see :meth:`clearances`. None
+    #: without obstacles.
+    clear: tuple | None = None
+    count: tuple[int, int] | None = None
 
     def ready(self) -> bool:
         is_ready = getattr(self.q, "is_ready", None)
@@ -438,6 +538,18 @@ class Pending:
         """
         q = np.asarray(self.q, dtype=np.float64)[self.own]
         return q, int(np.asarray(self.iterations))
+
+    def clearances(self, taught: bool = False) -> np.ndarray | None:
+        """How far each capsule is from each obstacle on the job's own frames: (frames, C, O).
+
+        As solved, or as the job played before the solve if ``taught``, measured
+        as the solve measures it. None without obstacles. Waits if needed.
+        """
+        if self.clear is None:
+            return None
+        capsules, obstacles = self.count
+        which = self.clear[0] if taught else self.clear[1]
+        return np.asarray(which, dtype=np.float64)[self.own, :capsules, :obstacles]
 
     def kept(self) -> int:
         """Which start's result the solve kept: the one that ended cheaper. Waits if needed."""
@@ -643,8 +755,22 @@ class Optimizer:
             # Each start in turn, from the job as it plays; the cheaper kept.
             found, reached, why = jax.lax.map(run, (saturation, most))
             best = jnp.argmin(reached)
+            kept = found[best]
+            clear = None
+            if collision is not None:
+                # Each pair's clearance on each frame, as taught and as solved:
+                # what :func:`conceded` reads.
+                apart = {key: collision[key] for key in ("link", "a", "b", "radius", "kind")}
+                where = {key: collision[key] for key in ("placement", "rotation", "centre", "size")}
+
+                def measure(q):
+                    return jax.vmap(lambda at, own: pair_clearance(robot, at, apart, own))(
+                        q, where
+                    )
+
+                clear = (measure(q_init), measure(kept))
             # The kept start's iterations: the other's went into nothing kept.
-            return found[best], jnp.sum(why[4][best]), (best, reached, *why)
+            return kept, jnp.sum(why[4][best]), (best, reached, *why), clear
 
         self._fn = (solve, jnp, jaxlie)
         return self._fn
@@ -665,7 +791,7 @@ class Optimizer:
             jaxlie.SE3.from_matrix(jnp.asarray(padded.targets, dtype=jnp.float32)).wxyz_xyz
         )
         levels, most = saturations(padded.collision is not None)
-        q, iterations, why = solve(
+        q, iterations, why, clear = solve(
             robot,
             jnp.asarray(padded.q_init, dtype=jnp.float32),
             jnp.asarray(targets, dtype=jnp.float32),
@@ -682,7 +808,13 @@ class Optimizer:
             jnp.asarray(most, dtype=jnp.int32),
         )
         self.compiled = True
-        return Pending(q=q, iterations=iterations, own=own, why=why, saturation=levels)
+        count = None
+        if problem.collision is not None:
+            count = (len(problem.collision.link), len(problem.collision.kind))
+        return Pending(
+            q=q, iterations=iterations, own=own, why=why, saturation=levels,
+            clear=clear, count=count,
+        )
 
 
 def hinge(jnp, over, band: float):
@@ -725,8 +857,8 @@ def acceleration_over(vals, before, now, after, dt, limit, weight):
 
 
 #: Collision arrays every frame shares, and those with a value per frame.
-_SHARED = ("link", "a", "b", "radius", "capsule_mask", "kind", "obstacle_mask", "aim")
-_PER_FRAME = ("placement", "rotation", "centre", "size", "weight")
+_SHARED = ("link", "a", "b", "radius", "capsule_mask", "kind", "obstacle_mask")
+_PER_FRAME = ("placement", "rotation", "centre", "size", "weight", "aim")
 
 
 def _collision_arrays(jnp, collision: Collision | None) -> dict | None:
@@ -749,7 +881,7 @@ def _collision_arrays(jnp, collision: Collision | None) -> dict | None:
         "capsule_mask": pad(np.ones(count), capsules),
         "placement": np.asarray(collision.placement, dtype=float),
         "obstacle_mask": pad(np.ones(kinds), obstacles),
-        "aim": np.asarray(collision.keep_clear + CLEARANCE_MARGIN),
+        "aim": pad(pad(asked(collision), capsules, axis=1), obstacles, axis=2),
         "rotation": pad(frame[..., :3, :3], obstacles, axis=1),
         "centre": pad(frame[..., :3, 3], obstacles, axis=1),
         "size": pad(np.asarray(collision.size, dtype=float), obstacles, axis=1),
@@ -825,16 +957,13 @@ def segment_clearance(jax, jnp, a, b, kind, rotation, centre, size):
     return at(jnp.where(f_left < f_right, left, right), a, b)
 
 
-def clearance_short(vals, robot, var, shared, own):
-    """How much closer than it should be each capsule is to each obstacle, weighted.
-
-    Zero where it keeps ``aim`` away: the robot is free to go anywhere else.
-    """
+def pair_clearance(robot, q, shared, own):
+    """How far each capsule is from each obstacle on one frame, at ``q``: (C, O), negative in."""
     import jax
     import jaxlie
     from jax import numpy as jnp
 
-    poses = jaxlie.SE3(robot.forward_kinematics(vals[var])[shared["link"]])
+    poses = jaxlie.SE3(robot.forward_kinematics(q)[shared["link"]])
     placement = own["placement"]
 
     def world(points):
@@ -844,7 +973,19 @@ def clearance_short(vals, robot, var, shared, own):
         jax, jnp, world(shared["a"]), world(shared["b"]), shared["kind"],
         own["rotation"], own["centre"], own["size"],
     )
-    short = hinge(jnp, shared["aim"] - (distance - shared["radius"][:, None]), CLEARANCE_BAND)
+    return distance - shared["radius"][:, None]
+
+
+def clearance_short(vals, robot, var, shared, own):
+    """How much closer than it should be each capsule is to each obstacle, weighted.
+
+    Zero where it keeps its ``aim`` away, which is per frame and per pair
+    (:func:`asked`): the robot is free to go anywhere else.
+    """
+    from jax import numpy as jnp
+
+    clearance = pair_clearance(robot, vals[var], shared, own)
+    short = hinge(jnp, own["aim"] - clearance, CLEARANCE_BAND)
     # The same as the depth, near the surface; its logarithm, deep in.
     level = shared["saturation"]
     short = level * jnp.log1p(short / level)

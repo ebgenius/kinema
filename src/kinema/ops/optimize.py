@@ -107,6 +107,14 @@ class Job:
     writing: bool = False
     compile_seconds: float = 0.0
     solve_started: float = 0.0
+    #: The rows of each move, ``(first, last)``, between the frames the robot
+    #: is pinned on: what a pair is conceded over (``trajectory.conceded``).
+    stretches: tuple = ()
+    #: Solves dispatched, and the iterations of those finished before the last.
+    solves: int = 0
+    iterations: int = 0
+    #: Whether the last solve asked less of some pair than Keep Clear By.
+    conceded: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -178,6 +186,7 @@ def prepare(context, rig) -> Job:
         optimizer=optimizer,
         free=free,
         flagged_before=flagged_before,
+        stretches=tuple((span.start_frame - first, span.end_frame - first) for span in plan),
     )
 
 
@@ -484,7 +493,34 @@ def dispatch(job: Job) -> None:
         raise Refused(f"Optimize Motion failed: {exc}") from exc
     if not compiled:
         job.compile_seconds = time.perf_counter() - started
-    job.solve_started = time.perf_counter()
+    if not job.solves:
+        job.solve_started = time.perf_counter()
+    job.solves += 1
+
+
+def solve_again(job: Job) -> bool:
+    """Solve once more where the first solve left a pair that can't get clear.
+
+    Reads the first solve's result, so it waits for one that isn't ready.
+    Returns whether another was dispatched: at most one is
+    (``trajectory.conceded``).
+    """
+    collision = job.problem.collision
+    if collision is None or job.solves != 1:
+        return False
+    eased_off = trajectory.conceded(
+        collision,
+        job.pending.clearances(taught=True),
+        job.pending.clearances(),
+        job.stretches,
+    )
+    if eased_off is None:
+        return False
+    job.iterations += job.pending.result()[1]
+    job.problem = replace(job.problem, collision=eased_off)
+    job.conceded = True
+    dispatch(job)
+    return True
 
 
 def finish(context, job: Job) -> tuple[bool, str, str]:
@@ -505,6 +541,7 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
             "The job or the robot changed while it was being optimized, so nothing was written",
         )
     q, iterations = job.pending.result()
+    iterations += job.iterations
     seconds = time.perf_counter() - job.solve_started
     frames = range(job.first, job.last + 1)
     job.writing = True
@@ -523,6 +560,8 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
     detail = f"{iterations} iterations, {seconds:.1f} s"
     if job.compile_seconds:
         detail += f", after compiling for {job.compile_seconds:.0f} s"
+    if job.conceded:
+        detail += "; solved again, asking less of what couldn't get clear"
     message += f" ({detail})"
     if flagged:
         message += f"; {flagged} still over a limit, in the Motion Check"
@@ -621,6 +660,7 @@ class KINEMA_OT_optimize_motion(Operator):
         try:
             job = prepare(context, rig)
             dispatch(job)
+            solve_again(job)
         except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
             self.report({"ERROR"}, _failure(exc))
             return {"CANCELLED"}
@@ -668,6 +708,14 @@ class KINEMA_OT_optimize_motion(Operator):
             return {"RUNNING_MODAL"}
         if not job.pending.ready():
             return {"PASS_THROUGH"}
+        try:
+            if solve_again(job):
+                _status(context, "Optimizing again, past what can't get clear... Esc to cancel")
+                return {"RUNNING_MODAL"}
+        except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
+            self._end(context)
+            self.report({"ERROR"}, _failure(exc))
+            return {"CANCELLED"}
         self._end(context)
         return self._finish(context, job)
 

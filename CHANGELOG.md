@@ -106,6 +106,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A hit it can't avoid changes the move's timing instead: the arm winds back, crosses at
     full speed and passes its waypoint before coming back. A capsule much bigger than its
     link does it; Show Collision Shapes shows one, and Capsules per link gives it more.
+  - Where a solve leaves a capsule short of clear on a move, no further out than taught, the
+    job is solved once more asking it on that move for no more than it came closest, and the
+    move isn't hurried: a lug swept through a post no longer winds its joint back 0.28 rad or
+    crosses over its speed limit, and a waypoint taught 8.7 mm from a post, with 50 mm asked,
+    is left at the pace it has with Avoid Obstacles off.
 
 ### Changed
 
