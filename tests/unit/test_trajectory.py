@@ -118,10 +118,11 @@ class TestPasses:
     def test_each_pass_is_read_from_the_kernel_s_account(self):
         """Only the passes taken, each starting from the best cost before it."""
         why = (
-            np.float32(10.0), np.int32(3),
-            np.array([2.0, 0.5, 0.5, np.nan, np.nan]),
-            np.array([[0, 0, 1], [0, 0, 0], [1, 0, 0], [0, 0, 0], [0, 0, 0]], dtype=bool),
-            np.array([40, 17, 8, 0, 0]),
+            np.int32(0), np.array([0.5]),
+            np.array([10.0]), np.array([3]),
+            np.array([[2.0, 0.5, 0.5, np.nan, np.nan]]),
+            np.array([[[0, 0, 1], [0, 0, 0], [1, 0, 0], [0, 0, 0], [0, 0, 0]]], dtype=bool),
+            np.array([[40, 17, 8, 0, 0]]),
         )
         pending = trajectory.Pending(q=np.zeros((4, 2)), iterations=65, own=slice(1, 3), why=why)
         passes = pending.passes()
@@ -130,6 +131,38 @@ class TestPasses:
         assert [(p.settled, p.stopped_on_step) for p in passes] == [
             (False, True), (False, False), (True, False),
         ]
+
+    def test_each_start_s_passes_are_read_and_the_kept_one_is_the_default(self):
+        """Two starts, the second with a pass at a larger saturation first: it is kept."""
+        why = (
+            np.int32(1), np.array([0.9, 0.4]),
+            np.array([10.0, 10.0]), np.array([1, 2]),
+            np.array([[0.9, np.nan], [3.0, 0.4]]),
+            np.zeros((2, 2, 3), dtype=bool),
+            np.array([[30, 0], [20, 15]]),
+        )
+        pending = trajectory.Pending(
+            q=np.zeros((4, 2)), iterations=65, own=slice(1, 3), why=why,
+            saturation=np.array([[0.02, 0.02], [0.2, 0.02]]),
+        )
+        assert pending.kept() == 1 and pending.ended() == [0.9, 0.4]
+        kept = pending.passes()
+        assert [(p.before, p.after, p.saturation) for p in kept] == [
+            (10.0, 3.0, 0.2), (3.0, 0.4, 0.02),
+        ]
+        assert [(p.before, p.after) for p in pending.passes(start=0)] == [(10.0, 0.9)]
+
+    def test_with_obstacles_there_are_two_starts_and_without_one(self):
+        rows, most = trajectory.saturations(True)
+        schedule, restarts = trajectory.SATURATION_SCHEDULE, trajectory.RESTARTS
+        assert rows.shape == (2, len(schedule) + restarts + 1)
+        np.testing.assert_allclose(rows[0], trajectory.SATURATION)
+        np.testing.assert_allclose(rows[1, : len(schedule)], schedule)
+        np.testing.assert_allclose(rows[1, len(schedule) :], trajectory.SATURATION)
+        # Each as many restarts past its schedule as a solve had before.
+        assert most.tolist() == [restarts + 1, len(schedule) + restarts + 1]
+        rows, most = trajectory.saturations(False)
+        assert rows.shape == (1, restarts + 1) and most.tolist() == [restarts + 1]
 
     def test_a_pending_solve_without_an_account_has_no_passes(self):
         assert trajectory.Pending(q=np.zeros((2, 1)), iterations=0, own=slice(0, 2)).passes() == []
@@ -400,6 +433,7 @@ class TestKeepingClear:
             "kind": kind,
             "obstacle_mask": jnp.asarray([1.0]),
             "aim": jnp.asarray(0.01),
+            "saturation": jnp.asarray(trajectory.SATURATION),
         }
         own = {
             "placement": jnp.eye(4),

@@ -98,6 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     corners are rounded, so a step across one isn't thrown away. On a KR120 job past a 1.2 m cube,
     Keep Clear By 10, 20, 30 and 50 mm came out 12, 23, 31 and 52 mm clear, where 10 and 30
     had ended 62 and 34 mm in. With obstacles, solves take about twice as long.
+  - With obstacles, the job is solved two ways and the cheaper result kept: as before, and
+    with the pull from deep inside an obstacle stronger for the first passes. On 64 arm6 jobs
+    past a crate, 3 end inside where 16 did, and none that came out clear before ends inside.
+    A frame more, or a waypoint 1 mm over, no longer sends those jobs 90-110 mm in. Solves
+    with obstacles take longer again: 7-10 s on the KR120 job, where they took 4-8.
   - A hit it can't avoid changes the move's timing instead: the arm winds back, crosses at
     full speed and passes its waypoint before coming back. A capsule much bigger than its
     link does it; Show Collision Shapes shows one, and Capsules per link gives it more.
