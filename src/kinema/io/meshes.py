@@ -65,35 +65,60 @@ def _world(obj) -> Matrix:
     return _world(obj.parent) @ local if obj.parent else local.copy()
 
 
+#: The kinds of datablock a glTF import makes, in the order they let go of each other.
+_GLTF_DATA = (
+    "meshes", "armatures", "cameras", "lights", "actions", "materials", "node_groups",
+    "images", "textures",
+)
+
+
 def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
     """A glTF file's meshes, each placed as its nodes place it, and nothing else.
 
     The importer builds the file's node tree: empties, and meshes under them.
     Each mesh keeps its own placement through the tree, unparented, as the
     COLLADA path leaves its objects; the caller bakes it with the URDF's.
-    Empties, cameras, lights and armatures go. A mesh the file uses twice is
-    one datablock in Blender, so each object after the first gets a copy:
-    baking moves the vertices, and the copies would move together. The file's
-    normals and materials are kept as the importer reads them.
+    Empties, cameras, lights and armatures go, with their data. A mesh the
+    file uses twice is one datablock in Blender, so each object after the
+    first gets a copy: baking moves the vertices, and the copies would move
+    together. The file's normals and materials are kept as the importer reads
+    them.
 
-    A skinned file is refused, with everything it made removed: its meshes
-    come parented to an armature and deformed by it, and a link's mesh rides
-    its link rigidly.
+    The importer scales by the scene's unit scale, which the URDF already
+    accounts for, so it imports at 1.
+
+    A link's mesh rides its link rigidly, so two kinds of file are refused:
+    - an animated one, before it is read: the importer puts the file's first
+      animation on what it moves, and by the time the import returns that has
+      moved them off the placement the file gives, which is lost;
+    - a skinned one, with everything its import made removed: its meshes come
+      parented to an armature and deformed by it.
     """
     if not hasattr(bpy.ops.import_scene, "gltf"):
         raise MeshLoadError(f"{path.name}: Blender's glTF importer isn't enabled")
+    if _animated(path):
+        raise MeshLoadError(
+            f"{path.name}: an animated glTF file; a link's mesh moves only with its link"
+        )
     collections = set(bpy.data.collections)
-    created = _import_via_operator(
-        bpy.ops.import_scene.gltf, path, collection,
-        import_shading="NORMALS", merge_vertices=False, import_scene_as_collection=False,
-    )
+    before = {kind: set(getattr(bpy.data, kind)) for kind in _GLTF_DATA}
+    units = bpy.context.scene.unit_settings
+    scale_length = units.scale_length
+    units.scale_length = 1.0
+    try:
+        created = _import_via_operator(
+            bpy.ops.import_scene.gltf, path, collection,
+            import_shading="NORMALS", merge_vertices=False, import_scene_as_collection=False,
+        )
+    finally:
+        units.scale_length = scale_length
     skinned = any(
         obj.type == "ARMATURE"
         or any(modifier.type == "ARMATURE" for modifier in getattr(obj, "modifiers", ()))
         for obj in created
     )
     if skinned:
-        _remove(created, collections)
+        _remove(created, collections, before)
         raise MeshLoadError(
             f"{path.name}: a skinned glTF mesh, deformed by an armature; a link's mesh "
             "has to be rigid"
@@ -107,17 +132,52 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
         if obj.data in shared:
             obj.data = obj.data.copy()
         shared.add(obj.data)
-    _remove([obj for obj in created if obj.type != "MESH"], collections)
+    _remove([obj for obj in created if obj.type != "MESH"], collections, before)
     return meshes
 
 
-def _remove(objects, collections: set) -> None:
-    """Remove ``objects``, and any collection made since ``collections`` left empty."""
+def _animated(path: Path) -> bool:
+    """Whether a ``.glb`` or ``.gltf`` file has animations, from its JSON alone.
+
+    False where the JSON can't be read: the importer then says what's wrong.
+    """
+    import json
+    import struct
+
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(12)
+            if head[:4] == b"glTF":
+                length, kind = struct.unpack("<II", handle.read(8))
+                if kind != 0x4E4F534A:  # "JSON": the first chunk of every GLB
+                    return False
+                document = json.loads(handle.read(length))
+            else:
+                document = json.loads(head + handle.read())
+    except (OSError, ValueError, struct.error):
+        return False
+    return bool(document.get("animations")) if isinstance(document, dict) else False
+
+
+def _remove(objects, collections: set, before: dict) -> None:
+    """Remove ``objects``, then whatever the import made that nothing uses now.
+
+    Collections made since ``collections`` and left empty, and datablocks of
+    :data:`_GLTF_DATA` made since ``before`` with no users left. The importer
+    may keep its images and actions with a fake user; those it made are let go.
+    """
     for obj in objects:
         bpy.data.objects.remove(obj)
     for made in set(bpy.data.collections) - collections:
         if not made.objects and not made.children:
             bpy.data.collections.remove(made)
+    for kind in _GLTF_DATA:
+        store = getattr(bpy.data, kind)
+        for block in set(store) - before[kind]:
+            if kind in ("images", "actions"):
+                block.use_fake_user = False
+            if block.users == 0:
+                store.remove(block)
 
 
 def load_mesh(

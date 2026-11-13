@@ -451,6 +451,9 @@ def _painted(name):
         mesh.materials.append(bpy.data.materials.get(material) or bpy.data.materials.new(material))
     for polygon in mesh.polygons:
         polygon.material_index = int(polygon.center.z > 0.01)
+        # Smooth round the side, flat on the ends: corners at an edge between
+        # the two keep different normals, which flat shading or welding would lose.
+        polygon.use_smooth = len(polygon.vertices) == 4
     return mesh
 
 
@@ -459,7 +462,10 @@ def _write_both(folder, variant):
 
     ``plain``: one mesh at the origin. ``nested``: one under an empty, both
     turned and moved, so the glTF has a node tree. ``twice``: one mesh used by
-    two objects, which glTF writes once and places twice.
+    two objects, which glTF writes once and places twice. ``moving``: one keyed
+    to slide 0.3 m over frames 1-10, both written on frame 1.
+
+    Returns each corner's position and normal as written, for ``plain``.
     """
     import bpy
 
@@ -478,9 +484,19 @@ def _write_both(folder, variant):
         second = bpy.data.objects.new(f"{variant}_second", mesh)
         second.location, second.rotation_euler = (0.2, 0.0, 0.1), (0.0, 0.6, 0.0)
         made.append(second)
+    elif variant == "moving":
+        first.location = (0.0, 0.0, 0.0)
+        first.keyframe_insert("location", frame=1)
+        first.location = (0.3, 0.0, 0.0)
+        first.keyframe_insert("location", frame=10)
     for obj in made:
         scene.collection.objects.link(obj)
+    scene.frame_set(1)
     bpy.context.view_layer.update()
+    written = [
+        (tuple(mesh.vertices[mesh.loops[i].vertex_index].co), tuple(normal.vector))
+        for i, normal in enumerate(mesh.corner_normals)
+    ]
     for obj in scene.objects:
         obj.select_set(obj in made)
     bpy.ops.wm.stl_export(
@@ -493,28 +509,39 @@ def _write_both(folder, variant):
     for obj in made:
         bpy.data.objects.remove(obj)
     bpy.data.meshes.remove(mesh)
+    return written
 
 
-@pytest.fixture
-def gltf_rig(kin, builder, addon, tmp_path, clean_scene):
-    """A one-link rig with each variant on it twice: as ``.stl`` and as ``.glb``."""
+def _gltf_rig(kin, builder, addon, folder, variants):
+    """A one-link rig with each variant on it twice, as ``.stl`` and as ``.glb``,
+    built on frame 5, and what ``plain`` wrote if it is one of them."""
+    import bpy
+
     yourdfpy = pytest.importorskip("yourdfpy")
     resolve = importlib.import_module(f"{addon.__name__}.io.resolve")
-    variants = ("plain", "nested", "twice")
-    for variant in variants:
-        _write_both(tmp_path, variant)
+    written = {variant: _write_both(folder, variant) for variant in variants}
+    bpy.context.scene.frame_set(5)
     visuals = "".join(
         f'<visual name="{v}_{kind}"><geometry><mesh filename="{v}.{kind}"/></geometry></visual>'
         for v in variants
         for kind in ("stl", "glb")
     )
-    path = tmp_path / "gltf.urdf"
+    path = folder / "gltf.urdf"
     path.write_text(f'<robot name="gltf"><link name="base">{visuals}</link></robot>')
     urdf = yourdfpy.URDF.load(str(path))
     model = kin.model_from_urdf(urdf, resolve.make_mesh_resolver(path))
     result = builder.build_rig(model, builder.RigBuildOptions())
     assert not result.warnings, f"visuals failed to load: {result.warnings}"
+    result.written = written.get("plain")
     return result
+
+
+VARIANTS = ("plain", "nested", "twice")
+
+
+@pytest.fixture
+def gltf_rig(kin, builder, addon, tmp_path, clean_scene):
+    return _gltf_rig(kin, builder, addon, tmp_path, VARIANTS)
 
 
 def _points_of(result, label) -> np.ndarray:
@@ -528,17 +555,8 @@ def _points_of(result, label) -> np.ndarray:
     )
 
 
-def _loops_by_face(mesh):
-    """Each corner with the face it belongs to, in corner order."""
-    owner = [None] * len(mesh.loops)
-    for polygon in mesh.polygons:
-        for index in polygon.loop_indices:
-            owner[index] = polygon.index
-    return [type("Corner", (), {"polygon_index": face})() for face in owner]
-
-
 class TestGltfMeshes:
-    @pytest.mark.parametrize("variant", ["plain", "nested", "twice"])
+    @pytest.mark.parametrize("variant", VARIANTS)
     def test_a_glb_lands_where_the_same_mesh_as_stl_does(self, gltf_rig, variant):
         stl = _points_of(gltf_rig, f"{variant}_stl")
         glb = _points_of(gltf_rig, f"{variant}_glb")
@@ -557,14 +575,20 @@ class TestGltfMeshes:
             pytest.fail("no plain_glb object")
 
     def test_its_normals_arrive_as_written(self, gltf_rig):
-        """The cone was written flat: every corner keeps its face's normal."""
+        """Smooth round the cone's side, flat on its ends: each corner as it was written."""
         obj = next(o for o in gltf_rig.mesh_objects if o.name.startswith("plain_glb"))
         mesh = obj.data
-        corners = np.array([tuple(n.vector) for n in mesh.corner_normals])
-        faces = np.array(
-            [tuple(mesh.polygons[loop.polygon_index].normal) for loop in _loops_by_face(mesh)]
-        )
-        assert np.abs(corners - faces).max() < 1e-4
+        written = gltf_rig.written
+        at = np.array([position for position, _ in written])
+        normals = np.array([normal for _, normal in written])
+        assert np.abs(normals[:, 2]).min() < 0.9, "precondition: some corners lean, not flat"
+        world = obj.matrix_world
+        for loop, normal in zip(mesh.loops, mesh.corner_normals, strict=True):
+            position = np.array(tuple(world @ mesh.vertices[loop.vertex_index].co))
+            here = np.linalg.norm(at - position, axis=1) < 1e-6
+            assert here.any(), position
+            found = np.abs(normals[here] - np.array(tuple(normal.vector))).max(axis=1).min()
+            assert found < 1e-3, (position, tuple(normal.vector))
 
     def test_a_skinned_file_is_refused_and_leaves_nothing(self, addon, tmp_path, clean_scene):
         """A mesh deformed by an armature can't ride a link rigidly: refused, and cleaned up."""
@@ -593,11 +617,48 @@ class TestGltfMeshes:
             bpy.data.objects.remove(obj)
 
         target = bpy.data.collections.new("Visuals")
-        objects, collections = set(bpy.data.objects), set(bpy.data.collections)
+        kinds = ("objects", "collections", "meshes", "armatures", "materials", "actions",
+                 "images", "textures")
+        before = {kind: set(getattr(bpy.data, kind)) for kind in kinds}
         with pytest.raises(meshes.MeshLoadError, match="skinned"):
             meshes.load_mesh(path, collection=target, name="link")
-        assert set(bpy.data.objects) == objects
-        assert set(bpy.data.collections) == collections
+        for kind in kinds:
+            assert set(getattr(bpy.data, kind)) == before[kind], kind
+
+    def test_an_animated_file_is_refused_and_leaves_nothing(
+        self, addon, tmp_path, clean_scene
+    ):
+        """Keyed to slide 0.3 m: a link's mesh can't carry that, and its placement
+        is lost by the time the importer returns, so it isn't read at all."""
+        import bpy
+
+        meshes = importlib.import_module(f"{addon.__name__}.io.meshes")
+        _write_both(tmp_path, "moving")
+        target = bpy.data.collections.new("Visuals")
+        kinds = ("objects", "collections", "meshes", "materials", "actions", "images")
+        before = {kind: set(getattr(bpy.data, kind)) for kind in kinds}
+        with pytest.raises(meshes.MeshLoadError, match="animated"):
+            meshes.load_mesh(tmp_path / "moving.glb", collection=target, name="link")
+        for kind in kinds:
+            assert set(getattr(bpy.data, kind)) == before[kind], kind
+
+    def test_the_scene_s_unit_scale_changes_nothing(
+        self, kin, builder, addon, tmp_path, clean_scene
+    ):
+        """In a scene in millimetres, a GLB still lands where the STL does, and the
+        scene keeps its millimetres."""
+        import bpy
+
+        units = bpy.context.scene.unit_settings
+        units.scale_length = 0.001
+        try:
+            rig = _gltf_rig(kin, builder, addon, tmp_path, ("plain",))
+            stl, glb = _points_of(rig, "plain_stl"), _points_of(rig, "plain_glb")
+            apart = np.linalg.norm(glb[:, None, :] - stl[None, :, :], axis=-1)
+            assert apart.min(axis=1).max() < 1e-6 and apart.min(axis=0).max() < 1e-6
+            assert units.scale_length == pytest.approx(0.001)
+        finally:
+            units.scale_length = 1.0
 
     def test_only_its_meshes_are_kept(self, gltf_rig):
         """No empty from the node tree, and each placed copy with a mesh of its own."""
