@@ -84,10 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Obstacles are the objects in the scene's *Kinema Obstacles* collection, each a box, a
     sphere or a floor. Each scene has its own.
   - **Show Collision Shapes** draws what the check measures, red where it touches.
-  - Where a capsule moves further than its radius from one frame to the next, the check
-    measures between the two as well, so a fast move can't step over a thin obstacle
-    unseen. It reports "between frames 40 and 41". Optimize Motion still keeps clear on
-    whole frames.
+  - Where a capsule moves further than its radius against an obstacle from one frame to the
+    next, either of them moving, the check measures between the two as well, at up to 16
+    points, and reports "between frames 40 and 41". Up to 16 radii a frame nothing passes
+    through unseen; faster, a thin enough obstacle still can. Optimize Motion still keeps
+    clear on whole frames.
 - **Optimize Motion keeps clear of the obstacles.** With capsules fitted, every capsule is
   kept at least **Keep Clear By** (10 mm unless changed) from every obstacle on every frame,
   where the waypoints and lines leave room: the arm goes round. **Avoid Obstacles** turns it

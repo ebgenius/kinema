@@ -330,6 +330,36 @@ class TestBetweenFrames:
         after = before + [10.0, 0.0, 0.0]
         assert check.between_frames(before, after, np.array([0.02])) == check.MOST_BETWEEN
 
+    def test_an_obstacle_moving_past_a_still_capsule_is_measured_in_parts_too(self):
+        """A plate 100 mm along x in a frame, past a capsule of 20 mm that stays put."""
+        ends = np.zeros((1, 2, 3))
+        ends[0, 1, 2] = 0.1
+        plate = [
+            geometry.Obstacle("Plate", geometry.KIND_BOX, _pose((x, 0.0, 0.0)), np.full(3, 0.005))
+            for x in (0.05, -0.05)
+        ]
+        radii = np.array([0.02])
+        assert check.between_frames(ends, ends, radii) == 1
+        assert check.between_frames(ends, ends, radii, (plate[0],), (plate[1],)) == 5
+
+    def test_an_obstacle_turning_about_a_capsule_moves_against_it(self):
+        """Turned a quarter about Z, its frame carries a capsule end 100 mm out 141 mm."""
+        ends = np.zeros((1, 2, 3))
+        ends[0, :, 0] = 0.1
+        box = [
+            geometry.Obstacle("Box", geometry.KIND_BOX, _pose(turn=turn), np.full(3, 0.005))
+            for turn in (0.0, math.pi / 2)
+        ]
+        assert check.between_frames(ends, ends, np.array([0.02]), (box[0],), (box[1],)) == 8
+
+    def test_an_obstacle_that_grows_moves_its_faces(self):
+        ends = np.zeros((1, 2, 3))
+        box = [
+            geometry.Obstacle("Box", geometry.KIND_BOX, _pose((0.3, 0.0, 0.0)), np.full(3, size))
+            for size in (0.05, 0.15)
+        ]
+        assert check.between_frames(ends, ends, np.array([0.02]), (box[0],), (box[1],)) == 5
+
     def test_a_plate_crossed_between_two_frames_is_reported_after_the_first(self):
         found = _crossing()
         assert found.clearance_obstacle == "Plate" and found.clearance < 0.0

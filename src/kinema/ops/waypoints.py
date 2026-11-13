@@ -1077,8 +1077,9 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
 def _measured_between(context, rig, capsules, samples, first: int, last: int) -> list:
     """``samples`` with the robot against the obstacles measured between frames too.
 
-    Only where a capsule moved further than its radius from one frame of the
-    job to the next (``motion_check.between_frames``). Each part is set as a
+    Only where a capsule moved further than its radius against an obstacle
+    from one frame of the job to the next, either of them moving
+    (``motion_check.between_frames``). Each part is set as a
     subframe, so the joints come as playback interpolates them, and live IK
     solves a line from its goal there. Nothing is recorded for the limit
     check, which reads whole frames.
@@ -1089,7 +1090,9 @@ def _measured_between(context, rig, capsules, samples, first: int, last: int) ->
         for index, (now, then) in enumerate(zip(samples, samples[1:], strict=False)):
             if not first <= now.frame < last:
                 continue
-            parts = motion_check.between_frames(now.segments, then.segments, now.radii)
+            parts = motion_check.between_frames(
+                now.segments, then.segments, now.radii, now.obstacles, then.obstacles
+            )
             measured = []
             for part in range(1, parts):
                 scene.frame_set(now.frame, subframe=part / parts)

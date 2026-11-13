@@ -236,18 +236,44 @@ def _closest_approach(result: MoveCheck, own: list[Sample], capsules) -> None:
             result.clearance_between = sample.subframe > 0.0
 
 
-def between_frames(before: np.ndarray, after: np.ndarray, radii: np.ndarray) -> int:
+def between_frames(
+    before: np.ndarray, after: np.ndarray, radii: np.ndarray,
+    obstacles_before: tuple = (), obstacles_after: tuple = (),
+) -> int:
     """How many parts to measure the robot in between two frames: 1 for none between.
 
     ``before`` and ``after`` are the capsules' ends on each, (C, 2, 3), and
-    ``radii`` theirs, (C,). Where a capsule's end moves further than its
-    radius, it could step over an obstacle thinner than that without touching
-    it on either frame; measured where it has moved no further than its radius
-    from the last, it can't. At most :data:`MOST_BETWEEN`.
+    ``radii`` theirs, (C,). ``obstacles_before`` and ``obstacles_after`` are
+    the obstacles on each, in the same order: what a capsule moves against.
+    Where a capsule's end moves further than its radius against an obstacle,
+    the capsule could pass through an obstacle thinner than that without
+    touching it on either frame; measured where it has moved no further than
+    its radius from the last, it can't. Moving against an obstacle is moving
+    in its own frame, which it does when either of them moves, and an
+    obstacle that grows or shrinks moves its faces by that much too. Without
+    obstacles, how far it moves. At most :data:`MOST_BETWEEN`.
     """
-    moved = np.linalg.norm(np.asarray(after) - np.asarray(before), axis=-1).max(axis=-1)
+    before, after = np.asarray(before, dtype=float), np.asarray(after, dtype=float)
+    if obstacles_before and len(obstacles_before) == len(obstacles_after):
+        moved = np.zeros(len(before))
+        for was, now in zip(obstacles_before, obstacles_after, strict=True):
+            then = _in_frame_of(before, was.matrix)
+            later = _in_frame_of(after, now.matrix)
+            shift = np.linalg.norm(later - then, axis=-1).max(axis=-1)
+            grown = 0.0
+            if np.shape(was.size) == np.shape(now.size):
+                grown = float(np.abs(np.asarray(now.size) - np.asarray(was.size)).max(initial=0.0))
+            moved = np.maximum(moved, shift + grown)
+    else:
+        moved = np.linalg.norm(after - before, axis=-1).max(axis=-1)
     parts = int(np.ceil((moved / np.maximum(np.asarray(radii, dtype=float), 1e-6)).max()))
     return int(min(max(parts, 1), MOST_BETWEEN))
+
+
+def _in_frame_of(points: np.ndarray, matrix) -> np.ndarray:
+    """``points`` in the frame of ``matrix``: an obstacle's rotation and centre."""
+    matrix = np.asarray(matrix, dtype=float)
+    return (points - matrix[:3, 3]) @ matrix[:3, :3]
 
 
 def clearance_when(check) -> str:

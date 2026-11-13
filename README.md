@@ -370,10 +370,12 @@ though: move that, and neither the check nor Optimize Motion notices. Check Agai
 
 **The check** names, for each move, the link that came closest, to which obstacle, and on
 which frame. A link reaching into an obstacle is flagged: "joint_3 hits Fixture by 40 mm at
-frame 134". Where a capsule moves further than its radius from one frame to the next, the
-check measures between them too, at up to 16 points, so a fast move can't step over a thin
-obstacle unseen: "joint_3 hits Plate by 12 mm between frames 40 and 41". The panel shows the
-closest approach over the whole job, until the waypoints,
+frame 134". Where a capsule moves further than its radius against an obstacle from one frame
+to the next, either of them moving, the check measures between them too, at up to 16 points:
+"joint_3 hits Plate by 12 mm between frames 40 and 41". Up to 16 radii a frame, a capsule
+can't pass through an obstacle unseen; faster than that, one thinner than the gap between
+two points can still slip through. The panel shows the closest approach over the whole
+job, until the waypoints,
 the obstacles, the capsules or where the robot stands change, when it asks for Check Again. **Show Collision
 Shapes** draws the capsules and obstacles as the check sees them, red where they touch on the
 current frame. That's the way to see a capsule that fits its link badly.
@@ -431,9 +433,10 @@ carried along.
   could settle with the arm deep in a crate, and a frame more or a waypoint 1 mm over could
   put it there. A solve with obstacles takes 7-10 s on the KR120 job above, where it took
   2-4 s before either of these.
-- The obstacles are measured on each frame. A link could still pass through a thin
-  obstacle between two frames of a fast move; the Motion Check then names the frames
-  either side ([#99](https://github.com/ebgenius/kinema/issues/99)).
+- Optimize Motion measures the obstacles on whole frames only. A link could still pass
+  through a thin obstacle between two frames of a fast move; the Motion Check, which
+  measures between them too, then names the frames either side
+  ([#99](https://github.com/ebgenius/kinema/issues/99)).
 - **Avoid Obstacles**, beside it, turns it off. Capsules that no longer fit the meshes are
   refused while it's on: Fit Again first.
 - On arm6, a post 72 mm into the forearm mid-move was gone round, 12 mm clear, within every
