@@ -555,6 +555,17 @@ def _points_of(result, label) -> np.ndarray:
     )
 
 
+def _gltf_json(path):
+    """A ``.glb`` file's JSON chunk, read as the format lays it out."""
+    import json
+    import struct
+
+    data = path.read_bytes()
+    length, kind = struct.unpack("<II", data[12:20])
+    assert data[:4] == b"glTF" and kind == 0x4E4F534A
+    return json.loads(data[20 : 20 + length])
+
+
 class TestGltfMeshes:
     @pytest.mark.parametrize("variant", VARIANTS)
     def test_a_glb_lands_where_the_same_mesh_as_stl_does(self, gltf_rig, variant):
@@ -672,6 +683,49 @@ class TestGltfMeshes:
             meshes.load_mesh(path, collection=target, name="link")
         for kind in kinds:
             assert set(getattr(bpy.data, kind)) == before[kind], kind
+
+    def test_the_file_s_scene_extras_leave_the_scene_alone(self, addon, tmp_path, clean_scene):
+        """A GLB written from a scene with ``project_id`` "other", read into one with "mine"."""
+        import bpy
+
+        meshes = importlib.import_module(f"{addon.__name__}.io.meshes")
+        scene = bpy.context.scene
+        scene["project_id"] = "other"
+        obj = bpy.data.objects.new("plain", _painted("plain"))
+        scene.collection.objects.link(obj)
+        path = tmp_path / "extras.glb"
+        bpy.ops.export_scene.gltf(filepath=str(path), export_format="GLB", export_extras=True)
+        bpy.data.objects.remove(obj)
+        written = _gltf_json(path)
+        assert any(s.get("extras", {}).get("project_id") == "other" for s in written["scenes"]), (
+            "precondition: the file carries the scene's extras"
+        )
+
+        scene["project_id"] = "mine"
+        made = meshes.load_mesh(path, collection=bpy.data.collections.new("Visuals"), name="link")
+        assert made
+        assert scene["project_id"] == "mine"
+
+    def test_a_file_with_two_scenes_leaves_no_scene_behind(self, addon, tmp_path, clean_scene):
+        import bpy
+
+        meshes = importlib.import_module(f"{addon.__name__}.io.meshes")
+        first = bpy.context.scene
+        other = bpy.data.scenes.new("Other")
+        for scene, name in ((first, "plain"), (other, "elsewhere")):
+            scene.collection.objects.link(bpy.data.objects.new(name, _painted(name)))
+        path = tmp_path / "two.glb"
+        bpy.ops.export_scene.gltf(filepath=str(path), export_format="GLB", use_active_scene=False)
+        for scene in (first, other):
+            for obj in list(scene.collection.objects):
+                bpy.data.objects.remove(obj)
+        bpy.data.scenes.remove(other)
+        assert len(_gltf_json(path)["scenes"]) == 2, "precondition: the file has two scenes"
+
+        scenes = set(bpy.data.scenes)
+        made = meshes.load_mesh(path, collection=bpy.data.collections.new("Visuals"), name="link")
+        assert made
+        assert set(bpy.data.scenes) == scenes
 
     def test_the_scene_s_unit_scale_changes_nothing(
         self, kin, builder, addon, tmp_path, clean_scene

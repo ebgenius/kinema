@@ -85,7 +85,9 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
     them.
 
     The importer scales by the scene's unit scale, which the URDF already
-    accounts for, so it imports at 1.
+    accounts for, so it imports at 1. It is kept from writing the file's scene
+    extras onto the scene, and any scene it makes for a file with several is
+    removed: their meshes are the file's all the same.
 
     An import that fails part-way has what it made removed, and whatever the
     importer raised becomes a :class:`MeshLoadError`, so one bad file fails
@@ -106,6 +108,7 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
         )
     objects, collections = set(bpy.data.objects), set(bpy.data.collections)
     before = {kind: set(getattr(bpy.data, kind)) for kind in _GLTF_DATA}
+    before["scenes"] = set(bpy.data.scenes)
     units = bpy.context.scene.unit_settings
     scale_length = units.scale_length
     units.scale_length = 1.0
@@ -113,6 +116,8 @@ def _import_gltf(path: Path, collection) -> list[bpy.types.Object]:
         created = _import_via_operator(
             bpy.ops.import_scene.gltf, path, collection,
             import_shading="NORMALS", merge_vertices=False, import_scene_as_collection=False,
+            # Left on, the file's scene extras overwrite the user's scene's own properties.
+            import_scene_extras=False,
         )
     except Exception as exc:  # noqa: BLE001 - whatever the add-on raises, one visual fails
         # Failed part-way, it leaves what it had made: take that out again.
@@ -172,12 +177,16 @@ def _animated(path: Path) -> bool:
 def _remove(objects, collections: set, before: dict) -> None:
     """Remove ``objects``, then whatever the import made that nothing uses now.
 
+    Any scene made since ``before``: a file with several scenes gets one each,
+    and their objects have been moved to the link's collection by then.
     Collections made since ``collections`` and left empty, and datablocks of
     :data:`_GLTF_DATA` made since ``before`` with no users left. The importer
     may keep its images and actions with a fake user; those it made are let go.
     """
     for obj in objects:
         bpy.data.objects.remove(obj)
+    for scene in set(bpy.data.scenes) - before["scenes"]:
+        bpy.data.scenes.remove(scene)
     for made in set(bpy.data.collections) - collections:
         if not made.objects and not made.children:
             bpy.data.collections.remove(made)
