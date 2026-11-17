@@ -1290,6 +1290,10 @@ class TestMotions:
         assert not len(arm6.kinema_motions)
         with pytest.raises(RuntimeError, match="both on frame 20"):
             bpy.ops.kinema.generate_motion()
+        # And the panel, where Generate Motion is greyed out with no motions.
+        panel = importlib.import_module(f"{addon.__name__}.ui.panel")
+        text, icon = panel.motions_note(arm6)
+        assert "both on frame 20" in text and icon == "ERROR"
 
     def test_no_two_waypoints_share_a_name(self, arm6, builder):
         """A motion's From and To are picked by name: a second 'pick' is 'pick.001',

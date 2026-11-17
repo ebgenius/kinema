@@ -754,10 +754,8 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
         row.operator("kinema.add_motion", text="Add", icon="ADD")
         row.operator("kinema.remove_motion", text="", icon="X")
         if not len(rig.kinema_motions):
-            if rig.kinema_job_version < 1 and len(rig.kinema_waypoints) > 1:
-                layout.label(text="Saved before motions: Generate Motion converts it", icon="INFO")
-            else:
-                layout.label(text="Record on a later frame, or Add", icon="INFO")
+            text, icon = motions_note(rig)
+            layout.label(text=text, icon=icon)
         else:
             layout.template_list(
                 "KINEMA_UL_motions", "", rig, "kinema_motions",
@@ -797,6 +795,19 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
 
         if wants_ik(rig) and ik_bone_name(rig) is None:
             layout.label(text="Linear moves need an IK target", icon="ERROR")
+
+
+def motions_note(rig) -> tuple[str, str]:
+    """What the Motions panel says while there are no motions, and its icon.
+
+    A job saved before motions that couldn't be converted says why, since
+    Generate Motion, which would, is greyed out with no motions to generate.
+    """
+    if rig.kinema_unconverted:
+        return f"Saved before motions, not converted: {rig.kinema_unconverted}", "ERROR"
+    if rig.kinema_job_version < 1 and len(rig.kinema_waypoints) > 1:
+        return "Saved before motions: Generate Motion converts it", "INFO"
+    return "Record on a later frame, or Add", "INFO"
 
 
 def wants_ik(rig) -> bool:
