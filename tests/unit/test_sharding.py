@@ -53,8 +53,8 @@ class TestShares:
 
     def test_a_test_not_timed_yet_counts_as_the_median(self):
         """Two timed at 1 and 3 s, and two not: each counts as 2, so both go together
-        opposite the 3, and the 1 joins the 3. At 1 s each, two of the three 1s
-        would go opposite the 3."""
+        opposite the 3, and the 1 joins the 3. At 1 s each, all three 1s would go
+        opposite the 3: ``[0, 1, 1, 1]``."""
         owners = sharding.shares(
             ["slow", "fast", "new1", "new2"], {"slow": 3.0, "fast": 1.0}, 2
         )
