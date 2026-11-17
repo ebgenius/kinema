@@ -2,7 +2,8 @@
 
 **Animation-ready robot rigs in Blender.** Import a robot description and get a single clean
 armature you can actually animate — with IK that understands singularities, joint limits and
-multi-turn joints. A built-in catalogue of 186 real robots says where to find one.
+multi-turn joints. A built-in catalogue of 186 real robots says where to find one. A
+description's meshes can be COLLADA, STL, OBJ, PLY or glTF (`.glb`, `.gltf`).
 
 > Status: released as [v0.6.0]. Import (URDF, xacro or MJCF), rig, pose, solve and
 > bake all function, and the built extension installs and runs from a clean Blender

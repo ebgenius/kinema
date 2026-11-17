@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **glTF meshes** (`.glb`, `.gltf`) in a description, visual or collision, as kinema_catalog
+  writes them. Each lands where the same mesh as `.stl` does, with its node placement, its
+  materials and its normals, whatever the scene's unit scale; the file's empties are
+  dropped, and a mesh it uses twice comes in twice. A skinned or animated file is refused,
+  saying so, since a link's mesh moves only with its link.
 - **Motion Check**, under the waypoints. Generate Motion now ends by playing the job through
   once, solved as playback solves it, and lists each move with what went wrong:
   - a linear move's worst distance from its line, and how far the tool turned off the
