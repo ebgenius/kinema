@@ -825,6 +825,34 @@ class TestConfiguration:
             bpy.ops.kinema.generate_motion()
         assert list(b.q) == taught
 
+    def test_a_line_whose_arrival_isn_t_judged_still_keeps_its_waypoint_s_turns(
+        self, wide6, builder, addon, monkeypatch
+    ):
+        """As the test above, the first line's arrival made unjudgeable, as for a
+        redundant arm or a line the arm can't follow: it still keys b's joints, so
+        the second line still may not change them."""
+        import bpy
+
+        wp_ops = importlib.import_module(f"{addon.__name__}.ops.waypoints")
+        judged = wp_ops._arrival
+        calls = []
+
+        def first_not_judged(rig, span, chain, start, end):
+            calls.append(span.end.name)
+            return None if len(calls) == 1 else judged(rig, span, chain, start, end)
+
+        monkeypatch.setattr(wp_ops, "_arrival", first_not_judged)
+        _teach(builder, wide6, 1, WRIST + [FLIP - 0.2], "JOINT", "a")
+        b = _teach(builder, wide6, 21, WRIST + [FLIP + 0.2], "LINEAR", "b")
+        _teach(builder, wide6, 41, WRIST + [FLIP - 0.2 - 2.0 * math.pi], "JOINT", "c")
+        _motion(wide6, "back", "c", "b", 41, 61, move="LINEAR")
+        taught = list(b.q)
+
+        with pytest.raises(RuntimeError, match="'b': linear moves arrive there a whole turn apart"):
+            bpy.ops.kinema.generate_motion()
+        assert calls == ["b", "b"], "precondition: both lines were looked at"
+        assert list(b.q) == taught
+
     def test_a_wound_end_with_a_moved_marker_keeps_the_turn_at_the_marker(
         self, wide6, builder
     ):
@@ -1165,9 +1193,15 @@ class TestMotions:
         arm6.kinema_motions.clear()
         arm6.kinema_job_version = 0
         arm6.kinema_last_recorded = ""
+        wp_ops = importlib.import_module(f"{addon.__name__}.ops.waypoints")
+        # Checked and generated as it was saved: the fingerprints of that shape.
+        arm6.kinema_motion_check_job = arm6.kinema_generated_job = wp_ops.job_signature(arm6)
         handlers.on_load_post()
 
         assert _motions(arm6) == made
+        # Still current: nothing was edited, only converted.
+        assert arm6.kinema_motion_check_job == wp_ops.job_signature(arm6)
+        assert arm6.kinema_generated_job == wp_ops.job_signature(arm6)
         assert all(waypoint.uid for waypoint in arm6.kinema_waypoints)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         after = _played(builder, arm6, frames)

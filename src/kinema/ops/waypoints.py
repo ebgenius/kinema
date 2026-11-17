@@ -343,6 +343,10 @@ def convert_saved_before_motions(rig) -> bool:
     if rig.kinema_job_version >= JOB_VERSION or rig.library is not None:
         # Linked from a library, it can't be written: see job_plan.
         return False
+    # The job as it was fingerprinted, before it changes shape: whatever was
+    # stored of it then -- a Motion Check, what was generated or optimized --
+    # still describes it, converted.
+    was = job_signature(rig)
     for waypoint in rig.kinema_waypoints:
         if not waypoint.uid:
             waypoint.uid = _new_uid()
@@ -366,6 +370,10 @@ def convert_saved_before_motions(rig) -> bool:
         rig.kinema_last_recorded = last.uid
         rig.kinema_last_recorded_frame = int(last.frame)
     rig.kinema_job_version = JOB_VERSION
+    now = job_signature(rig)
+    for stored in ("kinema_motion_check_job", "kinema_generated_job", "kinema_optimized_job"):
+        if getattr(rig, stored) == was:
+            setattr(rig, stored, now)
     return True
 
 
@@ -1124,6 +1132,8 @@ def settle_configurations(rig, plan, overrides=None):
         end = changed.get(span.end.as_pointer(), list(span.end.q))
         arrival = _arrival(rig, span, chain, start, end)
         if arrival is None:
+            # Not judged, but its waypoints' turns are what it keys all the same.
+            lined.update((span.start.as_pointer(), span.end.as_pointer()))
             continue
         kind, values = arrival
         if kind == BRANCH:
