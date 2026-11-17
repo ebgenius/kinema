@@ -1152,6 +1152,26 @@ def _played(builder, rig, frames):
     return out
 
 
+def _saved_fingerprint(rig, wp_ops):
+    """A job's fingerprint as the version before motions stored it, copied from it:
+    waypoints in frame order, each by name, frame, move, pose and joints."""
+    import hashlib
+
+    parts = []
+    for waypoint in sorted(rig.kinema_waypoints, key=lambda w: int(w.frame)):
+        pose = wp_ops.pose_of(waypoint)
+        parts.append(
+            (
+                waypoint.name,
+                int(waypoint.frame),
+                waypoint.move,
+                tuple(round(float(pose[r][c]), 6) for r in range(4) for c in range(4)),
+                tuple(round(float(v), 6) for v in list(waypoint.q)[: waypoint.dof]),
+            )
+        )
+    return hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()
+
+
 def _motions(rig):
     return [
         (m.name, m.start_name, m.end_name, m.move, m.frame_start, m.frame_end)
@@ -1194,8 +1214,10 @@ class TestMotions:
         arm6.kinema_job_version = 0
         arm6.kinema_last_recorded = ""
         wp_ops = importlib.import_module(f"{addon.__name__}.ops.waypoints")
-        # Checked and generated as it was saved: the fingerprints of that shape.
-        arm6.kinema_motion_check_job = arm6.kinema_generated_job = wp_ops.job_signature(arm6)
+        # Checked and generated as it was saved: the fingerprints that version
+        # stored, taken as it took them.
+        saved = _saved_fingerprint(arm6, wp_ops)
+        arm6.kinema_motion_check_job = arm6.kinema_generated_job = saved
         handlers.on_load_post()
 
         assert _motions(arm6) == made

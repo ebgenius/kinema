@@ -348,7 +348,7 @@ def convert_saved_before_motions(rig) -> bool:
     # The job as it was fingerprinted, before it changes shape: whatever was
     # stored of it then -- a Motion Check, what was generated or optimized --
     # still describes it, converted.
-    was = job_signature(rig)
+    was = _signature_before_motions(rig)
     for waypoint in rig.kinema_waypoints:
         if not waypoint.uid:
             waypoint.uid = _new_uid()
@@ -1493,18 +1493,18 @@ def job_signature(rig) -> str:
     findings about a job that has since been edited are marked as such instead
     of being shown as current. The keys are not in it -- editing a curve by
     hand is only caught by Check Again -- but everything Generate Motion reads
-    is. A rig saved before motions is read as its waypoints' frames and moves,
-    which are what it would be converted from.
+    is. A rig saved before motions, not converted yet, is fingerprinted as that
+    version did it: :func:`_signature_before_motions`.
     """
+    if rig.kinema_job_version < JOB_VERSION:
+        return _signature_before_motions(rig)
     parts = []
     for waypoint in rig.kinema_waypoints:
         pose = pose_of(waypoint)
-        old = (int(waypoint.frame), waypoint.move) if rig.kinema_job_version < JOB_VERSION else ()
         parts.append(
             (
                 waypoint.uid,
                 waypoint.name,
-                *old,
                 tuple(round(float(pose[r][c]), 6) for r in range(4) for c in range(4)),
                 tuple(round(float(v), 6) for v in list(waypoint.q)[: waypoint.dof]),
             )
@@ -1513,6 +1513,30 @@ def job_signature(rig) -> str:
         parts.append(
             (motion.name, motion.start, motion.end, motion.move,
              int(motion.frame_start), int(motion.frame_end))
+        )
+    return hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()
+
+
+def _signature_before_motions(rig) -> str:
+    """The fingerprint a job saved before motions was stored with, taken as that
+    version took it: the waypoints in frame order, each by name, frame, move,
+    pose and joints.
+
+    What a file saved then holds in its Motion Check, and in what it generated
+    and optimized, so conversion can tell which of those still describe the job
+    (:func:`convert_saved_before_motions`). It has to stay exactly as it was.
+    """
+    parts = []
+    for waypoint in sorted(rig.kinema_waypoints, key=lambda w: int(w.frame)):
+        pose = pose_of(waypoint)
+        parts.append(
+            (
+                waypoint.name,
+                int(waypoint.frame),
+                waypoint.move,
+                tuple(round(float(pose[r][c]), 6) for r in range(4) for c in range(4)),
+                tuple(round(float(v), 6) for v in list(waypoint.q)[: waypoint.dof]),
+            )
         )
     return hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()
 
