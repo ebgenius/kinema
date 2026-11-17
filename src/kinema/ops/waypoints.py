@@ -341,7 +341,9 @@ def convert_saved_before_motions(rig) -> bool:
     their names. Recording goes on from its last waypoint.
     """
     if rig.kinema_job_version >= JOB_VERSION or rig.library is not None:
-        # Linked from a library, it can't be written: see job_plan.
+        # Linked from a library: what is written to it isn't saved with this
+        # file, so converting it would be lost, and done again, on every open.
+        # See job_plan.
         return False
     # The job as it was fingerprinted, before it changes shape: whatever was
     # stored of it then -- a Motion Check, what was generated or optimized --
@@ -388,14 +390,16 @@ def job_plan(rig):
     """The rig's job, as ``rig/waypoints.plan`` lays out its motions.
 
     Converts a rig saved before motions first, so it is for operators, never
-    for a panel's draw. One linked from a library can't be converted, so its
-    job is read from its waypoints' frames and moves, as it was saved.
+    for a panel's draw. One linked from a library isn't converted, since what
+    is written to it isn't saved with the file, so its job is read from its
+    waypoints' frames and moves, as it was saved.
     """
     convert_saved_before_motions(rig)
     if rig.kinema_job_version < JOB_VERSION:
         return Plan(spans=spans(rig.kinema_waypoints), notes=[])
-    if len(rig.kinema_motions):
-        # Motions made since say more than why the old job made none.
+    if len(rig.kinema_motions) and rig.kinema_unconverted and rig.library is None:
+        # Motions made since say more than why the old job made none. Written
+        # only then, and not to a rig linked from a library, where it isn't kept.
         rig.kinema_unconverted = ""
     if not len(rig.kinema_motions) and rig.kinema_unconverted:
         raise WaypointError(

@@ -1440,8 +1440,9 @@ class TestMotions:
     def test_a_rig_linked_from_before_motions_is_read_as_it_was_saved(
         self, arm6, builder, addon, tmp_path
     ):
-        """Linked from a library it can't be written, so opening a file leaves it as it
-        is, and its job is read from its waypoints' frames and moves."""
+        """Linked from a library, what is written to it isn't saved with the file, so
+        opening one leaves it as it is, and its job is read from its waypoints'
+        frames and moves."""
         import bpy
 
         handlers = importlib.import_module(f"{addon.__name__}.handlers")
@@ -1489,6 +1490,28 @@ class TestMotions:
         arm6.kinema_motions[0].end = end
         with pytest.raises(RuntimeError, match="no longer exists"):
             bpy.ops.kinema.add_motion()
+
+    def test_a_linked_rig_with_motions_is_planned_without_writing_to_it(
+        self, arm6, builder, addon, tmp_path
+    ):
+        """Linked from a library: its job is planned from its motions as they are."""
+        import bpy
+
+        wp_ops = importlib.import_module(f"{addon.__name__}.ops.waypoints")
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        library = tmp_path / "robot.blend"
+        bpy.data.libraries.write(str(library), {arm6})
+        with bpy.data.libraries.load(str(library), link=True) as (_, linked):
+            linked.objects = [arm6.name]
+        rig = linked.objects[0]
+        try:
+            assert rig.library is not None, "precondition: linked, not local"
+            assert len(rig.kinema_motions) == 1
+            plan = wp_ops.job_plan(rig)
+            assert [s.label for s in plan.spans] == ["pick"]
+        finally:
+            bpy.data.libraries.remove(rig.library)
 
     def test_renaming_a_waypoint_keeps_its_motions(self, arm6, builder):
         _teach(builder, arm6, 1, Q0, "JOINT", "home")
