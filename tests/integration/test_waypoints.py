@@ -1427,6 +1427,25 @@ class TestMotions:
             # linked is left for the tests after this one.
             bpy.data.libraries.remove(rig.library)
 
+    def test_optimize_warns_of_motions_that_overlap_as_generate_does(self, arm6, builder):
+        """A warning, which bpy doesn't raise, not an error, which it does."""
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        _motion(arm6, "back", "pick", "home", 15, 40)
+        assert "CANCELLED" in bpy.ops.kinema.generate_motion()
+        assert "CANCELLED" in bpy.ops.kinema.optimize_motion()
+
+    def test_add_after_a_motion_whose_waypoint_is_gone_says_so(self, arm6, builder):
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        arm6.kinema_motions[0].end = "gone"
+        with pytest.raises(RuntimeError, match="no longer exists"):
+            bpy.ops.kinema.add_motion()
+
     def test_renaming_a_waypoint_keeps_its_motions(self, arm6, builder):
         _teach(builder, arm6, 1, Q0, "JOINT", "home")
         pick = _teach(builder, arm6, 21, Q1, "JOINT", "pick")

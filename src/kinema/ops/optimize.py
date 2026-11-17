@@ -50,7 +50,7 @@ from bpy.props import BoolProperty, FloatProperty
 from bpy.types import Operator
 
 from ..rig import builder, motion_check
-from ..rig.waypoints import MADE_HOLD, MOVE_LINEAR, WaypointError
+from ..rig.waypoints import MADE_HOLD, MOVE_LINEAR, MotionsOverlap, WaypointError
 from ..solver import manager, trajectory
 from ..solver.base import SolverError
 from ..ui.panel import active_rig
@@ -79,6 +79,15 @@ def optimizing(rig) -> bool:
 
 class Refused(Exception):
     """Why a job can't be optimised, in words for the user."""
+
+    #: How it is reported: a layout only the user can fix is a warning.
+    kind = "ERROR"
+
+
+class Overlapping(Refused):
+    """Motions that overlap: a warning, as Generate Motion and Check Motion give it."""
+
+    kind = "WARNING"
 
 
 @dataclass
@@ -128,6 +137,8 @@ def prepare(context, rig) -> Job:
     """
     try:
         plan = wp.job_plan(rig).spans
+    except MotionsOverlap as exc:
+        raise Overlapping(f"{exc}. Nothing was optimized") from exc
     except WaypointError as exc:
         raise Refused(str(exc)) from exc
     signature = wp.job_signature(rig)
@@ -675,7 +686,7 @@ class KINEMA_OT_optimize_motion(Operator):
             dispatch(job)
             solve_again(job)
         except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
-            self.report({"ERROR"}, _failure(exc))
+            self.report({_kind(exc)}, _failure(exc))
             return {"CANCELLED"}
         return self._finish(context, job)
 
@@ -685,7 +696,7 @@ class KINEMA_OT_optimize_motion(Operator):
         try:
             self._job = prepare(context, rig)
         except Refused as exc:
-            self.report({"ERROR"}, str(exc))
+            self.report({exc.kind}, str(exc))
             return {"CANCELLED"}
         _running.add(self._job.rig_name)
         window_manager = context.window_manager
@@ -715,7 +726,7 @@ class KINEMA_OT_optimize_motion(Operator):
                 dispatch(job)
             except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
                 self._end(context)
-                self.report({"ERROR"}, _failure(exc))
+                self.report({_kind(exc)}, _failure(exc))
                 return {"CANCELLED"}
             _status(context, "Optimizing motion... Esc to cancel")
             return {"RUNNING_MODAL"}
@@ -727,7 +738,7 @@ class KINEMA_OT_optimize_motion(Operator):
                 return {"RUNNING_MODAL"}
         except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
             self._end(context)
-            self.report({"ERROR"}, _failure(exc))
+            self.report({_kind(exc)}, _failure(exc))
             return {"CANCELLED"}
         self._end(context)
         return self._finish(context, job)
@@ -758,6 +769,11 @@ class KINEMA_OT_optimize_motion(Operator):
         _running.discard(self._job.rig_name)
         _status(context, None)
         _redraw(context)
+
+
+def _kind(exc: Exception) -> str:
+    """How a failure is reported: a refusal's own kind, anything else an error."""
+    return exc.kind if isinstance(exc, Refused) else "ERROR"
 
 
 def _failure(exc: Exception) -> str:

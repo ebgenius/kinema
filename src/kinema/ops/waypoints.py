@@ -685,6 +685,13 @@ class KINEMA_OT_add_motion(KinemaWaypointOperator):
         target = _waypoint_at(rig, -1) or rig.kinema_waypoints[-1]
         last = max(rig.kinema_motions, key=lambda m: int(m.frame_end), default=None)
         start = waypoint_by_uid(rig, last.end) if last is not None else None
+        if last is not None and start is None:
+            self.report(
+                {"ERROR"},
+                f"'{last.name}', the last motion, ends at a waypoint that no longer "
+                f"exists: point it at one, or remove it, then Add",
+            )
+            return {"CANCELLED"}
         if start is None:
             # Nothing to go on from: the highlighted waypoint to the one after it.
             if len(rig.kinema_waypoints) < 2:
