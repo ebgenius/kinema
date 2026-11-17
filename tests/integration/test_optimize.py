@@ -211,6 +211,32 @@ class TestOptimizing:
             moving = weight < trajectory.PIN_WEIGHT
             assert np.allclose(job.problem.prior[row][moving], taught[moving], atol=1e-9)
 
+    def test_a_hold_stays_at_its_waypoint_with_a_post_pulling_on_it(
+        self, arm6, builder, modules
+    ):
+        """The hold at B, frames 61-81, with a post 30 mm into the arm there: solved,
+        the tool stays within 0.01 mm of B on every frame of it. Without its target
+        and joints, it strayed 12.6 mm."""
+        import bpy
+
+        wp = modules("ops.waypoints")
+        _teach(builder, arm6, ROOMY)
+        for motion in list(arm6.kinema_motions)[1:]:
+            motion.frame_start += 20
+            motion.frame_end += 20
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        _in_the_way(builder, modules, arm6, frame=61)
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        hold = next(r for r in arm6.kinema_motion_check if r.name == "hold at B")
+        assert hold.clearance < -0.02, "precondition: the post pulls on the hold"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        goal = np.array(wp.pose_of(arm6.kinema_waypoints["B"]))
+        for frame in range(61, 82):
+            bpy.context.scene.frame_set(frame)
+            tool = np.array(arm6.pose.bones[wp._tool_bone(arm6)].matrix)
+            assert 1000.0 * np.linalg.norm(tool[:3, 3] - goal[:3, 3]) < 0.01, frame
+
     def test_a_job_over_its_limits_comes_back_within_them(self, arm6, builder, modules):
         """As generated, joint 1 runs at 153% of its acceleration limit, and 113% of its speed."""
         import bpy
