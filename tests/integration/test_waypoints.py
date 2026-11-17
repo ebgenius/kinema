@@ -1322,6 +1322,55 @@ class TestMotions:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert [row.name for row in arm6.kinema_motion_check] == ["pick", "place"]
 
+    def test_go_to_on_a_rig_appended_from_before_motions_jumps_to_its_frame(
+        self, arm6, builder
+    ):
+        """Appended, it never saw a file open: Go To converts it first, and jumps to
+        the first frame the job is at the waypoint, its old frame."""
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        for waypoint, frame in zip(arm6.kinema_waypoints, (1, 21), strict=True):
+            waypoint.frame, waypoint.move, waypoint.uid = frame, "JOINT", ""
+        arm6.kinema_motions.clear()
+        arm6.kinema_job_version = 0
+        bpy.context.scene.frame_set(50)
+
+        assert "FINISHED" in bpy.ops.kinema.goto_waypoint(index=1)
+        assert bpy.context.scene.frame_current == 21
+        assert len(arm6.kinema_motions) == 1
+
+    def test_removing_the_last_waypoint_recorded_goes_on_from_where_the_job_ends(
+        self, arm6, builder
+    ):
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        _teach(builder, arm6, 41, REACH_A, "JOINT", "place")
+        assert "FINISHED" in bpy.ops.kinema.remove_waypoint(index=2)
+        bpy.context.scene.frame_set(61)
+        _set_q(builder, arm6, REACH_B)
+        assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="drop")
+        assert _motions(arm6)[-1] == ("drop", "pick", "drop", "JOINT", 21, 61)
+
+    def test_add_with_no_motion_yet_goes_to_the_next_waypoint(self, arm6, builder):
+        """Not a pause at the highlighted one: from it to the one after, from this frame."""
+        import bpy
+
+        bpy.context.scene.frame_set(1)
+        _set_q(builder, arm6, Q0)
+        assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="home", motion=False)
+        assert not bpy.ops.kinema.add_motion.poll(), "one waypoint is no motion"
+        _set_q(builder, arm6, Q1)
+        assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="pick", motion=False)
+        arm6.kinema_active_waypoint = 0
+        bpy.context.scene.frame_set(5)
+
+        assert "FINISHED" in bpy.ops.kinema.add_motion()
+        assert _motions(arm6)[-1][1:5] == ("home", "pick", "JOINT", 5)
+
     def test_renaming_a_waypoint_keeps_its_motions(self, arm6, builder):
         _teach(builder, arm6, 1, Q0, "JOINT", "home")
         pick = _teach(builder, arm6, 21, Q1, "JOINT", "pick")

@@ -548,6 +548,7 @@ class KINEMA_OT_update_waypoint(KinemaWaypointOperator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
+        convert_saved_before_motions(rig)
         waypoint = _waypoint_at(rig, self.index)
         if waypoint is None:
             self.report({"ERROR"}, "No waypoint to update")
@@ -577,6 +578,7 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
+        convert_saved_before_motions(rig)
         waypoint = _waypoint_at(rig, self.index)
         if waypoint is None:
             self.report({"ERROR"}, "No waypoint to go to")
@@ -616,6 +618,7 @@ class KINEMA_OT_remove_waypoint(KinemaWaypointOperator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
+        convert_saved_before_motions(rig)
         index = self.index if self.index >= 0 else rig.kinema_active_waypoint
         if not 0 <= index < len(rig.kinema_waypoints):
             self.report({"ERROR"}, "No waypoint to remove")
@@ -636,7 +639,10 @@ class KINEMA_OT_remove_waypoint(KinemaWaypointOperator):
         left = len(rig.kinema_motions) - 1
         rig.kinema_active_motion = max(0, min(rig.kinema_active_motion, left))
         if rig.kinema_last_recorded == uid:
-            rig.kinema_last_recorded = ""
+            # Recording goes on from where the job now ends, or from nothing.
+            last = max(rig.kinema_motions, key=lambda m: int(m.frame_end), default=None)
+            rig.kinema_last_recorded = last.end if last is not None else ""
+            rig.kinema_last_recorded_frame = int(last.frame_end) if last is not None else 0
         rig.kinema_waypoints.remove(index)
         # max(0, ...): removing the last row leaves an empty list, and the
         # index would otherwise go to -1 and rely on the property's own min to
@@ -654,13 +660,14 @@ class KINEMA_OT_add_motion(KinemaWaypointOperator):
     bl_label = "Add Motion"
     bl_description = (
         "Add a joint motion after the last one, from where it ends to the "
-        "highlighted waypoint, a second long"
+        "highlighted waypoint, a second long. With no motion yet, from the "
+        "highlighted waypoint to the next one, from the current frame"
     )
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
         rig = active_rig(context)
-        return rig is not None and len(rig.kinema_waypoints) > 0
+        return rig is not None and len(rig.kinema_waypoints) > 1
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
@@ -669,7 +676,13 @@ class KINEMA_OT_add_motion(KinemaWaypointOperator):
         last = max(rig.kinema_motions, key=lambda m: int(m.frame_end), default=None)
         start = waypoint_by_uid(rig, last.end) if last is not None else None
         if start is None:
+            # Nothing to go on from: the highlighted waypoint to the one after it.
+            if len(rig.kinema_waypoints) < 2:
+                self.report({"ERROR"}, "A motion goes between two waypoints: record another")
+                return {"CANCELLED"}
             start = target
+            index = list(rig.kinema_waypoints).index(target)
+            target = rig.kinema_waypoints[(index + 1) % len(rig.kinema_waypoints)]
         first = int(last.frame_end) if last is not None else context.scene.frame_current
         motion = rig.kinema_motions.add()
         motion.name = target.name
@@ -695,6 +708,7 @@ class KINEMA_OT_remove_motion(KinemaWaypointOperator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
+        convert_saved_before_motions(rig)
         index = self.index if self.index >= 0 else rig.kinema_active_motion
         if not 0 <= index < len(rig.kinema_motions):
             self.report({"ERROR"}, "No motion to remove")
