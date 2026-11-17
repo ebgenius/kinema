@@ -50,7 +50,7 @@ from bpy.props import BoolProperty, FloatProperty
 from bpy.types import Operator
 
 from ..rig import builder, motion_check
-from ..rig.waypoints import MOVE_LINEAR, WaypointError, spans
+from ..rig.waypoints import MADE_HOLD, MOVE_LINEAR, MotionsOverlap, WaypointError
 from ..solver import manager, trajectory
 from ..solver.base import SolverError
 from ..ui.panel import active_rig
@@ -79,6 +79,15 @@ def optimizing(rig) -> bool:
 
 class Refused(Exception):
     """Why a job can't be optimised, in words for the user."""
+
+    #: How it is reported: a layout only the user can fix is a warning.
+    kind = "ERROR"
+
+
+class Overlapping(Refused):
+    """Motions that overlap: a warning, as Generate Motion and Check Motion give it."""
+
+    kind = "WARNING"
 
 
 @dataclass
@@ -127,7 +136,9 @@ def prepare(context, rig) -> Job:
     Writes nothing.
     """
     try:
-        plan = spans(rig.kinema_waypoints)
+        plan = wp.job_plan(rig).spans
+    except MotionsOverlap as exc:
+        raise Overlapping(f"{exc}. Nothing was optimized") from exc
     except WaypointError as exc:
         raise Refused(str(exc)) from exc
     signature = wp.job_signature(rig)
@@ -135,8 +146,8 @@ def prepare(context, rig) -> Job:
         raise Refused("Generate Motion first: there's no job to optimize yet")
     if rig.kinema_generated_job != signature:
         raise Refused(
-            "The waypoints have changed since the job was generated: Generate "
-            "Motion again, then optimize"
+            "The waypoints or motions have changed since the job was generated: "
+            "Generate Motion again, then optimize"
         )
     solver, pyroki = _model(rig)
     first, last = plan[0].start_frame, plan[-1].end_frame
@@ -417,10 +428,14 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
     prior = q_job.copy()
     prior_weight = np.where(moving, trajectory.JOB_WEIGHT, trajectory.PIN_WEIGHT)
     prior_weight = np.repeat(prior_weight[None], len(frames), axis=0)
+    # By frame: a waypoint two motions share is taught on each of their frames,
+    # and a hold or a pause on every frame of it.
     taught = {}
     for span in plan:
-        for waypoint in (span.start, span.end):
-            taught[int(waypoint.frame)] = waypoint
+        taught[span.start_frame], taught[span.end_frame] = span.start, span.end
+        if _still(span):
+            for frame in range(span.start_frame + 1, span.end_frame):
+                taught[frame] = span.start
     for frame, waypoint in taught.items():
         if waypoint.dof != len(bones):
             continue  # taught with other joints: its values don't line up
@@ -451,6 +466,11 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
             for frame in range(span.start_frame + 1, span.end_frame):
                 fraction = (frame - span.start_frame) / span.frames
                 aim(frame, wp._between(start, end, fraction))
+        elif _still(span):
+            # Still at the waypoint, which nothing may pull it off: not an
+            # obstacle, and not the smoothing either side.
+            for frame in range(span.start_frame + 1, span.end_frame):
+                aim(frame, start)
 
     # The limits the Motion Check measures against: the bones'.
     speed = np.full(dof, trajectory.UNLIMITED)
@@ -483,6 +503,12 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
 # --------------------------------------------------------------------------
 # solving and writing
 # --------------------------------------------------------------------------
+def _still(span) -> bool:
+    """Whether the robot stays at one waypoint over ``span``: a gap held there, or
+    a motion from a waypoint to itself, which is a pause."""
+    return span.made == MADE_HOLD or span.start.as_pointer() == span.end.as_pointer()
+
+
 def dispatch(job: Job) -> None:
     """Hand the solve to JAX. Compiles first if this kernel never has, which waits."""
     compiled = job.optimizer.compiled
@@ -549,7 +575,7 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
 
     rig.kinema_optimized_job = job.signature
 
-    plan = spans(rig.kinema_waypoints)
+    plan = wp.job_plan(rig).spans
     samples = wp.play_job(context, rig, plan)
     checks = wp.check_job(context, rig, plan, samples=samples)
     wp.estimate_frames_needed(context, rig, checks, samples)
@@ -660,7 +686,7 @@ class KINEMA_OT_optimize_motion(Operator):
             dispatch(job)
             solve_again(job)
         except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
-            self.report({"ERROR"}, _failure(exc))
+            self.report({_kind(exc)}, _failure(exc))
             return {"CANCELLED"}
         return self._finish(context, job)
 
@@ -670,7 +696,7 @@ class KINEMA_OT_optimize_motion(Operator):
         try:
             self._job = prepare(context, rig)
         except Refused as exc:
-            self.report({"ERROR"}, str(exc))
+            self.report({exc.kind}, str(exc))
             return {"CANCELLED"}
         _running.add(self._job.rig_name)
         window_manager = context.window_manager
@@ -700,7 +726,7 @@ class KINEMA_OT_optimize_motion(Operator):
                 dispatch(job)
             except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
                 self._end(context)
-                self.report({"ERROR"}, _failure(exc))
+                self.report({_kind(exc)}, _failure(exc))
                 return {"CANCELLED"}
             _status(context, "Optimizing motion... Esc to cancel")
             return {"RUNNING_MODAL"}
@@ -712,7 +738,7 @@ class KINEMA_OT_optimize_motion(Operator):
                 return {"RUNNING_MODAL"}
         except Exception as exc:  # noqa: BLE001 - a JAX error, as well as a refusal
             self._end(context)
-            self.report({"ERROR"}, _failure(exc))
+            self.report({_kind(exc)}, _failure(exc))
             return {"CANCELLED"}
         self._end(context)
         return self._finish(context, job)
@@ -743,6 +769,11 @@ class KINEMA_OT_optimize_motion(Operator):
         _running.discard(self._job.rig_name)
         _status(context, None)
         _redraw(context)
+
+
+def _kind(exc: Exception) -> str:
+    """How a failure is reported: a refusal's own kind, anything else an error."""
+    return exc.kind if isinstance(exc, Refused) else "ERROR"
 
 
 def _failure(exc: Exception) -> str:

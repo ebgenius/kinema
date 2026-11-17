@@ -108,19 +108,32 @@ Motion** re-aims every move to and from it, joint moves included:
 
 Baked keys are never touched.
 
-A waypoint also carries a **frame**, and that is the only ordering there is — there is no
-separate list order to keep in sync. Retime a move by editing the frame in its row and
-regenerating; the list redraws in time order. Two waypoints may not share a frame, since
-that would ask the robot to be in two places at once; generating says which pair collide.
+A waypoint holds a pose and the joints taught there, and no time. When the robot moves, and
+how, is a **motion**, in the **Motions** list under the waypoints: a move from one waypoint
+to another, with its own **Start** and **End** frame, its length in frames shown beside
+them. So one waypoint can end one motion and start the next, a job can go back to `home`
+without teaching it twice, and a motion is retimed without touching the poses.
+- **Record** on a later frame than the last waypoint recorded also adds a joint motion from
+  that waypoint to the new one, ending on this frame. Teaching a job pose by pose, frame by
+  frame, is what it was. **Add** puts a motion after the last one, a second long.
+- The job runs in frame order, as strips in the NLA do, not in list order. A gap where the
+  next motion starts at the waypoint the last one ended on holds the robot there. A gap to
+  another waypoint gets a joint move across it, and Generate Motion says so: Optimize
+  Motion keeps it clear, and its speed is yours to check.
+- Motions that overlap are refused, with a warning naming both, and nothing is generated
+  until one is moved ([#133](https://github.com/ebgenius/kinema/issues/133)). So is a
+  motion that starts at another waypoint on the frame the last one ends.
+- Removing a waypoint removes the motions to and from it. **Go To** jumps to the first
+  frame the job is at the waypoint.
+- A file saved before motions opens with them: each pair of waypoints in frame order
+  becomes a motion with their frames and move, and the job plays as it did.
 
 (The keys **Generate Motion** writes are the *output*. Dragging those in the dope sheet
 retimes the animation, as it would for anything else, but the next regeneration writes the
-waypoint's own frame again — so the row is where a retime belongs if you want it to stick.
-Waypoint frames are not yet draggable on the timeline itself.)
+motion's own frames again, so the Motions list is where a retime belongs if you want it to
+stick.)
 
-Each row says how the robot *arrives* there, which is how robot programs read
-(`MoveL(pick)` describes getting *to* `pick`), and is why the first waypoint needs no move
-type:
+Each motion says how the robot moves:
 
 - **Joint** interpolates the joints. Fast, always reachable, and the tool takes whatever
   path falls out. What you want for crossing a workspace.
@@ -218,10 +231,10 @@ more frames to make that gentler.
 
 Where a move hasn't the frames to keep within its limits, it comes out over them by as little
 as the waypoints leave room for, and its row in the Motion Check says about how many frames it
-needs. Move its waypoint later and optimize again: waypoints are never moved, and the job is
-never retimed.
-- It optimizes the job as generated, so after editing the waypoints, Generate Motion again
-  first. Generate Motion afterwards replaces it.
+needs. Give its motion more frames and optimize again: waypoints are never moved, and the job
+is never retimed.
+- It optimizes the job as generated, so after editing the waypoints or motions, Generate
+  Motion again first. Generate Motion afterwards replaces it.
 - Acceleration limits come from a `joint_limits.yaml` (Load Joint Limits). Without them, it
   keeps to the speeds and ranges.
 - From the panel it runs while Blender stays live, and Esc abandons it, writing nothing. If the

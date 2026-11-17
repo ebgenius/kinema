@@ -292,7 +292,7 @@ def on_undone(*_args) -> None:
 @persistent
 def on_load_post(_dummy=None) -> None:
     """A freshly opened file shares nothing with the previous one."""
-    from .ops import collision, deferral, external_axes, optimize, tcp, velocity
+    from .ops import collision, deferral, external_axes, optimize, tcp, velocity, waypoints
     from .ui import collision_overlay, panel
 
     _last_target.clear()
@@ -307,6 +307,8 @@ def on_load_post(_dummy=None) -> None:
     collision.forget()
     collision_overlay.forget()
     panel.forget()
+    # A file saved before motions gets the motions its waypoints made.
+    waypoints.convert_all()
 
 
 @contextmanager

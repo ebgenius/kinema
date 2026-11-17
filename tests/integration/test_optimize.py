@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 
 from ..conftest import requires_bpy
+from .test_waypoints import _retime
 
 pytestmark = requires_bpy
 
@@ -120,7 +121,8 @@ def _teach(builder, rig, frames):
         rig.pose.bones[ik_name].matrix = rig.pose.bones[tcp].matrix.copy()
         bpy.context.view_layer.update()
         assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="ABCD"[index])
-        rig.kinema_waypoints[-1].move = move
+        if index:
+            rig.kinema_motions[-1].move = move
 
 
 def _job(builder, rig, frames):
@@ -145,20 +147,109 @@ def _keys(modules, rig):
 
 
 def _waypoint_error_mm(modules, rig):
-    """The worst distance of the tool from a waypoint's pose, at its frame, as it plays."""
+    """The worst distance of the tool from a waypoint's pose, on every frame a motion
+    starts or ends there, as it plays."""
     import bpy
 
     wp = modules("ops.waypoints")
     worst = 0.0
-    for waypoint in rig.kinema_waypoints:
-        bpy.context.scene.frame_set(int(waypoint.frame))
-        tool = np.array(rig.pose.bones[wp._tool_bone(rig)].matrix)
-        goal = np.array(wp.pose_of(waypoint))
-        worst = max(worst, 1000.0 * float(np.linalg.norm(tool[:3, 3] - goal[:3, 3])))
+    for motion in rig.kinema_motions:
+        for uid, frame in ((motion.start, motion.frame_start), (motion.end, motion.frame_end)):
+            waypoint = wp.waypoint_by_uid(rig, uid)
+            bpy.context.scene.frame_set(int(frame))
+            tool = np.array(rig.pose.bones[wp._tool_bone(rig)].matrix)
+            goal = np.array(wp.pose_of(waypoint))
+            worst = max(worst, 1000.0 * float(np.linalg.norm(tool[:3, 3] - goal[:3, 3])))
     return worst
 
 
+def _held_at_b(rig, kind):
+    """The taught ROOMY job with B held over frames 61-81: by a gap there, or by a
+    pause, a motion from B to B. Returns the Motion Check's name for it."""
+    for motion in list(rig.kinema_motions)[1:]:
+        motion.frame_start += 20
+        motion.frame_end += 20
+    if kind == "pause":
+        b = rig.kinema_waypoints["B"]
+        wait = rig.kinema_motions.add()
+        wait.name, wait.start, wait.end = "wait", b.uid, b.uid
+        wait.frame_start, wait.frame_end = 61, 81
+    return "hold at B" if kind == "gap" else "wait"
+
+
 class TestOptimizing:
+    def test_a_waypoint_two_motions_share_is_pinned_on_each_of_its_frames(
+        self, arm6, builder, modules
+    ):
+        """A, B, then back to A on frame 121 and on to D: A's taught joints are what
+        the solve keeps on frame 121, as on frame 1."""
+        import bpy
+
+        optimize, trajectory = modules("ops.optimize"), modules("solver.trajectory")
+        _teach(builder, arm6, ROOMY)
+        a = arm6.kinema_waypoints["A"]
+        back, onward = arm6.kinema_motions[1], arm6.kinema_motions[2]
+        back.end_name, back.move = "A", "JOINT"
+        onward.start_name = "A"
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        job = optimize.prepare(bpy.context, arm6)
+        row = ROOMY[2] - ROOMY[0]
+        weight = job.problem.prior_weight[row]
+        assert weight.min() == pytest.approx(trajectory.WAYPOINT_WEIGHT)
+        moving = weight < trajectory.PIN_WEIGHT
+        taught = np.array(list(a.q)[: a.dof])
+        assert np.allclose(job.problem.prior[row][moving], taught[moving], atol=1e-9)
+
+    @pytest.mark.parametrize("kind", ["gap", "pause"])
+    def test_a_hold_is_kept_at_its_waypoint(self, arm6, builder, modules, kind):
+        """B reached on frame 61 and left on 81, by a gap held there or a motion from B
+        to B: on every frame between, the tool is aimed at B and its taught joints
+        held, as at B itself."""
+        import bpy
+
+        optimize, trajectory = modules("ops.optimize"), modules("solver.trajectory")
+        _teach(builder, arm6, ROOMY)
+        name = _held_at_b(arm6, kind)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert [row.name for row in arm6.kinema_motion_check][1] == name
+
+        job = optimize.prepare(bpy.context, arm6)
+        b = arm6.kinema_waypoints["B"]
+        taught = np.array(list(b.q)[: b.dof])
+        for frame in range(62, 81):
+            row = frame - ROOMY[0]
+            assert job.problem.position_weight[row] > 0.0, frame
+            weight = job.problem.prior_weight[row]
+            assert weight.min() == pytest.approx(trajectory.WAYPOINT_WEIGHT), frame
+            moving = weight < trajectory.PIN_WEIGHT
+            assert np.allclose(job.problem.prior[row][moving], taught[moving], atol=1e-9)
+
+    @pytest.mark.parametrize("kind", ["gap", "pause"])
+    def test_a_hold_stays_at_its_waypoint_with_a_post_pulling_on_it(
+        self, arm6, builder, modules, kind
+    ):
+        """The hold at B, frames 61-81, a gap or a pause, with a post 30 mm into the
+        arm there: solved, the tool stays within 0.01 mm of B on every frame of it.
+        Without its target and joints, it strayed 12.6 mm."""
+        import bpy
+
+        wp = modules("ops.waypoints")
+        _teach(builder, arm6, ROOMY)
+        name = _held_at_b(arm6, kind)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        _in_the_way(builder, modules, arm6, frame=61)
+        assert "FINISHED" in bpy.ops.kinema.check_motion()
+        hold = next(r for r in arm6.kinema_motion_check if r.name == name)
+        assert hold.clearance < -0.02, "precondition: the post pulls on the hold"
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        goal = np.array(wp.pose_of(arm6.kinema_waypoints["B"]))
+        for frame in range(61, 82):
+            bpy.context.scene.frame_set(frame)
+            tool = np.array(arm6.pose.bones[wp._tool_bone(arm6)].matrix)
+            assert 1000.0 * np.linalg.norm(tool[:3, 3] - goal[:3, 3]) < 0.01, frame
+
     def test_a_job_over_its_limits_comes_back_within_them(self, arm6, builder, modules):
         """As generated, joint 1 runs at 153% of its acceleration limit, and 113% of its speed."""
         import bpy
@@ -446,7 +537,7 @@ class TestRefusing:
 
         _job(builder, arm6, ROOMY)
         before = _keys(modules, arm6)
-        arm6.kinema_waypoints[1].frame = 70
+        _retime(arm6, arm6.kinema_waypoints[1], 70)
         with pytest.raises(RuntimeError, match="Generate Motion again"):
             bpy.ops.kinema.optimize_motion()
         assert _keys(modules, arm6) == before
@@ -522,7 +613,9 @@ def _least_between_waypoints(modules, rig):
     collision = modules("ops.collision")
     geometry = modules("rig.collision")
     obstacles = collision.obstacles(bpy.context)
-    held = {int(waypoint.frame) for waypoint in rig.kinema_waypoints}
+    held = {
+        frame for motion in rig.kinema_motions for frame in (motion.frame_start, motion.frame_end)
+    }
     first, last = min(held), max(held)
     least = np.inf
     for frame in range(first, last + 1):
@@ -793,10 +886,10 @@ class TestKeepingClear:
         _job(builder, arm6, ROOMY)
         _in_the_way(builder, modules, arm6, up=0.0, size=CRATE)
         arm6.kinema_keep_clear = 0.03
-        last = max(arm6.kinema_waypoints, key=lambda waypoint: waypoint.frame)
+        last = max(arm6.kinema_motions, key=lambda motion: motion.frame_end)
         reached = []
         for end in (161, 166, 171, 176, 181, 211):
-            last.frame = end
+            last.frame_end = end
             assert "FINISHED" in bpy.ops.kinema.generate_motion()
             assert "FINISHED" in bpy.ops.kinema.optimize_motion()
             rows = {row.name: row for row in arm6.kinema_motion_check}
@@ -875,15 +968,15 @@ class TestKeepingClear:
         _job(builder, arm6, ROOMY)
         _in_the_way(builder, modules, arm6, up=0.0, size=CRATE)
         arm6.kinema_keep_clear = keep
-        last = max(arm6.kinema_waypoints, key=lambda waypoint: waypoint.frame)
-        last.frame = 171
+        last = max(arm6.kinema_motions, key=lambda motion: motion.frame_end)
+        last.frame_end = 171
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert "FINISHED" in bpy.ops.kinema.optimize_motion()
         before = _least_between_waypoints(modules, arm6)
         assert before > 0.0, "precondition: the job as it was comes out clear"
 
         if change == "one frame more":
-            last.frame = 172
+            last.frame_end = 172
         else:
             marker = next(w for w in arm6.kinema_waypoints if w.name == "B").marker
             moved = marker.matrix_basis.copy()

@@ -124,6 +124,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Waypoints are poses; motions are the moves between them**
+  ([#96](https://github.com/ebgenius/kinema/issues/96)). A motion, in the new Motions list,
+  goes from one waypoint to another, Joint or Linear, with its own start and end frame, as
+  an NLA strip has. One waypoint can end one motion and start another, and a motion is
+  retimed without touching its poses.
+  - Record on a later frame still adds the move from the last waypoint recorded, so a job
+    is taught as before.
+  - The job runs in frame order. A gap at one waypoint holds there; a gap to another gets
+    a joint move across it, and a warning. Motions that overlap generate nothing until one
+    is moved.
+  - A file saved before motions opens with its waypoints' frames and moves as motions, and
+    plays as it did.
 - **The panels keep the robot while something else is selected,** in Object Mode: the one
   they last showed, or the scene's only robot. Before, selecting a fixture, to make it an
   obstacle say, took them away. The robot's name is marked *Not selected* meanwhile.
