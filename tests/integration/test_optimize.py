@@ -187,6 +187,30 @@ class TestOptimizing:
         taught = np.array(list(a.q)[: a.dof])
         assert np.allclose(job.problem.prior[row][moving], taught[moving], atol=1e-9)
 
+    def test_a_hold_is_kept_at_its_waypoint(self, arm6, builder, modules):
+        """B reached on frame 61 and left on 81: on every frame between, the tool is
+        aimed at B and its taught joints held, as at B itself."""
+        import bpy
+
+        optimize, trajectory = modules("ops.optimize"), modules("solver.trajectory")
+        _teach(builder, arm6, ROOMY)
+        for motion in list(arm6.kinema_motions)[1:]:
+            motion.frame_start += 20
+            motion.frame_end += 20
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert [row.name for row in arm6.kinema_motion_check][1] == "hold at B"
+
+        job = optimize.prepare(bpy.context, arm6)
+        b = arm6.kinema_waypoints["B"]
+        taught = np.array(list(b.q)[: b.dof])
+        for frame in range(62, 81):
+            row = frame - ROOMY[0]
+            assert job.problem.position_weight[row] > 0.0, frame
+            weight = job.problem.prior_weight[row]
+            assert weight.min() == pytest.approx(trajectory.WAYPOINT_WEIGHT), frame
+            moving = weight < trajectory.PIN_WEIGHT
+            assert np.allclose(job.problem.prior[row][moving], taught[moving], atol=1e-9)
+
     def test_a_job_over_its_limits_comes_back_within_them(self, arm6, builder, modules):
         """As generated, joint 1 runs at 153% of its acceleration limit, and 113% of its speed."""
         import bpy

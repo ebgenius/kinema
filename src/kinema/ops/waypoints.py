@@ -218,15 +218,35 @@ MOVE_ITEMS = [
 JOB_VERSION = 1
 
 
+def unique_name(rig, waypoint) -> None:
+    """Give ``waypoint`` a name no other waypoint on ``rig`` has, as Blender names a copy.
+
+    A motion's From and To are picked by name, so two waypoints of one name
+    would leave one of them out of reach.
+    """
+    taken = {w.name for w in rig.kinema_waypoints if w.as_pointer() != waypoint.as_pointer()}
+    if waypoint.name not in taken:
+        return
+    base, number = waypoint.name, 1
+    while f"{base}.{number:03d}" in taken:
+        number += 1
+    waypoint.name = f"{base}.{number:03d}"
+
+
+def _on_waypoint_named(self, _context) -> None:
+    unique_name(self.id_data, self)
+
+
 class KinemaWaypoint(PropertyGroup):
     """One taught pose: the tool's, and the joint configuration it was taught in."""
 
     name: StringProperty(
         name="Name",
-        description="What this point is for: home, approach, pick, drop",
+        description="What this point is for: home, approach, pick, drop. One name per waypoint",
         default="waypoint",
+        update=_on_waypoint_named,
     )
-    #: What motions name this waypoint by: names can repeat and change.
+    #: What motions refer to this waypoint by: names change.
     uid: StringProperty(name="Id", default="")
     #: Read only to convert a file saved before motions, where the waypoint
     #: carried when the robot is there and how it arrives.
@@ -319,11 +339,15 @@ def convert_saved_before_motions(rig) -> bool:
     for waypoint in rig.kinema_waypoints:
         if not waypoint.uid:
             waypoint.uid = _new_uid()
+        unique_name(rig, waypoint)
     if not len(rig.kinema_motions) and len(rig.kinema_waypoints) > 1:
         try:
             old = spans(rig.kinema_waypoints)
-        except WaypointError:
-            old = []  # two on one frame: no job then either, and none now
+        except WaypointError as exc:
+            # Two on one frame: no job then either. Kept, so Generate Motion can
+            # say why there are no motions now.
+            old = []
+            rig.kinema_unconverted = str(exc)
         for span in old:
             motion = rig.kinema_motions.add()
             motion.name = span.end.name
@@ -352,6 +376,11 @@ def job_plan(rig):
     for a panel's draw.
     """
     convert_saved_before_motions(rig)
+    if not len(rig.kinema_motions) and rig.kinema_unconverted:
+        raise WaypointError(
+            f"This job, saved before motions, couldn't be made into motions: "
+            f"{rig.kinema_unconverted}. Add its motions in the Motions list"
+        )
     return plan_motions(rig.kinema_motions, rig.kinema_waypoints)
 
 
@@ -478,8 +507,8 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
         convert_saved_before_motions(rig)
         context.view_layer.update()
         waypoint = rig.kinema_waypoints.add()
-        waypoint.name = self.name or f"point{len(rig.kinema_waypoints)}"
         waypoint.uid = _new_uid()
+        waypoint.name = self.name or f"point{len(rig.kinema_waypoints)}"
 
         error = _record(rig, waypoint)
         if error is not None:
@@ -726,9 +755,18 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             )
             return {"CANCELLED"}
         overrides = {waypoint.as_pointer(): values for waypoint, values in followed}
-        refused, turned = (
-            settle_configurations(rig, plan, overrides) if needs_ik else ([], [])
+        refused, turned, shared = (
+            settle_configurations(rig, plan, overrides) if needs_ik else ([], [], [])
         )
+        if shared:
+            names = ", ".join(f"'{name}'" for name in shared)
+            self.report(
+                {"ERROR"},
+                f"{names}: linear moves arrive there a whole turn apart, and a "
+                f"waypoint keeps one turn for every move that uses it. Teach a "
+                f"waypoint for each, or make one of the moves a joint move",
+            )
+            return {"CANCELLED"}
         if refused:
             names = ", ".join(f"'{name}'" for name in refused)
             self.report(
@@ -1012,8 +1050,8 @@ def settle_configurations(rig, plan, overrides=None):
     place of its stored ones: those :func:`follow_markers` found for it, which
     are only written once nothing has been refused.
 
-    Returns ``(refused, turned)`` and writes nothing, so a refusal leaves the
-    waypoints exactly as they were:
+    Returns ``(refused, turned, shared)`` and writes nothing, so a refusal
+    leaves the waypoints exactly as they were:
 
     - ``refused``: the linear moves whose two ends were taught in different
       configurations, named by the waypoint each arrives at. A straight line
@@ -1026,6 +1064,11 @@ def settle_configurations(rig, plan, overrides=None):
       taught turn instead would pull it over to that turn part-way along the
       line, in a single frame.
 
+    - ``shared``: the waypoints whose turns a linear move would change after
+      an earlier linear move started or ended there with the turns as they
+      were. A waypoint holds one set of joint values for every motion that
+      uses it, so changing it would leave the earlier line a whole turn off.
+
     Settled in time order, so a move that starts where an earlier one's turns
     were changed walks from the changed values.
     """
@@ -1033,10 +1076,11 @@ def settle_configurations(rig, plan, overrides=None):
     # A waypoint's pose is the TCP's. With the tip handed to another bone the
     # solver is aiming something else at it, and the walk would prove nothing.
     if solver is None or solver.tip_bone != _tool_bone(rig):
-        return [], []
+        return [], [], []
     chain = solver.chain
-    refused, turned = [], []
+    refused, turned, shared = [], [], []
     changed = dict(overrides or {})
+    lined = set()  # waypoints an earlier linear move started or ended at
     for span in plan:
         if span.move != MOVE_LINEAR:
             continue
@@ -1048,12 +1092,16 @@ def settle_configurations(rig, plan, overrides=None):
         kind, values = arrival
         if kind == BRANCH:
             refused.append(span.end.name)
+        elif kind == TURNS and span.end.as_pointer() in lined:
+            if span.end.name not in shared:
+                shared.append(span.end.name)
         elif kind == TURNS:
             changed[span.end.as_pointer()] = values
             turned.append(
                 (span.end, values, _turn_description(rig, chain, span, end, values), span.end_frame)
             )
-    return refused, turned
+        lined.update((span.start.as_pointer(), span.end.as_pointer()))
+    return refused, turned, shared
 
 
 def _arrival(rig, span, chain, start_values, end_values):
@@ -1591,6 +1639,8 @@ def register_props() -> None:
     bpy.types.Object.kinema_last_recorded_frame = IntProperty(
         name="Last Recorded Frame", default=0
     )
+    # Why a job saved before motions made none: see convert_saved_before_motions.
+    bpy.types.Object.kinema_unconverted = StringProperty(name="Not Converted", default="")
     # The last motion check, one row per move. Kept on the rig so it survives a
     # save, and replaced whole by the next Generate Motion or Check Motion.
     bpy.types.Object.kinema_motion_check = CollectionProperty(type=KinemaMoveCheck)
@@ -1636,6 +1686,7 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_job_version
     del bpy.types.Object.kinema_last_recorded
     del bpy.types.Object.kinema_last_recorded_frame
+    del bpy.types.Object.kinema_unconverted
     del bpy.types.Object.kinema_motion_check
     del bpy.types.Object.kinema_motion_check_job
     del bpy.types.Object.kinema_generated_range

@@ -804,6 +804,27 @@ class TestConfiguration:
             found
         )
 
+    def test_linear_moves_arriving_a_whole_turn_apart_at_one_waypoint_are_refused(
+        self, wide6, builder
+    ):
+        """a to b in a line; then c, the same pose as a with the wrist a turn round,
+        and a line from c back to b, which arrives a turn from the first line's b.
+
+        b keeps one set of joints for both, so taking the second line's would
+        leave the first a whole turn off at its end: refused, naming b.
+        """
+        import bpy
+
+        _teach(builder, wide6, 1, WRIST + [FLIP - 0.2], "JOINT", "a")
+        b = _teach(builder, wide6, 21, WRIST + [FLIP + 0.2], "LINEAR", "b")
+        _teach(builder, wide6, 41, WRIST + [FLIP - 0.2 - 2.0 * math.pi], "JOINT", "c")
+        _motion(wide6, "back", "c", "b", 41, 61, move="LINEAR")
+        taught = list(b.q)
+
+        with pytest.raises(RuntimeError, match="'b': linear moves arrive there a whole turn apart"):
+            bpy.ops.kinema.generate_motion()
+        assert list(b.q) == taught
+
     def test_a_wound_end_with_a_moved_marker_keeps_the_turn_at_the_marker(
         self, wide6, builder
     ):
@@ -1251,6 +1272,37 @@ class TestMotions:
         assert "FINISHED" in bpy.ops.kinema.remove_waypoint(index=1)
         assert len(arm6.kinema_motions) == 0
         assert [w.name for w in arm6.kinema_waypoints] == ["home", "place"]
+
+    def test_a_job_saved_before_motions_that_had_none_says_why(self, arm6, builder, addon):
+        """Two waypoints on one frame made no job then, and make no motions now:
+        Generate Motion names them, as it did."""
+        import bpy
+
+        handlers = importlib.import_module(f"{addon.__name__}.handlers")
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        for waypoint in arm6.kinema_waypoints:
+            waypoint.frame, waypoint.move, waypoint.uid = 20, "JOINT", ""
+        arm6.kinema_motions.clear()
+        arm6.kinema_job_version = 0
+        handlers.on_load_post()
+
+        assert not len(arm6.kinema_motions)
+        with pytest.raises(RuntimeError, match="both on frame 20"):
+            bpy.ops.kinema.generate_motion()
+
+    def test_no_two_waypoints_share_a_name(self, arm6, builder):
+        """A motion's From and To are picked by name: a second 'pick' is 'pick.001',
+        recorded or renamed, and a motion can be pointed at it."""
+        _teach(builder, arm6, 1, Q0, "JOINT", "pick")
+        second = _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        assert second.name == "pick.001"
+        third = _teach(builder, arm6, 41, REACH_A, "JOINT", "place")
+        third.name = "pick"
+        assert third.name == "pick.002"
+        motion = arm6.kinema_motions[0]
+        motion.end_name = "pick.002"
+        assert motion.end == third.uid
 
     def test_renaming_a_waypoint_keeps_its_motions(self, arm6, builder):
         _teach(builder, arm6, 1, Q0, "JOINT", "home")

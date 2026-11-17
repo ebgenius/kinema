@@ -50,7 +50,7 @@ from bpy.props import BoolProperty, FloatProperty
 from bpy.types import Operator
 
 from ..rig import builder, motion_check
-from ..rig.waypoints import MOVE_LINEAR, WaypointError
+from ..rig.waypoints import MADE_HOLD, MOVE_LINEAR, WaypointError
 from ..solver import manager, trajectory
 from ..solver.base import SolverError
 from ..ui.panel import active_rig
@@ -417,10 +417,14 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
     prior = q_job.copy()
     prior_weight = np.where(moving, trajectory.JOB_WEIGHT, trajectory.PIN_WEIGHT)
     prior_weight = np.repeat(prior_weight[None], len(frames), axis=0)
-    # By frame: a waypoint two motions share is taught on each of their frames.
+    # By frame: a waypoint two motions share is taught on each of their frames,
+    # and a hold on every frame of it.
     taught = {}
     for span in plan:
         taught[span.start_frame], taught[span.end_frame] = span.start, span.end
+        if span.made == MADE_HOLD:
+            for frame in range(span.start_frame + 1, span.end_frame):
+                taught[frame] = span.start
     for frame, waypoint in taught.items():
         if waypoint.dof != len(bones):
             continue  # taught with other joints: its values don't line up
@@ -451,6 +455,11 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
             for frame in range(span.start_frame + 1, span.end_frame):
                 fraction = (frame - span.start_frame) / span.frames
                 aim(frame, wp._between(start, end, fraction))
+        elif span.made == MADE_HOLD:
+            # Still at the waypoint, which nothing may pull it off: not an
+            # obstacle, and not the smoothing either side.
+            for frame in range(span.start_frame + 1, span.end_frame):
+                aim(frame, start)
 
     # The limits the Motion Check measures against: the bones'.
     speed = np.full(dof, trajectory.UNLIMITED)
