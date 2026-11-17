@@ -22,8 +22,10 @@ import json
 import statistics
 from pathlib import Path
 
+#: The suite's folder.
+TESTS = Path(__file__).resolve().parent
 #: Each test's last measured time in seconds, by node id: ``dev.py test --record-durations``.
-DURATIONS = Path(__file__).resolve().parent / "durations.json"
+DURATIONS = TESTS / "durations.json"
 
 
 def read_durations(path: Path = DURATIONS) -> dict[str, float]:
@@ -49,6 +51,16 @@ def shares(nodeids: list[str], durations: dict[str, float], count: int) -> list[
         owner[nodeid] = least
         loads[least] += cost[nodeid]
     return [owner[n] for n in nodeids]
+
+
+def covers_suite(args: list[str], base: Path, tests: Path = TESTS) -> bool:
+    """Whether pytest was asked for all of the suite: one of its paths, ``args``
+    relative to ``base``, is the tests folder or a folder holding it."""
+    for arg in args:
+        path = Path(base, arg.split("::")[0]).resolve()
+        if path == tests or path in tests.parents:
+            return True
+    return False
 
 
 def parse_shard(text: str) -> tuple[int, int]:

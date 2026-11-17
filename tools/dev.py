@@ -202,7 +202,14 @@ GB_PER_JOB = 6
 
 
 def _memory_gb() -> float | None:
-    """This machine's memory, or None where it can't be read."""
+    """The memory free for the tests now, in GB, or None where it can't be read.
+
+    What is free, not the total: a Blender, a browser or another test run
+    already open has its share. On Windows, the lower of the physical memory
+    free and the commit charge left, since memory is refused past the commit
+    limit even with RAM to spare. On Linux, ``MemAvailable``, and in a container
+    no more than its limit less what it uses. Elsewhere, the total.
+    """
     if sys.platform == "win32":
         import ctypes
 
@@ -215,35 +222,55 @@ def _memory_gb() -> float | None:
 
         status = Status(length=ctypes.sizeof(Status))
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return status.total / 2**30
+            # page_free is the commit charge left, page file and RAM together.
+            return min(status.free, status.page_free) / 2**30
         return None
+    free = [gb for gb in (_available_gb(), _container_free_gb()) if gb is not None]
+    if free:
+        return min(free)
     try:
-        physical = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
     except (ValueError, OSError, AttributeError):
         return None
-    limit = _container_limit_gb()
-    return physical if limit is None else min(physical, limit)
 
 
-def _container_limit_gb(root: Path = Path("/sys/fs/cgroup")) -> float | None:
-    """The memory this process's control group may use on Linux, or None where it
-    has no limit: in a container, the machine's memory isn't what it may have."""
-    for name in ("memory.max", "memory/memory.limit_in_bytes"):  # cgroup v2, v1
+def _available_gb(meminfo: Path = Path("/proc/meminfo")) -> float | None:
+    """Linux's estimate of the memory a new process can have, or None."""
+    try:
+        for line in meminfo.read_text(encoding="ascii").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 2**20  # in kB
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _container_free_gb(root: Path = Path("/sys/fs/cgroup")) -> float | None:
+    """What this process's control group may still use on Linux, its limit less
+    what it uses, or None where it has no limit."""
+    for limit_name, used_name in (
+        ("memory.max", "memory.current"),  # cgroup v2
+        ("memory/memory.limit_in_bytes", "memory/memory.usage_in_bytes"),  # v1
+    ):
         try:
-            text = (root / name).read_text(encoding="ascii").strip()
+            text = (root / limit_name).read_text(encoding="ascii").strip()
         except OSError:
             continue
-        if text.isdigit() and int(text) < 2**60:  # v1 writes a huge number for none
-            return int(text) / 2**30
-        return None  # "max": no limit
+        if not (text.isdigit() and int(text) < 2**60):  # "max", or v1's huge number
+            return None
+        try:
+            used = int((root / used_name).read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            used = 0
+        return max(0, int(text) - used) / 2**30
     return None
 
 
 def _jobs(asked: str) -> int:
     """How many Blender processes to run the suite in: ``auto``, or a number.
 
-    ``auto`` is half the logical cores, and no more than the memory holds at
-    :data:`GB_PER_JOB` each, at most 8. Measured on 20 cores and 64 GB: four
+    ``auto`` is half the logical cores, and no more than the memory free holds
+    at :data:`GB_PER_JOB` each, at most 8. Measured on 20 cores and 64 GB: four
     processes solved as fast each as one did, and eight 25% slower each; the
     whole suite took 281 s in five and 225 s in eight, where one took 21 minutes.
     """
@@ -263,18 +290,44 @@ def _summary(log: str) -> str:
     return "no summary: see its log"
 
 
-def _merged_durations(recorded: dict, parts: list[dict], whole: bool) -> dict:
+def _read_json(path: Path):
+    """A JSON file's value, or None where it is missing, unreadable or cut short."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _times(value) -> dict[str, float]:
+    """``value``'s times in seconds by test, or none where it isn't a mapping of them."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(k): float(v) for k, v in value.items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
+
+
+def _merged_durations(recorded, parts: list) -> dict[str, float]:
     """The recorded times, with each process's measured ones in their place.
 
-    After a run of the whole suite, a test no process collected -- renamed or
-    removed since -- is dropped, so its time isn't kept forever. After part of
-    it, the others are kept as they were.
+    ``recorded`` and each part are as read, so maybe None or of the wrong shape;
+    a bad file counts as no times, and is written over whole. A test no process
+    collected -- renamed or removed since -- is dropped, so its time isn't kept
+    forever, but only where every process says it collected the whole suite
+    without an error. After part of it, a failed import, or a process whose
+    report can't be read, the others are kept as they were.
     """
-    merged = dict(recorded)
+    merged = _times(recorded)
     collected: set[str] = set()
+    whole = bool(parts)
     for part in parts:
-        merged.update(part["times"])
-        collected.update(part["collected"])
+        if not isinstance(part, dict):
+            whole = False
+            continue
+        merged.update(_times(part.get("times")))
+        collected.update(str(n) for n in part.get("collected") or ())
+        whole = whole and part.get("whole") is True
     if whole and collected:
         merged = {k: v for k, v in merged.items() if k in collected}
     return dict(sorted(merged.items()))
@@ -350,15 +403,12 @@ def cmd_test(args: argparse.Namespace) -> int:
     print(f"{jobs} processes, {time.perf_counter() - started:.0f} s in all")
 
     if args.record_durations:
-        recorded = {}
-        if DURATIONS.is_file():
-            recorded = json.loads(DURATIONS.read_text(encoding="utf-8"))
-        parts = [
-            json.loads(part.read_text(encoding="utf-8"))
-            for part in sorted(logs.glob("durations-*.json"))
-        ]
-        recorded = _merged_durations(recorded, parts, whole=not args.pytest_args)
-        DURATIONS.write_text(json.dumps(recorded, indent=0) + "\n", encoding="utf-8")
+        parts = [_read_json(part) for part in sorted(logs.glob("durations-*.json"))]
+        recorded = _merged_durations(_read_json(DURATIONS), parts)
+        # Written beside it and moved over it, so it is never left cut short.
+        written = DURATIONS.with_name(DURATIONS.name + ".tmp")
+        written.write_text(json.dumps(recorded, indent=0) + "\n", encoding="utf-8")
+        os.replace(written, DURATIONS)
         print(f"times of {len(recorded)} tests written to {DURATIONS.relative_to(REPO_ROOT)}")
     if all(code == 5 for code in codes):
         return 5

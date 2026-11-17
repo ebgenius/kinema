@@ -110,40 +110,69 @@ class TestRunningShares:
         assert killed == started
 
 
+def _part(times, whole=True):
+    return {"whole": whole, "collected": ["a", "b", "c"], "times": times}
+
+
 class TestMergingDurations:
-    PARTS = [
-        {"collected": ["a", "b", "c"], "times": {"a": 2.0}},
-        {"collected": ["a", "b", "c"], "times": {"b": 3.0}},
-    ]
+    RECORDED = {"a": 1.0, "c": 4.0, "gone": 9.0}
 
     def test_the_whole_suite_drops_a_test_that_is_gone(self, dev):
-        merged = dev._merged_durations({"a": 1.0, "c": 4.0, "gone": 9.0}, self.PARTS, whole=True)
+        merged = dev._merged_durations(self.RECORDED, [_part({"a": 2.0}), _part({"b": 3.0})])
         assert merged == {"a": 2.0, "b": 3.0, "c": 4.0}
 
-    def test_part_of_it_keeps_the_rest(self, dev):
-        merged = dev._merged_durations({"a": 1.0, "gone": 9.0}, self.PARTS, whole=False)
-        assert merged == {"a": 2.0, "b": 3.0, "gone": 9.0}
+    def test_part_of_it_or_a_failed_import_keeps_the_rest(self, dev):
+        """Either way a process says it didn't collect the whole suite."""
+        parts = [_part({"a": 2.0}), _part({"b": 3.0}, whole=False)]
+        merged = dev._merged_durations(self.RECORDED, parts)
+        assert merged == {"a": 2.0, "b": 3.0, "c": 4.0, "gone": 9.0}
+
+    def test_a_report_that_cannot_be_read_keeps_the_rest(self, dev):
+        merged = dev._merged_durations(self.RECORDED, [_part({"a": 2.0}), None])
+        assert merged["gone"] == 9.0
 
     def test_no_process_reporting_drops_nothing(self, dev):
-        assert dev._merged_durations({"a": 1.0}, [], whole=True) == {"a": 1.0}
+        assert dev._merged_durations({"a": 1.0}, []) == {"a": 1.0}
+
+    @pytest.mark.parametrize("recorded", [None, [], "x", {"a": "slow", "b": None}])
+    def test_a_bad_file_is_written_over_with_the_times_measured(self, dev, recorded):
+        assert dev._merged_durations(recorded, [_part({"a": 2.0})]) == {"a": 2.0}
+
+    def test_a_file_cut_short_reads_as_none(self, dev, tmp_path):
+        path = tmp_path / "durations.json"
+        path.write_text('{"a": 1.', encoding="utf-8")
+        assert dev._read_json(path) is None
+        assert dev._read_json(tmp_path / "missing.json") is None
 
 
-class TestContainerMemory:
-    def test_a_v2_limit_is_read(self, dev, tmp_path):
+class TestFreeMemory:
+    def test_a_v2_limit_less_what_it_uses(self, dev, tmp_path):
         (tmp_path / "memory.max").write_text(f"{8 * 2**30}\n", encoding="ascii")
-        assert dev._container_limit_gb(tmp_path) == 8.0
+        (tmp_path / "memory.current").write_text(f"{3 * 2**30}\n", encoding="ascii")
+        assert dev._container_free_gb(tmp_path) == 5.0
 
     def test_no_v2_limit_is_none(self, dev, tmp_path):
         (tmp_path / "memory.max").write_text("max\n", encoding="ascii")
-        assert dev._container_limit_gb(tmp_path) is None
+        assert dev._container_free_gb(tmp_path) is None
 
-    def test_a_v1_limit_is_read_and_its_none_is_none(self, dev, tmp_path):
+    def test_a_v1_limit_less_what_it_uses_and_its_none_is_none(self, dev, tmp_path):
         (tmp_path / "memory").mkdir()
-        path = tmp_path / "memory" / "memory.limit_in_bytes"
-        path.write_text(f"{12 * 2**30}\n", encoding="ascii")
-        assert dev._container_limit_gb(tmp_path) == 12.0
-        path.write_text("9223372036854771712\n", encoding="ascii")
-        assert dev._container_limit_gb(tmp_path) is None
+        limit = tmp_path / "memory" / "memory.limit_in_bytes"
+        limit.write_text(f"{12 * 2**30}\n", encoding="ascii")
+        used = tmp_path / "memory" / "memory.usage_in_bytes"
+        used.write_text(f"{2 * 2**30}\n", encoding="ascii")
+        assert dev._container_free_gb(tmp_path) == 10.0
+        limit.write_text("9223372036854771712\n", encoding="ascii")
+        assert dev._container_free_gb(tmp_path) is None
 
     def test_no_control_group_is_none(self, dev, tmp_path):
-        assert dev._container_limit_gb(tmp_path) is None
+        assert dev._container_free_gb(tmp_path) is None
+
+    def test_what_linux_says_is_available(self, dev, tmp_path):
+        meminfo = tmp_path / "meminfo"
+        meminfo.write_text(
+            "MemTotal:       65536000 kB\nMemFree:  1000 kB\nMemAvailable:   20971520 kB\n",
+            encoding="ascii",
+        )
+        assert dev._available_gb(meminfo) == 20.0
+        assert dev._available_gb(tmp_path / "missing") is None

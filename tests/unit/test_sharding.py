@@ -63,6 +63,21 @@ class TestShares:
     def test_one_share_is_all_of_it(self):
         assert sharding.shares(["a", "b"], {}, 1) == [0, 0]
 
+    @pytest.mark.parametrize(
+        ("args", "whole"),
+        [
+            (["tests"], True),
+            ([str(REPO_ROOT)], True),
+            ([str(REPO_ROOT / "tests")], True),
+            (["tests/unit"], False),
+            (["tests/unit/test_sharding.py::TestShares"], False),
+            (["tests/unit", "tests"], True),
+            ([], False),
+        ],
+    )
+    def test_the_whole_suite_is_its_folder_or_one_holding_it(self, args, whole):
+        assert sharding.covers_suite(args, REPO_ROOT) is whole
+
     def test_a_shard_is_read_as_index_and_count(self):
         assert sharding.parse_shard("2/5") == (2, 5)
         with pytest.raises(ValueError):
