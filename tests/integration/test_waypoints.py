@@ -1415,12 +1415,17 @@ class TestMotions:
         with bpy.data.libraries.load(str(library), link=True) as (_, linked):
             linked.objects = [arm6.name]
         rig = linked.objects[0]
-        assert rig.library is not None, "precondition: linked, not local"
-
-        handlers.on_load_post()
-        assert rig.kinema_job_version == 0 and not len(rig.kinema_motions)
-        plan = wp_ops.job_plan(rig)
-        assert [(s.label, s.start_frame, s.end_frame) for s in plan.spans] == [("pick", 1, 21)]
+        try:
+            assert rig.library is not None, "precondition: linked, not local"
+            handlers.on_load_post()
+            assert rig.kinema_job_version == 0 and not len(rig.kinema_motions)
+            plan = wp_ops.job_plan(rig)
+            spans = [(s.label, s.start_frame, s.end_frame) for s in plan.spans]
+            assert spans == [("pick", 1, 21)]
+        finally:
+            # The library goes, and every datablock linked from it, so nothing
+            # linked is left for the tests after this one.
+            bpy.data.libraries.remove(rig.library)
 
     def test_renaming_a_waypoint_keeps_its_motions(self, arm6, builder):
         _teach(builder, arm6, 1, Q0, "JOINT", "home")
