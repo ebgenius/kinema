@@ -218,9 +218,25 @@ def _memory_gb() -> float | None:
             return status.total / 2**30
         return None
     try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+        physical = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
     except (ValueError, OSError, AttributeError):
         return None
+    limit = _container_limit_gb()
+    return physical if limit is None else min(physical, limit)
+
+
+def _container_limit_gb(root: Path = Path("/sys/fs/cgroup")) -> float | None:
+    """The memory this process's control group may use on Linux, or None where it
+    has no limit: in a container, the machine's memory isn't what it may have."""
+    for name in ("memory.max", "memory/memory.limit_in_bytes"):  # cgroup v2, v1
+        try:
+            text = (root / name).read_text(encoding="ascii").strip()
+        except OSError:
+            continue
+        if text.isdigit() and int(text) < 2**60:  # v1 writes a huge number for none
+            return int(text) / 2**30
+        return None  # "max": no limit
+    return None
 
 
 def _jobs(asked: str) -> int:
@@ -247,6 +263,37 @@ def _summary(log: str) -> str:
     return "no summary: see its log"
 
 
+def _run_shares(cmd: list[str], jobs: int, logs: Path, env_for) -> list[int]:
+    """Start one Blender per share, logging to ``logs``, and wait for them all.
+
+    Returns their exit codes. Should one fail to start, or the wait be
+    interrupted, those already started are stopped: none is left running.
+    """
+    running = []
+    try:
+        for index in range(jobs):
+            out = (logs / f"share-{index}.log").open("w", encoding="utf-8", errors="replace")
+            try:
+                process = subprocess.Popen(
+                    cmd, env=env_for(index), stdout=out, stderr=subprocess.STDOUT
+                )
+            except BaseException:
+                out.close()
+                raise
+            running.append((process, out))
+        return [process.wait() for process, _ in running]
+    finally:
+        for process, out in running:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            out.close()
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     blender = find_blender()
     runner = REPO_ROOT / "tests" / "run_in_blender.py"
@@ -264,22 +311,17 @@ def cmd_test(args: argparse.Namespace) -> int:
     logs = Path(tempfile.mkdtemp(prefix="kinema-test-"))
     print(f"running the tests in {jobs} Blender processes at once; logs in {logs}")
     started = time.perf_counter()
-    running = []
-    for index in range(jobs):
+
+    def env_for(index: int) -> dict[str, str]:
         env = _launch_env(args)
         env["KINEMA_TEST_SHARD"] = f"{index}/{jobs}"
         if args.record_durations:
             env["KINEMA_RECORD_DURATIONS"] = str(logs / f"durations-{index}.json")
-        out = (logs / f"share-{index}.log").open("w", encoding="utf-8", errors="replace")
-        process = subprocess.Popen(cmd, env=env, stdout=out, stderr=subprocess.STDOUT)
-        running.append((index, process, out))
+        return env
 
-    codes = []
-    for _index, process, out in running:
-        codes.append(process.wait())
-        out.close()
+    codes = _run_shares(cmd, jobs, logs, env_for)
     worst = 0
-    for (index, _, _), code in zip(running, codes, strict=True):
+    for index, code in enumerate(codes):
         log = (logs / f"share-{index}.log").read_text(encoding="utf-8", errors="replace")
         for line in log.splitlines():
             if line.startswith(("FAILED", "ERROR")):

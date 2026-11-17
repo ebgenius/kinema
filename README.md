@@ -730,10 +730,11 @@ uv run python tools/dev.py test            # in-Blender suite (real bpy)
 
 The in-Blender suite runs in several Blender processes at once, each with a share of the
 tests: half the logical cores, within the memory at 6 GB a process, at most 8. On 20 cores
-and 64 GB that's 8, and the suite takes under 4 minutes, where one process took 21. `-j N` sets the number, and `-j 1` runs it in one process, as before, its output as it
-comes. The shares are balanced by each test's last time, in `tests/durations.json`:
-`dev.py test --record-durations` measures them again. Each process's log is kept, and its
-failures and counts are printed at the end.
+and 64 GB that's 8, and the suite takes under 4 minutes, where one process took 21. `-j N` sets the number. `-j 1` runs it in one process, as before, its output as it comes,
+unless times are being recorded. The shares are balanced by each test's last time, in
+`tests/durations.json`: `dev.py test --record-durations` measures them again. A run in
+several processes, or one recording times, keeps each process's log and prints their
+failures and counts at the end.
 
 Run the non-Blender tests with UTF-8 mode enabled (`PYTHONUTF8=1`) on Windows. Blender runs
 its interpreter in UTF-8 mode already, but the system default is cp1252, and some ROS xacro

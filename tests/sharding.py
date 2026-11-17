@@ -30,7 +30,8 @@ def read_durations(path: Path = DURATIONS) -> dict[str, float]:
     """The recorded times, or none where there are none yet."""
     try:
         return {str(k): float(v) for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError, AttributeError):
+        # Unreadable, or not a mapping of numbers: as if never recorded.
         return {}
 
 
