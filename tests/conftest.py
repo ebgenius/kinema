@@ -123,3 +123,48 @@ def clean_scene():
 @pytest.fixture(scope="session")
 def fixture_dir() -> Path:
     return FIXTURE_DIR
+
+
+# --------------------------------------------------------------------------
+# running a share of the suite, and timing it: tools/dev.py test -j, --record-durations
+# --------------------------------------------------------------------------
+def pytest_collection_modifyitems(config, items):
+    """Keep this process's share of the suite, where ``KINEMA_TEST_SHARD`` names one."""
+    import os
+
+    shard = os.environ.get("KINEMA_TEST_SHARD")
+    if not shard:
+        return
+    from .sharding import parse_shard, read_durations, shares
+
+    index, count = parse_shard(shard)
+    owners = shares([item.nodeid for item in items], read_durations(), count)
+    kept = [item for item, owner in zip(items, owners, strict=True) if owner == index]
+    dropped = [item for item, owner in zip(items, owners, strict=True) if owner != index]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+    items[:] = kept
+
+
+_measured: dict[str, float] = {}
+
+
+def pytest_runtest_logreport(report):
+    """Add up each test's setup, call and teardown, where they are being recorded."""
+    import os
+
+    if os.environ.get("KINEMA_RECORD_DURATIONS"):
+        _measured[report.nodeid] = _measured.get(report.nodeid, 0.0) + float(report.duration)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Write the times measured, to the file ``KINEMA_RECORD_DURATIONS`` names."""
+    import json
+    import os
+
+    path = os.environ.get("KINEMA_RECORD_DURATIONS")
+    if path and _measured:
+        Path(path).write_text(
+            json.dumps({k: round(v, 3) for k, v in sorted(_measured.items())}, indent=0),
+            encoding="utf-8",
+        )

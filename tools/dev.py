@@ -19,12 +19,15 @@ the change up immediately -- no rebuild, no reinstall.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -192,6 +195,58 @@ def cmd_debug(args: argparse.Namespace) -> int:
     return cmd_run(args)
 
 
+#: Each test's last measured time, which a split suite is balanced by: tests/sharding.py.
+DURATIONS = REPO_ROOT / "tests" / "durations.json"
+#: Memory one Blender test process can take at its peak, solving and compiling.
+GB_PER_JOB = 6
+
+
+def _memory_gb() -> float | None:
+    """This machine's memory, or None where it can't be read."""
+    if sys.platform == "win32":
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
+                        ("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong),
+                        ("page_total", ctypes.c_ulonglong), ("page_free", ctypes.c_ulonglong),
+                        ("virtual_total", ctypes.c_ulonglong), ("virtual_free", ctypes.c_ulonglong),
+                        ("extended", ctypes.c_ulonglong)]
+
+        status = Status(length=ctypes.sizeof(Status))
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return status.total / 2**30
+        return None
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def _jobs(asked: str) -> int:
+    """How many Blender processes to run the suite in: ``auto``, or a number.
+
+    ``auto`` is half the logical cores, and no more than the memory holds at
+    :data:`GB_PER_JOB` each, at most 8. Measured on 20 cores and 64 GB: four
+    processes solved as fast each as one did, and eight 25% slower each; the
+    whole suite took 281 s in five and 225 s in eight, where one took 21 minutes.
+    """
+    if asked != "auto":
+        return max(1, int(asked))
+    cores = os.cpu_count() or 1
+    memory = _memory_gb()
+    by_memory = int(memory // GB_PER_JOB) if memory else 1
+    return max(1, min(cores // 2, by_memory, 8))
+
+
+def _summary(log: str) -> str:
+    """The last line pytest printed with its counts, or how the process ended."""
+    for line in reversed(log.splitlines()):
+        if any(word in line for word in (" passed", " failed", " error", "no tests ran")):
+            return line.strip().strip("=").strip()
+    return "no summary: see its log"
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     blender = find_blender()
     runner = REPO_ROOT / "tests" / "run_in_blender.py"
@@ -201,7 +256,53 @@ def cmd_test(args: argparse.Namespace) -> int:
            "--python", str(BOOTSTRAP), "--python", str(runner)]
     if args.pytest_args:
         cmd += ["--", *args.pytest_args]
-    return subprocess.call(cmd, env=_launch_env(args))
+    jobs = _jobs(args.jobs)
+    if jobs == 1 and not args.record_durations:
+        return subprocess.call(cmd, env=_launch_env(args))
+
+    # Each process works out its own share: tests/sharding.py.
+    logs = Path(tempfile.mkdtemp(prefix="kinema-test-"))
+    print(f"running the tests in {jobs} Blender processes at once; logs in {logs}")
+    started = time.perf_counter()
+    running = []
+    for index in range(jobs):
+        env = _launch_env(args)
+        env["KINEMA_TEST_SHARD"] = f"{index}/{jobs}"
+        if args.record_durations:
+            env["KINEMA_RECORD_DURATIONS"] = str(logs / f"durations-{index}.json")
+        out = (logs / f"share-{index}.log").open("w", encoding="utf-8", errors="replace")
+        process = subprocess.Popen(cmd, env=env, stdout=out, stderr=subprocess.STDOUT)
+        running.append((index, process, out))
+
+    codes = []
+    for _index, process, out in running:
+        codes.append(process.wait())
+        out.close()
+    worst = 0
+    for (index, _, _), code in zip(running, codes, strict=True):
+        log = (logs / f"share-{index}.log").read_text(encoding="utf-8", errors="replace")
+        for line in log.splitlines():
+            if line.startswith(("FAILED", "ERROR")):
+                print(f"  [{index + 1}/{jobs}] {line}")
+        print(f"share {index + 1}/{jobs}: {_summary(log)}")
+        # 5 is pytest's "no tests collected": a share a narrow selection left empty.
+        if code not in (0, 5):
+            worst = worst or code
+    print(f"{jobs} processes, {time.perf_counter() - started:.0f} s in all")
+
+    if args.record_durations:
+        recorded = {}
+        if DURATIONS.is_file():
+            recorded = json.loads(DURATIONS.read_text(encoding="utf-8"))
+        for part in sorted(logs.glob("durations-*.json")):
+            recorded.update(json.loads(part.read_text(encoding="utf-8")))
+        DURATIONS.write_text(
+            json.dumps(dict(sorted(recorded.items())), indent=0) + "\n", encoding="utf-8"
+        )
+        print(f"times of {len(recorded)} tests written to {DURATIONS.relative_to(REPO_ROOT)}")
+    if all(code == 5 for code in codes):
+        return 5
+    return worst
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -313,6 +414,17 @@ def main() -> int:
                        help="start listening but do not block on attach")
 
     test = sub.add_parser("test", help="run tests inside Blender")
+    test.add_argument(
+        "-j", "--jobs", default="auto",
+        help="Blender processes to split the tests across: a number, or auto "
+             "(half the cores, within the memory, at most 8). 1 runs them in one, "
+             "as before",
+    )
+    test.add_argument(
+        "--record-durations", action="store_true",
+        help="time every test and write the times to tests/durations.json, "
+             "which the split is balanced by",
+    )
     test.add_argument("pytest_args", nargs="*", help="extra args passed to pytest")
 
     sub.add_parser("validate", help="validate blender_manifest.toml")
