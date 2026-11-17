@@ -137,7 +137,7 @@ def pytest_collection_modifyitems(session, config, items):
     """
     import os
 
-    from .sharding import covers_suite, parse_shard, read_durations, shares
+    from .sharding import covers_suite, narrowed, parse_shard, read_durations, shares
 
     if os.environ.get("KINEMA_RECORD_DURATIONS"):
         # For dev.py to drop the times of tests that are gone: only where this
@@ -147,7 +147,11 @@ def pytest_collection_modifyitems(session, config, items):
         base = config.rootpath if source == config.ArgsSource.TESTPATHS else (
             config.invocation_params.dir
         )
-        _whole[:] = [covers_suite(config.args, base) and not session.testsfailed]
+        _whole[:] = [
+            covers_suite(config.args, base)
+            and not narrowed(config.getoption)
+            and not session.testsfailed
+        ]
     shard = os.environ.get("KINEMA_TEST_SHARD")
     if not shard:
         return

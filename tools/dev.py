@@ -333,6 +333,26 @@ def _merged_durations(recorded, parts: list) -> dict[str, float]:
     return dict(sorted(merged.items()))
 
 
+def _reports(logs: Path, jobs: int) -> list:
+    """Each process's report of the times it measured, by its number: one that
+    wrote none is None, as one that can't be read, and keeps every time."""
+    return [_read_json(logs / f"durations-{index}.json") for index in range(jobs)]
+
+
+def _write_durations(path: Path, durations: dict[str, float]) -> None:
+    """Write ``durations`` over ``path`` whole: to a file of this run's own beside
+    it, moved over it, so it is never left cut short, and two runs recording at
+    once never write or move each other's."""
+    handle, written = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(json.dumps(durations, indent=0) + "\n")
+        os.replace(written, path)
+    except BaseException:
+        Path(written).unlink(missing_ok=True)
+        raise
+
+
 def _run_shares(cmd: list[str], jobs: int, logs: Path, env_for) -> list[int]:
     """Start one Blender per share, logging to ``logs``, and wait for them all.
 
@@ -403,12 +423,8 @@ def cmd_test(args: argparse.Namespace) -> int:
     print(f"{jobs} processes, {time.perf_counter() - started:.0f} s in all")
 
     if args.record_durations:
-        parts = [_read_json(part) for part in sorted(logs.glob("durations-*.json"))]
-        recorded = _merged_durations(_read_json(DURATIONS), parts)
-        # Written beside it and moved over it, so it is never left cut short.
-        written = DURATIONS.with_name(DURATIONS.name + ".tmp")
-        written.write_text(json.dumps(recorded, indent=0) + "\n", encoding="utf-8")
-        os.replace(written, DURATIONS)
+        recorded = _merged_durations(_read_json(DURATIONS), _reports(logs, jobs))
+        _write_durations(DURATIONS, recorded)
         print(f"times of {len(recorded)} tests written to {DURATIONS.relative_to(REPO_ROOT)}")
     if all(code == 5 for code in codes):
         return 5

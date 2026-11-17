@@ -78,6 +78,19 @@ class TestShares:
     def test_the_whole_suite_is_its_folder_or_one_holding_it(self, args, whole):
         assert sharding.covers_suite(args, REPO_ROOT) is whole
 
+    @pytest.mark.parametrize(
+        ("options", "left_out"),
+        [
+            ({}, False),
+            ({"ignore": None, "ignore_glob": None, "lf": False}, False),
+            ({"ignore": ["tests/integration/test_optimize.py"]}, True),
+            ({"ignore_glob": ["*optimize*"]}, True),
+            ({"lf": True}, True),
+        ],
+    )
+    def test_ignoring_files_or_running_last_failed_leaves_tests_out(self, options, left_out):
+        assert sharding.narrowed(lambda name, default=None: options.get(name, default)) is left_out
+
     def test_a_shard_is_read_as_index_and_count(self):
         assert sharding.parse_shard("2/5") == (2, 5)
         with pytest.raises(ValueError):

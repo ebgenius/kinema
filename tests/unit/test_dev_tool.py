@@ -145,6 +145,49 @@ class TestMergingDurations:
         assert dev._read_json(tmp_path / "missing.json") is None
 
 
+class TestReports:
+    def test_a_process_that_wrote_none_is_none(self, dev, tmp_path):
+        (tmp_path / "durations-0.json").write_text('{"whole": true}', encoding="utf-8")
+        assert dev._reports(tmp_path, 2) == [{"whole": True}, None]
+
+
+class TestWritingDurations:
+    def test_it_lands_whole_and_leaves_nothing_beside_it(self, dev, tmp_path):
+        path = tmp_path / "durations.json"
+        path.write_text('{"old": 1.0}', encoding="utf-8")
+        dev._write_durations(path, {"a": 2.0})
+        assert dev._read_json(path) == {"a": 2.0}
+        assert [p.name for p in tmp_path.iterdir()] == ["durations.json"]
+
+    def test_two_runs_write_files_of_their_own(self, dev, tmp_path, monkeypatch):
+        """Each moves its own file over the times: not one another's, half written."""
+        moved, real = [], dev.os.replace
+
+        def replace(source, destination):
+            moved.append(Path(source))
+            real(source, destination)
+
+        monkeypatch.setattr(dev.os, "replace", replace)
+        path = tmp_path / "durations.json"
+        dev._write_durations(path, {"a": 1.0})
+        dev._write_durations(path, {"a": 2.0})
+        assert moved[0] != moved[1]
+        assert all(source.parent == tmp_path for source in moved), "beside it, to move"
+
+    def test_a_failed_write_leaves_the_times_and_no_file(self, dev, tmp_path, monkeypatch):
+        path = tmp_path / "durations.json"
+        path.write_text('{"old": 1.0}', encoding="utf-8")
+
+        def refuse(source, destination):
+            raise OSError("in use")
+
+        monkeypatch.setattr(dev.os, "replace", refuse)
+        with pytest.raises(OSError):
+            dev._write_durations(path, {"a": 2.0})
+        assert dev._read_json(path) == {"old": 1.0}
+        assert [p.name for p in tmp_path.iterdir()] == ["durations.json"]
+
+
 class TestFreeMemory:
     def test_a_v2_limit_less_what_it_uses(self, dev, tmp_path):
         (tmp_path / "memory.max").write_text(f"{8 * 2**30}\n", encoding="ascii")

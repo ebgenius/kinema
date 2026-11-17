@@ -63,6 +63,13 @@ def covers_suite(args: list[str], base: Path, tests: Path = TESTS) -> bool:
     return False
 
 
+def narrowed(getoption) -> bool:
+    """Whether collecting left out tests in the paths asked for, before any hook
+    could see them: ``--ignore``, ``--ignore-glob``, or ``--last-failed``, which
+    skips the files with no failure. ``getoption`` is ``config.getoption``."""
+    return any(getoption(name, None) for name in ("ignore", "ignore_glob", "lf"))
+
+
 def parse_shard(text: str) -> tuple[int, int]:
     """``"i/n"`` as ``(i, n)``, with ``0 <= i < n``."""
     index, _, count = text.partition("/")
