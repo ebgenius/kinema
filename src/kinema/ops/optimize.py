@@ -50,7 +50,7 @@ from bpy.props import BoolProperty, FloatProperty
 from bpy.types import Operator
 
 from ..rig import builder, motion_check
-from ..rig.waypoints import MOVE_LINEAR, WaypointError, spans
+from ..rig.waypoints import MOVE_LINEAR, WaypointError
 from ..solver import manager, trajectory
 from ..solver.base import SolverError
 from ..ui.panel import active_rig
@@ -127,7 +127,7 @@ def prepare(context, rig) -> Job:
     Writes nothing.
     """
     try:
-        plan = spans(rig.kinema_waypoints)
+        plan = wp.job_plan(rig).spans
     except WaypointError as exc:
         raise Refused(str(exc)) from exc
     signature = wp.job_signature(rig)
@@ -135,8 +135,8 @@ def prepare(context, rig) -> Job:
         raise Refused("Generate Motion first: there's no job to optimize yet")
     if rig.kinema_generated_job != signature:
         raise Refused(
-            "The waypoints have changed since the job was generated: Generate "
-            "Motion again, then optimize"
+            "The waypoints or motions have changed since the job was generated: "
+            "Generate Motion again, then optimize"
         )
     solver, pyroki = _model(rig)
     first, last = plan[0].start_frame, plan[-1].end_frame
@@ -417,10 +417,10 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
     prior = q_job.copy()
     prior_weight = np.where(moving, trajectory.JOB_WEIGHT, trajectory.PIN_WEIGHT)
     prior_weight = np.repeat(prior_weight[None], len(frames), axis=0)
+    # By frame: a waypoint two motions share is taught on each of their frames.
     taught = {}
     for span in plan:
-        for waypoint in (span.start, span.end):
-            taught[int(waypoint.frame)] = waypoint
+        taught[span.start_frame], taught[span.end_frame] = span.start, span.end
     for frame, waypoint in taught.items():
         if waypoint.dof != len(bones):
             continue  # taught with other joints: its values don't line up
@@ -549,7 +549,7 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
 
     rig.kinema_optimized_job = job.signature
 
-    plan = spans(rig.kinema_waypoints)
+    plan = wp.job_plan(rig).spans
     samples = wp.play_job(context, rig, plan)
     checks = wp.check_job(context, rig, plan, samples=samples)
     wp.estimate_frames_needed(context, rig, checks, samples)

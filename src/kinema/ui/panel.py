@@ -660,11 +660,10 @@ class KINEMA_PT_bones(KinemaPanelBase, Panel):
 
 
 class KINEMA_UL_waypoints(UIList):
-    """One row per taught waypoint: name, how it is arrived at, and when.
+    """One row per taught waypoint: a pose, with no time of its own.
 
-    Sorted by frame rather than by list position, because the frame *is* the
-    order -- see rig/waypoints.py. The list's own index is only ever "which row
-    is highlighted".
+    When the robot is there, and how it gets there, is the motions': see
+    rig/waypoints.py.
     """
 
     def draw_item(
@@ -672,18 +671,32 @@ class KINEMA_UL_waypoints(UIList):
     ):
         row = layout.row(align=True)
         row.prop(item, "name", text="", emboss=False, icon="EMPTY_ARROWS")
-        sub = row.row(align=True)
-        sub.scale_x = 0.55
-        sub.prop(item, "move", text="")
-        sub.prop(item, "frame", text="")
         row.operator(
             "kinema.goto_waypoint", text="", icon="PLAY", emboss=False
         ).index = index
 
+
+class KINEMA_UL_motions(UIList):
+    """One row per motion: its name, its move and its frames, in time order.
+
+    Sorted by start frame, because the frames are the job's order, as strips in
+    the NLA are. The list's own index is only ever "which row is highlighted".
+    """
+
+    def draw_item(
+        self, context, layout, data, item, icon, active_data, active_propname, index
+    ):
+        row = layout.row(align=True)
+        row.prop(item, "name", text="", emboss=False, icon="ANIM")
+        sub = row.row(align=True)
+        sub.scale_x = 0.55
+        sub.prop(item, "move", text="")
+        row.label(text=f"{item.frame_start}-{item.frame_end}")
+
     def filter_items(self, context, data, propname):
         items = getattr(data, propname)
         order = bpy.types.UI_UL_list.sort_items_helper(
-            list(enumerate(items)), lambda pair: pair[1].frame
+            list(enumerate(items)), lambda pair: pair[1].frame_start
         )
         flags = [self.bitflag_filter_item] * len(items)
         if self.filter_name:
@@ -720,8 +733,52 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
             rig, "kinema_active_waypoint", rows=4,
         )
 
+
+class KINEMA_PT_motions(KinemaPanelBase, Panel):
+    """The moves between waypoints, each with its own frames, and the job they make."""
+
+    bl_idname = "KINEMA_PT_motions"
+    bl_parent_id = "KINEMA_PT_waypoints"
+    bl_label = "Motions"
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        rig = active_rig(context)
+        return rig is not None and len(rig.kinema_waypoints) > 0
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        rig = active_rig(context)
+
+        row = layout.row(align=True)
+        row.operator("kinema.add_motion", text="Add", icon="ADD")
+        row.operator("kinema.remove_motion", text="", icon="X")
+        if not len(rig.kinema_motions):
+            if rig.kinema_job_version < 1 and len(rig.kinema_waypoints) > 1:
+                layout.label(text="Saved before motions: Generate Motion converts it", icon="INFO")
+            else:
+                layout.label(text="Record on a later frame, or Add", icon="INFO")
+        else:
+            layout.template_list(
+                "KINEMA_UL_motions", "", rig, "kinema_motions",
+                rig, "kinema_active_motion", rows=4,
+            )
+            index = rig.kinema_active_motion
+            if 0 <= index < len(rig.kinema_motions):
+                motion = rig.kinema_motions[index]
+                box = layout.column(align=True)
+                box.prop_search(motion, "start_name", rig, "kinema_waypoints", text="From")
+                box.prop_search(motion, "end_name", rig, "kinema_waypoints", text="To")
+                box.prop(motion, "move")
+                frames = layout.row(align=True)
+                frames.prop(motion, "frame_start")
+                frames.prop(motion, "frame_end")
+                layout.label(text=f"{motion.duration} frames", icon="TIME")
+
         column = layout.column()
-        column.enabled = len(rig.kinema_waypoints) > 1
+        column.enabled = len(rig.kinema_motions) > 0 or (
+            rig.kinema_job_version < 1 and len(rig.kinema_waypoints) > 1
+        )
         column.scale_y = 1.2
         column.operator("kinema.generate_motion", text="Generate Motion", icon="TRACKING")
         from ..ops.optimize import optimizing
@@ -738,7 +795,7 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
         # leave Generate Motion looking available until it was pressed.
         from ..ops.waypoints import ik_bone_name
 
-        wants_ik = any(w.move == MOVE_LINEAR for w in rig.kinema_waypoints)
+        wants_ik = any(m.move == MOVE_LINEAR for m in rig.kinema_motions)
         if wants_ik and ik_bone_name(rig) is None:
             layout.label(text="Linear moves need an IK target", icon="ERROR")
 
@@ -751,7 +808,7 @@ def check_outdated(rig, scene) -> str:
     # A handful of waypoints hashed per redraw; cheap, and it keeps findings
     # about a job since edited from passing as current.
     if rig.kinema_motion_check_job != job_signature(rig):
-        return "The waypoints have changed since this check"
+        return "The waypoints or motions have changed since this check"
     if not collision.check_measured_this(rig, scene):
         return "The obstacles or capsules have changed since this check"
     if collision.capsules_stale(rig):
@@ -774,7 +831,7 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
         rig = active_rig(context)
-        return rig is not None and len(rig.kinema_waypoints) > 1
+        return rig is not None and (len(rig.kinema_motions) > 0 or len(rig.kinema_motion_check) > 0)
 
     def draw(self, context: bpy.types.Context) -> None:
         from ..rig.motion_check import problems
@@ -1307,6 +1364,7 @@ classes = (
     KinemaSceneProps,
     KINEMA_UL_bones,
     KINEMA_UL_waypoints,
+    KINEMA_UL_motions,
     KINEMA_PT_main,
     KINEMA_PT_joints,
     KINEMA_PT_motion_limits,
@@ -1315,6 +1373,7 @@ classes = (
     KINEMA_PT_motion_unchecked,
     KINEMA_PT_bones,
     KINEMA_PT_waypoints,
+    KINEMA_PT_motions,
     KINEMA_PT_motion_check,
     KINEMA_PT_collision,
     KINEMA_PT_external_axes,

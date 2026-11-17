@@ -5,16 +5,23 @@ say what the robot should *do* -- the only motion authoring was keyframing the
 IK target by hand, which is the same workflow as animating any Empty, and so
 nothing about it was robot-shaped.
 
-This is the workflow every robot person already knows. Teach a pose, name it,
-give it a time, and say how to arrive: joint-space for a fast reposition,
-linear for a move whose tool path matters.
+This is the workflow every robot person already knows. Teach a pose and name
+it; then say how the robot moves between two poses, and when: joint-space for
+a fast reposition, linear for a move whose tool path matters.
 
-**Time is the ordering.** A waypoint carries a frame, not a list index, so
-there is no second order to keep in sync and the list is only ever a view onto
-the job in time order. Generation writes ordinary keyframes on ordinary
-channels, which means Blender's own graph editor shapes the result afterwards
--- and ``kinema.bake_ik`` still turns the whole thing into plain joint curves
-that render with the add-on gone.
+**A waypoint is a pose; a motion is a move between two, with its own frames.**
+So one waypoint can end one motion and start the next, or be gone back to, and
+a motion is retimed without touching the poses. Motions run in frame order, as
+strips in the NLA do; ``rig/waypoints.py`` lays them out, gaps and all.
+Recording on a later frame than the last waypoint adds a joint motion between
+the two, so teaching a job pose by pose, frame by frame, works as it always
+did. A file saved before motions, whose waypoints carried a frame and a move,
+is converted when it opens (:func:`convert_saved_before_motions`).
+
+Generation writes ordinary keyframes on ordinary channels, which means
+Blender's own graph editor shapes the result afterwards -- and
+``kinema.bake_ik`` still turns the whole thing into plain joint curves that
+render with the add-on gone.
 
 Those generated keys are output, though, not the waypoints themselves: dragging
 them retimes the animation until the next regeneration writes the stored frames
@@ -61,6 +68,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import uuid
 from dataclasses import replace
 
 import bpy
@@ -80,7 +88,16 @@ from bpy.types import Operator, PropertyGroup
 from mathutils import Matrix
 
 from ..rig import builder, motion_check
-from ..rig.waypoints import MOVE_JOINT, MOVE_LINEAR, WaypointError, spans
+from ..rig.waypoints import (
+    MOVE_JOINT,
+    MOVE_LINEAR,
+    MotionsOverlap,
+    WaypointError,
+    spans,
+)
+from ..rig.waypoints import (
+    plan as plan_motions,
+)
 from ..solver import branches, manager, numpy_backend
 from ..solver.chain import chain_from_rig
 from ..ui.panel import active_rig
@@ -179,41 +196,42 @@ def _unflatten(values) -> Matrix:
 # --------------------------------------------------------------------------
 # the stored waypoint
 # --------------------------------------------------------------------------
+#: What a motion's move can be, as its enum lists them.
+MOVE_ITEMS = [
+    (
+        MOVE_JOINT,
+        "Joint",
+        "Interpolate the joints. Fast and always reachable, but the "
+        "tool takes whatever path falls out",
+    ),
+    (
+        MOVE_LINEAR,
+        "Linear",
+        "Drive the tool in a straight line. Predictable, and what a "
+        "process move needs, but it can run into limits",
+    ),
+]
+
+#: The shape of a rig's job: 0 for a file saved before motions, whose
+#: waypoints carry a frame and a move, converted by
+#: :func:`convert_saved_before_motions`.
+JOB_VERSION = 1
+
+
 class KinemaWaypoint(PropertyGroup):
-    """One taught pose, and when the robot should be there."""
+    """One taught pose: the tool's, and the joint configuration it was taught in."""
 
     name: StringProperty(
         name="Name",
         description="What this point is for: home, approach, pick, drop",
         default="waypoint",
     )
-    frame: IntProperty(
-        name="Frame",
-        description=(
-            "When the robot should be at this waypoint. This is what orders "
-            "the job -- there is no separate list order"
-        ),
-        default=1,
-    )
-    move: EnumProperty(
-        name="Move",
-        description="How the robot arrives here from the previous waypoint",
-        items=[
-            (
-                MOVE_JOINT,
-                "Joint",
-                "Interpolate the joints. Fast and always reachable, but the "
-                "tool takes whatever path falls out",
-            ),
-            (
-                MOVE_LINEAR,
-                "Linear",
-                "Drive the tool in a straight line. Predictable, and what a "
-                "process move needs, but it can run into limits",
-            ),
-        ],
-        default=MOVE_JOINT,
-    )
+    #: What motions name this waypoint by: names can repeat and change.
+    uid: StringProperty(name="Id", default="")
+    #: Read only to convert a file saved before motions, where the waypoint
+    #: carried when the robot is there and how it arrives.
+    frame: IntProperty(name="Frame (before motions)", default=1)
+    move: EnumProperty(name="Move (before motions)", items=MOVE_ITEMS, default=MOVE_JOINT)
     #: Tool pose in rig space, row-major. The portable half: a pose can be
     #: replayed on another robot, a joint vector cannot.
     pose: FloatVectorProperty(name="Pose", size=16, default=[0.0] * 16)
@@ -227,6 +245,114 @@ class KinemaWaypoint(PropertyGroup):
         type=bpy.types.Object,
         description="The Empty showing this waypoint in the viewport",
     )
+
+
+def _named(which: str):
+    """A motion's start or end as a waypoint's name, for picking it in the panel."""
+
+    def get(self) -> str:
+        waypoint = waypoint_by_uid(self.id_data, getattr(self, which))
+        return waypoint.name if waypoint is not None else ""
+
+    def set_(self, value: str) -> None:
+        found = next((w for w in self.id_data.kinema_waypoints if w.name == value), None)
+        setattr(self, which, found.uid if found is not None else "")
+
+    return get, set_
+
+
+def _duration(self) -> int:
+    return int(self.frame_end) - int(self.frame_start)
+
+
+class KinemaMotion(PropertyGroup):
+    """One move between two waypoints, with its own frames, as an NLA strip has."""
+
+    name: StringProperty(name="Name", default="motion")
+    #: The waypoints' uids: see :class:`KinemaWaypoint`.
+    start: StringProperty(name="Start Id", default="")
+    end: StringProperty(name="End Id", default="")
+    start_name: StringProperty(
+        name="From", description="The waypoint this motion starts at",
+        get=_named("start")[0], set=_named("start")[1],
+    )
+    end_name: StringProperty(
+        name="To", description="The waypoint this motion ends at",
+        get=_named("end")[0], set=_named("end")[1],
+    )
+    move: EnumProperty(
+        name="Move", description="How the robot moves", items=MOVE_ITEMS, default=MOVE_JOINT
+    )
+    frame_start: IntProperty(
+        name="Start", description="The frame the robot leaves the start waypoint", default=1
+    )
+    frame_end: IntProperty(
+        name="End", description="The frame the robot is at the end waypoint", default=25
+    )
+    duration: IntProperty(
+        name="Frames", description="How many frames the move takes", get=_duration
+    )
+
+
+def waypoint_by_uid(rig, uid: str):
+    """The waypoint ``uid`` names on ``rig``, or None."""
+    if not uid:
+        return None
+    return next((w for w in rig.kinema_waypoints if w.uid == uid), None)
+
+
+def _new_uid() -> str:
+    return uuid.uuid4().hex
+
+
+def convert_saved_before_motions(rig) -> bool:
+    """Give a rig saved before motions the motions its waypoints made. True if it did.
+
+    Its waypoints carried a frame and a move, the move belonging to the
+    waypoint arrived at (``rig/waypoints.py``). Each pair in frame order
+    becomes a motion with those frames and that move, named after the waypoint
+    it arrives at, so the job plays as it did and its Motion Check rows keep
+    their names. Recording goes on from its last waypoint.
+    """
+    if rig.kinema_job_version >= JOB_VERSION:
+        return False
+    for waypoint in rig.kinema_waypoints:
+        if not waypoint.uid:
+            waypoint.uid = _new_uid()
+    if not len(rig.kinema_motions) and len(rig.kinema_waypoints) > 1:
+        try:
+            old = spans(rig.kinema_waypoints)
+        except WaypointError:
+            old = []  # two on one frame: no job then either, and none now
+        for span in old:
+            motion = rig.kinema_motions.add()
+            motion.name = span.end.name
+            motion.start, motion.end = span.start.uid, span.end.uid
+            motion.move = span.move
+            motion.frame_start, motion.frame_end = span.start_frame, span.end_frame
+    if len(rig.kinema_waypoints):
+        last = max(rig.kinema_waypoints, key=lambda waypoint: int(waypoint.frame))
+        rig.kinema_last_recorded = last.uid
+        rig.kinema_last_recorded_frame = int(last.frame)
+    rig.kinema_job_version = JOB_VERSION
+    return True
+
+
+def convert_all() -> None:
+    """Convert each rig in the file saved before motions (:func:`convert_saved_before_motions`)."""
+    for obj in bpy.data.objects:
+        if builder.is_kinema_rig(obj) and hasattr(obj, "kinema_job_version"):
+            convert_saved_before_motions(obj)
+
+
+def job_plan(rig):
+    """The rig's job, as ``rig/waypoints.plan`` lays out its motions.
+
+    Converts a rig saved before motions first, so it is for operators, never
+    for a panel's draw.
+    """
+    convert_saved_before_motions(rig)
+    return plan_motions(rig.kinema_motions, rig.kinema_waypoints)
 
 
 class KinemaWaypointOperator(Operator):
@@ -327,11 +453,21 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
     bl_idname = "kinema.add_waypoint"
     bl_label = "Record Waypoint"
     bl_description = (
-        "Record the robot's current pose as a waypoint on the current frame, "
-        "storing both the tool pose and the joint configuration"
+        "Record the robot's current pose as a waypoint, storing both the tool "
+        "pose and the joint configuration. On a frame after the last waypoint "
+        "recorded, also add a joint motion from it to this one, ending here"
     )
 
     name: StringProperty(name="Name", default="", options={"SKIP_SAVE"})
+    motion: BoolProperty(
+        name="Add Motion",
+        description=(
+            "Also add a motion from the last waypoint recorded, ending on this "
+            "frame, when this frame is after the one that was recorded on"
+        ),
+        default=True,
+        options={"SKIP_SAVE"},
+    )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
@@ -339,13 +475,11 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
             self.report({"ERROR"}, "This rig has no joints to record")
             return {"CANCELLED"}
 
+        convert_saved_before_motions(rig)
         context.view_layer.update()
         waypoint = rig.kinema_waypoints.add()
         waypoint.name = self.name or f"point{len(rig.kinema_waypoints)}"
-        waypoint.frame = context.scene.frame_current
-        # Joint by default: it is the move that always works. Linear is a
-        # deliberate choice about a tool path, so it should be one.
-        waypoint.move = MOVE_JOINT
+        waypoint.uid = _new_uid()
 
         error = _record(rig, waypoint)
         if error is not None:
@@ -355,9 +489,24 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
 
         waypoint.marker = _make_marker(rig, waypoint, _unflatten(waypoint.pose))
         rig.kinema_active_waypoint = len(rig.kinema_waypoints) - 1
-        self.report(
-            {"INFO"}, f"Recorded '{waypoint.name}' at frame {waypoint.frame}"
-        )
+        frame = context.scene.frame_current
+        previous = waypoint_by_uid(rig, rig.kinema_last_recorded)
+        message = f"Recorded '{waypoint.name}'"
+        if self.motion and previous is not None and frame > rig.kinema_last_recorded_frame:
+            motion = rig.kinema_motions.add()
+            motion.name = waypoint.name
+            motion.start, motion.end = previous.uid, waypoint.uid
+            # Joint by default: it is the move that always works. Linear is a
+            # deliberate choice about a tool path, so it should be one.
+            motion.move = MOVE_JOINT
+            motion.frame_start, motion.frame_end = rig.kinema_last_recorded_frame, frame
+            rig.kinema_active_motion = len(rig.kinema_motions) - 1
+            message += (
+                f", with a motion from '{previous.name}' over frames "
+                f"{motion.frame_start}-{frame}"
+            )
+        rig.kinema_last_recorded, rig.kinema_last_recorded_frame = waypoint.uid, frame
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -390,8 +539,9 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
     bl_idname = "kinema.goto_waypoint"
     bl_label = "Go To Waypoint"
     bl_description = (
-        "Jump to this waypoint's frame and restore the exact configuration it "
-        "was taught in, rather than whichever solution the solver picks today"
+        "Jump to the first frame the job is at this waypoint and restore the "
+        "exact configuration it was taught in, rather than whichever solution "
+        "the solver picks today"
     )
 
     index: IntProperty(name="Index", default=-1, options={"SKIP_SAVE"})
@@ -403,7 +553,16 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
             self.report({"ERROR"}, "No waypoint to go to")
             return {"CANCELLED"}
 
-        context.scene.frame_set(int(waypoint.frame))
+        # The first frame a motion starts or ends there; where none does, the
+        # robot is posed on the frame it is on.
+        frames = [
+            int(frame)
+            for motion in rig.kinema_motions
+            for uid, frame in ((motion.start, motion.frame_start), (motion.end, motion.frame_end))
+            if uid == waypoint.uid
+        ]
+        if frames:
+            context.scene.frame_set(min(frames))
         # The stored joint vector, not the pose: a pose has up to eight
         # solutions and re-solving would be free to pick a different one.
         _apply_joint_values(rig, list(waypoint.q)[: waypoint.dof])
@@ -414,14 +573,15 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
         if ik_name and ik_name in rig.pose.bones:
             rig.pose.bones[ik_name].matrix = pose_of(waypoint)
         context.view_layer.update()
-        self.report({"INFO"}, f"At '{waypoint.name}', frame {waypoint.frame}")
+        frame = context.scene.frame_current
+        self.report({"INFO"}, f"At '{waypoint.name}', frame {frame}")
         return {"FINISHED"}
 
 
 class KINEMA_OT_remove_waypoint(KinemaWaypointOperator):
     bl_idname = "kinema.remove_waypoint"
     bl_label = "Remove Waypoint"
-    bl_description = "Delete this waypoint and its marker"
+    bl_description = "Delete this waypoint, its marker, and the motions to and from it"
 
     index: IntProperty(name="Index", default=-1, options={"SKIP_SAVE"})
 
@@ -438,11 +598,81 @@ class KINEMA_OT_remove_waypoint(KinemaWaypointOperator):
         marker = waypoint.marker
         if marker is not None and PROP_WAYPOINT in marker:
             bpy.data.objects.remove(marker, do_unlink=True)
+        uid = waypoint.uid
+        gone = [
+            i for i, motion in enumerate(rig.kinema_motions) if uid in (motion.start, motion.end)
+        ]
+        for i in reversed(gone):
+            rig.kinema_motions.remove(i)
+        left = len(rig.kinema_motions) - 1
+        rig.kinema_active_motion = max(0, min(rig.kinema_active_motion, left))
+        if rig.kinema_last_recorded == uid:
+            rig.kinema_last_recorded = ""
         rig.kinema_waypoints.remove(index)
         # max(0, ...): removing the last row leaves an empty list, and the
         # index would otherwise go to -1 and rely on the property's own min to
         # catch it.
         rig.kinema_active_waypoint = max(0, min(index, len(rig.kinema_waypoints) - 1))
+        said = ""
+        if gone:
+            said = f", and {len(gone)} motion{'s' if len(gone) != 1 else ''} to and from it"
+        self.report({"INFO"}, f"Removed '{name}'{said}")
+        return {"FINISHED"}
+
+
+class KINEMA_OT_add_motion(KinemaWaypointOperator):
+    bl_idname = "kinema.add_motion"
+    bl_label = "Add Motion"
+    bl_description = (
+        "Add a joint motion after the last one, from where it ends to the "
+        "highlighted waypoint, a second long"
+    )
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        rig = active_rig(context)
+        return rig is not None and len(rig.kinema_waypoints) > 0
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        convert_saved_before_motions(rig)
+        target = _waypoint_at(rig, -1) or rig.kinema_waypoints[-1]
+        last = max(rig.kinema_motions, key=lambda m: int(m.frame_end), default=None)
+        start = waypoint_by_uid(rig, last.end) if last is not None else None
+        if start is None:
+            start = target
+        first = int(last.frame_end) if last is not None else context.scene.frame_current
+        motion = rig.kinema_motions.add()
+        motion.name = target.name
+        motion.start, motion.end = start.uid, target.uid
+        motion.move = MOVE_JOINT
+        motion.frame_start = first
+        motion.frame_end = first + max(1, round(scene_fps(context.scene)))
+        rig.kinema_active_motion = len(rig.kinema_motions) - 1
+        self.report(
+            {"INFO"},
+            f"Added '{motion.name}', '{start.name}' to '{target.name}' over frames "
+            f"{motion.frame_start}-{motion.frame_end}",
+        )
+        return {"FINISHED"}
+
+
+class KINEMA_OT_remove_motion(KinemaWaypointOperator):
+    bl_idname = "kinema.remove_motion"
+    bl_label = "Remove Motion"
+    bl_description = "Delete this motion. Its waypoints stay"
+
+    index: IntProperty(name="Index", default=-1, options={"SKIP_SAVE"})
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        rig = active_rig(context)
+        index = self.index if self.index >= 0 else rig.kinema_active_motion
+        if not 0 <= index < len(rig.kinema_motions):
+            self.report({"ERROR"}, "No motion to remove")
+            return {"CANCELLED"}
+        name = rig.kinema_motions[index].name
+        rig.kinema_motions.remove(index)
+        rig.kinema_active_motion = max(0, min(index, len(rig.kinema_motions) - 1))
         self.report({"INFO"}, f"Removed '{name}'")
         return {"FINISHED"}
 
@@ -462,17 +692,16 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
     bl_idname = "kinema.generate_motion"
     bl_label = "Generate Motion"
     bl_description = (
-        "Key the robot through its waypoints in frame order: joint channels "
+        "Key the robot through its motions in frame order: joint channels "
         "for joint moves, the IK target for linear ones"
     )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
-        try:
-            plan = spans(rig.kinema_waypoints)
-        except WaypointError as exc:
-            self.report({"ERROR"}, str(exc))
+        job = _plan_or_report(self, rig)
+        if job is None:
             return {"CANCELLED"}
+        plan = job.spans
 
         needs_ik = any(span.move == MOVE_LINEAR for span in plan)
         ik_name = ik_bone_name(rig)
@@ -480,7 +709,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             self.report(
                 {"ERROR"},
                 "Linear moves need an IK target; add one, or set those "
-                "waypoints to Joint",
+                "motions to Joint",
             )
             return {"CANCELLED"}
         # The marker is the waypoint: one dragged since teaching takes every
@@ -516,7 +745,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
         for waypoint, values in followed:
             waypoint.q = values
             waypoint.pose = _flatten(waypoint.marker.matrix_basis)
-        for waypoint, values, _ in turned:
+        for waypoint, values, _, _ in turned:
             waypoint.q = values
 
         first, last = plan[0].start_frame, plan[-1].end_frame
@@ -566,8 +795,8 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
         # Kept on the move's row too, so it is still there once the report has
         # gone: anyone who meant the taught turn has to re-teach that waypoint.
         notes = {
-            int(waypoint.frame): f"{description}: kept as the line arrives"
-            for waypoint, _, description in turned
+            frame: f"{description}: kept as the line arrives"
+            for _, _, description, frame in turned
         }
         for check in checks or ():
             check.turn_note = notes.get(check.end_frame, "")
@@ -589,13 +818,15 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             message += "; not checked, since this rig has no TCP to measure it by"
         elif flagged:
             message += f"; {_flagged_text(flagged)} in the motion check"
-        for waypoint, _, description in turned:
+        for note in job.notes:
+            message += f". {note}"
+        for waypoint, _, description, _ in turned:
             message += (
                 f". '{waypoint.name}' was taught a whole turn from where the line "
                 f"arrives, and keeps the turn it arrives with ({description}). "
                 f"Re-teach it to change that"
             )
-        self.report({"WARNING"} if flagged else {"INFO"}, message)
+        self.report({"WARNING"} if flagged or job.notes else {"INFO"}, message)
         return {"FINISHED"}
 
     @staticmethod
@@ -787,7 +1018,7 @@ def settle_configurations(rig, plan, overrides=None):
     - ``refused``: the linear moves whose two ends were taught in different
       configurations, named by the waypoint each arrives at. A straight line
       cannot change configuration, so these are not generated.
-    - ``turned``: ``(waypoint, joint values, description)`` for each linear
+    - ``turned``: ``(waypoint, joint values, description, frame)`` for each linear
       move whose end was taught with a joint a whole turn from where the line
       arrives. That is the same pose, and a linear move keeps the turns it
       starts with -- a KUKA LIN ignores its target's Turn the same way -- so
@@ -819,7 +1050,9 @@ def settle_configurations(rig, plan, overrides=None):
             refused.append(span.end.name)
         elif kind == TURNS:
             changed[span.end.as_pointer()] = values
-            turned.append((span.end, values, _turn_description(rig, chain, span, end, values)))
+            turned.append(
+                (span.end, values, _turn_description(rig, chain, span, end, values), span.end_frame)
+            )
     return refused, turned
 
 
@@ -983,7 +1216,7 @@ def check_job(context, rig, plan, samples=None) -> list[motion_check.MoveCheck] 
     capsules = tuple(collision_ops.capsules_of(rig))
     return [
         motion_check.check_move(
-            span.end.name,
+            span.label,
             span.move,
             span.start_frame,
             span.end_frame,
@@ -1155,24 +1388,33 @@ def store_check(rig, checks) -> int:
 
 
 def job_signature(rig) -> str:
-    """A fingerprint of the waypoints as they stand: names, frames, moves, poses, joints.
+    """A fingerprint of the job as it stands: its motions, and the waypoints' poses.
 
-    Stored with a motion check and compared by the panel, so findings about a
-    job that has since been edited are marked as such instead of being shown
-    as current. The keys are not in it -- editing a curve by hand is only
-    caught by Check Again -- but everything Generate Motion reads is.
+    Each motion's name, waypoints, move and frames; each waypoint's name, pose
+    and joints. Stored with a motion check and compared by the panel, so
+    findings about a job that has since been edited are marked as such instead
+    of being shown as current. The keys are not in it -- editing a curve by
+    hand is only caught by Check Again -- but everything Generate Motion reads
+    is. A rig saved before motions is read as its waypoints' frames and moves,
+    which are what it would be converted from.
     """
     parts = []
-    for waypoint in sorted(rig.kinema_waypoints, key=lambda w: int(w.frame)):
+    for waypoint in rig.kinema_waypoints:
         pose = pose_of(waypoint)
+        old = (int(waypoint.frame), waypoint.move) if rig.kinema_job_version < JOB_VERSION else ()
         parts.append(
             (
+                waypoint.uid,
                 waypoint.name,
-                int(waypoint.frame),
-                waypoint.move,
+                *old,
                 tuple(round(float(pose[r][c]), 6) for r in range(4) for c in range(4)),
                 tuple(round(float(v), 6) for v in list(waypoint.q)[: waypoint.dof]),
             )
+        )
+    for motion in sorted(rig.kinema_motions, key=lambda m: int(m.frame_start)):
+        parts.append(
+            (motion.name, motion.start, motion.end, motion.move,
+             int(motion.frame_start), int(motion.frame_end))
         )
     return hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()
 
@@ -1198,11 +1440,10 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
-        try:
-            plan = spans(rig.kinema_waypoints)
-        except WaypointError as exc:
-            self.report({"ERROR"}, str(exc))
+        job = _plan_or_report(self, rig)
+        if job is None:
             return {"CANCELLED"}
+        plan = job.spans
         samples = play_job(context, rig, plan)
         checks = check_job(context, rig, plan, samples=samples)
         estimate_frames_needed(context, rig, checks, samples)
@@ -1218,6 +1459,18 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
         else:
             self.report({"INFO"}, f"{message}; nothing to report")
         return {"FINISHED"}
+
+
+def _plan_or_report(operator, rig):
+    """The rig's job, or None with the reason reported: a warning for an overlap,
+    which only the user can resolve, and an error for the rest."""
+    try:
+        return job_plan(rig)
+    except MotionsOverlap as exc:
+        operator.report({"WARNING"}, f"{exc}. Nothing was generated or checked")
+    except WaypointError as exc:
+        operator.report({"ERROR"}, str(exc))
+    return None
 
 
 def _generated_paths(rig, ik_name: str | None) -> set[str]:
@@ -1311,11 +1564,14 @@ def _handlers_suspended():
 
 classes = (
     KinemaWaypoint,
+    KinemaMotion,
     KinemaMoveCheck,
     KINEMA_OT_add_waypoint,
     KINEMA_OT_update_waypoint,
     KINEMA_OT_goto_waypoint,
     KINEMA_OT_remove_waypoint,
+    KINEMA_OT_add_motion,
+    KINEMA_OT_remove_motion,
     KINEMA_OT_generate_motion,
     KINEMA_OT_check_motion,
 )
@@ -1323,6 +1579,18 @@ classes = (
 
 def register_props() -> None:
     bpy.types.Object.kinema_waypoints = CollectionProperty(type=KinemaWaypoint)
+    bpy.types.Object.kinema_motions = CollectionProperty(type=KinemaMotion)
+    bpy.types.Object.kinema_active_motion = IntProperty(
+        name="Active Motion", description="Row highlighted in the Motions list",
+        default=0, min=0,
+    )
+    # 0 in a file saved before motions: see convert_saved_before_motions.
+    bpy.types.Object.kinema_job_version = IntProperty(name="Job Version", default=0)
+    # Where recording goes on from: the last waypoint recorded, and its frame.
+    bpy.types.Object.kinema_last_recorded = StringProperty(name="Last Recorded", default="")
+    bpy.types.Object.kinema_last_recorded_frame = IntProperty(
+        name="Last Recorded Frame", default=0
+    )
     # The last motion check, one row per move. Kept on the rig so it survives a
     # save, and replaced whole by the next Generate Motion or Check Motion.
     bpy.types.Object.kinema_motion_check = CollectionProperty(type=KinemaMoveCheck)
@@ -1363,6 +1631,11 @@ def register_props() -> None:
 
 def unregister_props() -> None:
     del bpy.types.Object.kinema_waypoints
+    del bpy.types.Object.kinema_motions
+    del bpy.types.Object.kinema_active_motion
+    del bpy.types.Object.kinema_job_version
+    del bpy.types.Object.kinema_last_recorded
+    del bpy.types.Object.kinema_last_recorded_frame
     del bpy.types.Object.kinema_motion_check
     del bpy.types.Object.kinema_motion_check_job
     del bpy.types.Object.kinema_generated_range

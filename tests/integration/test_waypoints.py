@@ -138,8 +138,28 @@ def _teach(builder, rig, frame, q, move, name):
     bpy.context.scene.frame_set(frame)
     _set_q(builder, rig, q)
     assert "FINISHED" in bpy.ops.kinema.add_waypoint(name=name)
-    rig.kinema_waypoints[-1].move = move
-    return rig.kinema_waypoints[-1]
+    waypoint = rig.kinema_waypoints[-1]
+    if len(rig.kinema_motions) and rig.kinema_motions[-1].end == waypoint.uid:
+        rig.kinema_motions[-1].move = move
+    return waypoint
+
+
+def _arriving(rig, waypoint):
+    """The motion that ends at ``waypoint``: the one Record added on reaching it."""
+    return next(m for m in reversed(rig.kinema_motions) if m.end == waypoint.uid)
+
+
+def _retime(rig, waypoint, frame):
+    """Move ``waypoint`` in time, as setting its frame did before motions.
+
+    Every motion that ends there ends on ``frame``, and every one that leaves
+    it starts there.
+    """
+    for motion in rig.kinema_motions:
+        if motion.end == waypoint.uid:
+            motion.frame_end = frame
+        if motion.start == waypoint.uid:
+            motion.frame_start = frame
 
 
 class TestRecording:
@@ -205,12 +225,12 @@ class TestRecording:
 
 
 class TestGeneration:
-    def test_two_waypoints_are_needed(self, arm6, builder):
+    def test_a_motion_is_needed(self, arm6, builder):
         """bpy raises rather than returning when an operator reports ERROR."""
         import bpy
 
         _teach(builder, arm6, 1, Q0, "JOINT", "home")
-        with pytest.raises(RuntimeError, match="At least two waypoints"):
+        with pytest.raises(RuntimeError, match="no motions to generate"):
             bpy.ops.kinema.generate_motion()
 
     def test_a_joint_span_moves_the_joints_and_leaves_ik_off(self, arm6, builder):
@@ -247,7 +267,7 @@ class TestGeneration:
         bpy.context.scene.frame_set(21)
         _drag_goal(builder, arm6, (0.0, 0.2, -0.12))
         assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="cut")
-        arm6.kinema_waypoints[-1].move = "LINEAR"
+        arm6.kinema_motions[-1].move = "LINEAR"
         end = _tool(builder, arm6).copy()
         arm6.kinema_ik_enabled = False
 
@@ -285,7 +305,7 @@ class TestGeneration:
         _set_q(builder, arm6, Q1)
         _drag_goal(builder, arm6, (0.0, 0.18, -0.1))
         assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="cut")
-        arm6.kinema_waypoints[-1].move = "LINEAR"
+        arm6.kinema_motions[-1].move = "LINEAR"
         arm6.kinema_ik_enabled = False
 
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
@@ -311,7 +331,7 @@ class TestGeneration:
         bpy.context.scene.frame_set(21)
         _drag_goal(builder, arm6, (0.0, 0.2, 0.0))
         bpy.ops.kinema.add_waypoint(name="cut")
-        arm6.kinema_waypoints[-1].move = "LINEAR"
+        arm6.kinema_motions[-1].move = "LINEAR"
         arm6.kinema_ik_enabled = False
 
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
@@ -335,7 +355,7 @@ class TestGeneration:
         point = _teach(builder, arm6, 40, Q1, "JOINT", "pick")
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
 
-        point.frame = 20
+        _retime(arm6, point, 20)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
 
         frames = {
@@ -510,7 +530,7 @@ class TestGeneration:
         bpy.context.scene.frame_set(21)
         _drag_goal(builder, arm6, (0.0, 0.15, 0.0))
         bpy.ops.kinema.add_waypoint(name="cut")
-        arm6.kinema_waypoints[-1].move = "LINEAR"
+        arm6.kinema_motions[-1].move = "LINEAR"
 
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
 
@@ -743,7 +763,7 @@ class TestConfiguration:
             branches.DISTINCT_TOLERANCE
         ), "no other configuration was found, so this proves nothing"
         assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="b")
-        arm6.kinema_waypoints[-1].move = "LINEAR"
+        arm6.kinema_motions[-1].move = "LINEAR"
         _teach(builder, arm6, 41, REACH_C, "JOINT", "c")
 
         with pytest.raises(RuntimeError, match="can't change configuration"):
@@ -1068,8 +1088,175 @@ class TestMotionCheck:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert arm6.kinema_motion_check_job == wp_ops.job_signature(arm6)
 
-        arm6.kinema_waypoints[1].frame = 30
+        _retime(arm6, arm6.kinema_waypoints[1], 30)
         assert arm6.kinema_motion_check_job != wp_ops.job_signature(arm6)
+
+
+def _played(builder, rig, frames):
+    """The joint values on each of ``frames``, as playback has them."""
+    import bpy
+
+    out = {}
+    for frame in frames:
+        bpy.context.scene.frame_set(frame)
+        out[frame] = _q(builder, rig)
+    return out
+
+
+def _motions(rig):
+    return [
+        (m.name, m.start_name, m.end_name, m.move, m.frame_start, m.frame_end)
+        for m in rig.kinema_motions
+    ]
+
+
+def _motion(rig, name, start, end, first, last, move="JOINT"):
+    """A motion added by hand, from waypoint ``start`` to ``end``, both by name."""
+    motion = rig.kinema_motions.add()
+    motion.name = name
+    motion.start_name, motion.end_name = start, end
+    motion.move = move
+    motion.frame_start, motion.frame_end = first, last
+    return motion
+
+
+class TestMotions:
+    def test_a_job_saved_before_motions_opens_as_motions_and_plays_the_same(
+        self, arm6, builder, addon
+    ):
+        """Its waypoints carried a frame and a move. Opened, each pair in frame order
+        is a motion with those frames and that move, and the job plays as it did."""
+        import bpy
+
+        handlers = importlib.import_module(f"{addon.__name__}.handlers")
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        _teach(builder, arm6, 41, REACH_A, "JOINT", "place")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        frames = range(1, 42)
+        before = _played(builder, arm6, frames)
+        made = _motions(arm6)
+
+        # As such a file has it: a frame and a move on each waypoint, no motions,
+        # no ids, and no job version.
+        for waypoint, frame in zip(arm6.kinema_waypoints, (1, 21, 41), strict=True):
+            waypoint.frame, waypoint.move, waypoint.uid = frame, "JOINT", ""
+        arm6.kinema_motions.clear()
+        arm6.kinema_job_version = 0
+        arm6.kinema_last_recorded = ""
+        handlers.on_load_post()
+
+        assert _motions(arm6) == made
+        assert all(waypoint.uid for waypoint in arm6.kinema_waypoints)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        after = _played(builder, arm6, frames)
+        for frame in frames:
+            assert np.allclose(after[frame], before[frame], atol=1e-6), frame
+
+    def test_one_waypoint_ends_one_motion_and_starts_another(self, arm6, builder):
+        """Out to pick and back home, home taught once."""
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 30, Q1, "JOINT", "pick")
+        _motion(arm6, "back", "pick", "home", 30, 60)
+        assert len(arm6.kinema_waypoints) == 2
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        played = _played(builder, arm6, (1, 30, 45, 60))
+        assert np.allclose(played[1], Q0, atol=1e-6)
+        assert np.allclose(played[30], Q1, atol=1e-6)
+        assert np.allclose(played[60], Q0, atol=1e-6)
+        assert not np.allclose(played[45], Q0, atol=1e-3)
+
+    def test_a_motion_is_retimed_without_touching_its_waypoints(self, arm6, builder):
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        pick = _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        taught = (list(pick.pose), list(pick.q))
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        arm6.kinema_motions[0].frame_end = 41
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert (list(pick.pose), list(pick.q)) == taught
+        played = _played(builder, arm6, (21, 41))
+        assert np.allclose(played[41], Q1, atol=1e-6)
+        assert not np.allclose(played[21], Q1, atol=1e-3)
+
+    def test_a_gap_at_one_waypoint_holds_there(self, arm6, builder):
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        _motion(arm6, "back", "pick", "home", 31, 51)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        for frame, values in _played(builder, arm6, range(21, 32)).items():
+            assert np.allclose(values, Q1, atol=1e-6), frame
+        assert [row.name for row in arm6.kinema_motion_check] == ["pick", "hold at pick", "back"]
+
+    def test_a_motion_that_starts_elsewhere_gets_a_joint_move_to_it(self, arm6, builder):
+        """From pick, ending at 21, to a motion leaving place at 41: a joint move
+        over frames 21-41 is added, and said."""
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        bpy.context.scene.frame_set(1)
+        _set_q(builder, arm6, REACH_A)
+        assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="place", motion=False)
+        _motion(arm6, "home again", "place", "home", 41, 61)
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        names = [row.name for row in arm6.kinema_motion_check]
+        assert names == ["pick", "to place", "home again"]
+        played = _played(builder, arm6, (21, 41, 61))
+        assert np.allclose(played[21], Q1, atol=1e-6)
+        assert np.allclose(played[41], REACH_A, atol=1e-6)
+        assert np.allclose(played[61], Q0, atol=1e-6)
+
+    def test_motions_that_overlap_generate_nothing(self, arm6, builder):
+        """A warning, not an error: nothing is keyed until the overlap is removed by hand."""
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        _motion(arm6, "back", "pick", "home", 15, 40)
+        assert "CANCELLED" in bpy.ops.kinema.generate_motion()
+        assert not arm6.kinema_generated_job
+        assert not any(curve.data_path.startswith("pose.bones") for curve in _curves(arm6))
+
+    def test_recording_on_a_later_frame_adds_a_motion_and_on_an_earlier_one_doesn_t(
+        self, arm6, builder
+    ):
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        assert _motions(arm6) == [("pick", "home", "pick", "JOINT", 1, 21)]
+        _teach(builder, arm6, 11, REACH_A, "JOINT", "early")
+        assert len(arm6.kinema_motions) == 1
+        bpy.context.scene.frame_set(41)
+        _set_q(builder, arm6, REACH_B)
+        assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="later")
+        assert _motions(arm6)[-1] == ("later", "early", "later", "JOINT", 11, 41)
+
+    def test_removing_a_waypoint_removes_the_motions_to_and_from_it(self, arm6, builder):
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        _teach(builder, arm6, 41, REACH_A, "JOINT", "place")
+        assert len(arm6.kinema_motions) == 2
+        assert "FINISHED" in bpy.ops.kinema.remove_waypoint(index=1)
+        assert len(arm6.kinema_motions) == 0
+        assert [w.name for w in arm6.kinema_waypoints] == ["home", "place"]
+
+    def test_renaming_a_waypoint_keeps_its_motions(self, arm6, builder):
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        pick = _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        pick.name = "grasp"
+        assert arm6.kinema_motions[0].end_name == "grasp"
 
 
 def _curves(rig):

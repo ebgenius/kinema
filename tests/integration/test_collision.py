@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from ..conftest import requires_bpy
+from .test_waypoints import _retime
 
 pytestmark = requires_bpy
 
@@ -1066,7 +1067,7 @@ class TestThePanel:
         scene = bpy.context.scene
         assert collision.closest_approach(arm6, scene).clearance_obstacle == "FarAway"
 
-        arm6.kinema_waypoints[1].frame = 41
+        _retime(arm6, arm6.kinema_waypoints[1], 41)
         assert collision.closest_approach(arm6, scene) is None
 
     def test_a_check_with_nothing_to_measure_is_never_out_of_date(self, arm6, builder, modules):
