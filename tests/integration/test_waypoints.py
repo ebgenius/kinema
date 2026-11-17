@@ -1295,6 +1295,14 @@ class TestMotions:
         text, icon = panel.motions_note(arm6)
         assert "both on frame 20" in text and icon == "ERROR"
 
+        # Once a motion is added, that reason is past: removed again, the job
+        # has no motions, not an old clash.
+        assert "FINISHED" in bpy.ops.kinema.add_motion()
+        assert "FINISHED" in bpy.ops.kinema.remove_motion()
+        with pytest.raises(RuntimeError, match="no motions to generate"):
+            bpy.ops.kinema.generate_motion()
+        assert panel.motions_note(arm6)[1] == "INFO"
+
     def test_no_two_waypoints_share_a_name(self, arm6, builder):
         """A motion's From and To are picked by name: a second 'pick' is 'pick.001',
         recorded or renamed, and a motion can be pointed at it."""
@@ -1437,12 +1445,14 @@ class TestMotions:
         assert "CANCELLED" in bpy.ops.kinema.generate_motion()
         assert "CANCELLED" in bpy.ops.kinema.optimize_motion()
 
-    def test_add_after_a_motion_whose_waypoint_is_gone_says_so(self, arm6, builder):
+    @pytest.mark.parametrize("end", ["gone", ""], ids=["deleted", "cleared"])
+    def test_add_after_a_motion_whose_waypoint_is_gone_says_so(self, arm6, builder, end):
+        """Its To deleted, or cleared in the panel: Add says so rather than start elsewhere."""
         import bpy
 
         _teach(builder, arm6, 1, Q0, "JOINT", "home")
         _teach(builder, arm6, 21, Q1, "JOINT", "pick")
-        arm6.kinema_motions[0].end = "gone"
+        arm6.kinema_motions[0].end = end
         with pytest.raises(RuntimeError, match="no longer exists"):
             bpy.ops.kinema.add_motion()
 

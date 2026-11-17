@@ -386,6 +386,9 @@ def job_plan(rig):
     convert_saved_before_motions(rig)
     if rig.kinema_job_version < JOB_VERSION:
         return Plan(spans=spans(rig.kinema_waypoints), notes=[])
+    if len(rig.kinema_motions):
+        # Motions made since say more than why the old job made none.
+        rig.kinema_unconverted = ""
     if not len(rig.kinema_motions) and rig.kinema_unconverted:
         raise WaypointError(
             f"This job, saved before motions, couldn't be made into motions: "
@@ -540,6 +543,7 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
             motion.move = MOVE_JOINT
             motion.frame_start, motion.frame_end = rig.kinema_last_recorded_frame, frame
             rig.kinema_active_motion = len(rig.kinema_motions) - 1
+            rig.kinema_unconverted = ""
             message += (
                 f", with a motion from '{previous.name}' over frames "
                 f"{motion.frame_start}-{frame}"
@@ -708,6 +712,7 @@ class KINEMA_OT_add_motion(KinemaWaypointOperator):
         motion.frame_start = first
         motion.frame_end = first + max(1, round(scene_fps(context.scene)))
         rig.kinema_active_motion = len(rig.kinema_motions) - 1
+        rig.kinema_unconverted = ""
         self.report(
             {"INFO"},
             f"Added '{motion.name}', '{start.name}' to '{target.name}' over frames "
