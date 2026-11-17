@@ -342,11 +342,17 @@ def _reports(logs: Path, jobs: int) -> list:
 def _write_durations(path: Path, durations: dict[str, float]) -> None:
     """Write ``durations`` over ``path`` whole: to a file of this run's own beside
     it, moved over it, so it is never left cut short, and two runs recording at
-    once never write or move each other's."""
+    once never write or move each other's. It keeps the file's mode: mkstemp's
+    own is the owner's alone."""
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o644
     handle, written = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as out:
             out.write(json.dumps(durations, indent=0) + "\n")
+        os.chmod(written, mode)
         os.replace(written, path)
     except BaseException:
         Path(written).unlink(missing_ok=True)

@@ -174,6 +174,23 @@ class TestWritingDurations:
         assert moved[0] != moved[1]
         assert all(source.parent == tmp_path for source in moved), "beside it, to move"
 
+    def test_it_keeps_the_mode_of_the_file_it_replaces(self, dev, tmp_path, monkeypatch):
+        """mkstemp makes a file only its owner can read: moved over the times, it
+        would take that mode with it."""
+        given, real = [], dev.os.chmod
+
+        def chmod(target, mode):
+            given.append(mode)
+            real(target, mode)
+
+        monkeypatch.setattr(dev.os, "chmod", chmod)
+        path = tmp_path / "durations.json"
+        dev._write_durations(path, {"a": 1.0})
+        path.write_text("{}", encoding="utf-8")
+        before = path.stat().st_mode & 0o777
+        dev._write_durations(path, {"a": 2.0})
+        assert given == [0o644, before], "a new file is 644; one written over keeps its mode"
+
     def test_a_failed_write_leaves_the_times_and_no_file(self, dev, tmp_path, monkeypatch):
         path = tmp_path / "durations.json"
         path.write_text('{"old": 1.0}', encoding="utf-8")
