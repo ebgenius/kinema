@@ -151,6 +151,35 @@ class TestReports:
         assert dev._reports(tmp_path, 2) == [{"whole": True}, None]
 
 
+class TestSummary:
+    @pytest.mark.parametrize(
+        ("log", "summary"),
+        [
+            ("..\n1 failed, 3 passed in 2s\n", "1 failed, 3 passed in 2s"),
+            ("[kinema-test] pytest -q\n\n26 deselected in 0.02s\n", "26 deselected in 0.02s"),
+            ("Blender quit\n", "no summary: see its log"),
+        ],
+    )
+    def test_each_share_says_what_it_ran(self, dev, log, summary):
+        assert dev._summary(log) == summary
+
+
+class TestExitCode:
+    @pytest.mark.parametrize(
+        ("codes", "code"),
+        [
+            ([0, 0], 0),
+            ([5, 1], 1),  # an empty share first never hides a failed one
+            ([1, 5], 1),
+            ([0, 5], 0),  # nor counts as one
+            ([5, 5], 5),  # every share empty: nothing was collected
+            ([0, 2, 1], 2),
+        ],
+    )
+    def test_an_empty_share_neither_fails_the_run_nor_hides_a_failure(self, dev, codes, code):
+        assert dev._exit_code(codes) == code
+
+
 class TestShareEnv:
     def test_every_share_splits_by_the_same_copy(self, dev, tmp_path):
         snapshot = tmp_path / "durations.json"

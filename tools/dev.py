@@ -283,9 +283,13 @@ def _jobs(asked: str) -> int:
 
 
 def _summary(log: str) -> str:
-    """The last line pytest printed with its counts, or how the process ended."""
+    """The last line pytest printed with its counts, or how the process ended.
+
+    A share with nothing of a narrow selection in it prints only how many it
+    deselected."""
+    words = (" passed", " failed", " error", "no tests ran", " deselected in ")
     for line in reversed(log.splitlines()):
-        if any(word in line for word in (" passed", " failed", " error", "no tests ran")):
+        if any(word in line for word in words):
             return line.strip().strip("=").strip()
     return "no summary: see its log"
 
@@ -435,25 +439,30 @@ def cmd_test(args: argparse.Namespace) -> int:
         return _share_env(_launch_env(args), index, jobs, logs, snapshot, args.record_durations)
 
     codes = _run_shares(cmd, jobs, logs, env_for)
-    worst = 0
-    for index, code in enumerate(codes):
+    for index in range(jobs):
         log = (logs / f"share-{index}.log").read_text(encoding="utf-8", errors="replace")
         for line in log.splitlines():
             if line.startswith(("FAILED", "ERROR")):
                 print(f"  [{index + 1}/{jobs}] {line}")
         print(f"share {index + 1}/{jobs}: {_summary(log)}")
-        # 5 is pytest's "no tests collected": a share a narrow selection left empty.
-        if code not in (0, 5):
-            worst = worst or code
     print(f"{jobs} processes, {time.perf_counter() - started:.0f} s in all")
 
     if args.record_durations:
         recorded = _merged_durations(_read_json(DURATIONS), _reports(logs, jobs))
         _write_durations(DURATIONS, recorded)
         print(f"times of {len(recorded)} tests written to {DURATIONS.relative_to(REPO_ROOT)}")
-    if all(code == 5 for code in codes):
-        return 5
-    return worst
+    return _exit_code(codes)
+
+
+def _exit_code(codes: list[int]) -> int:
+    """The run's exit code from its processes': the first that failed, 0 where
+    none did, and pytest's 5 -- no tests collected -- only where every share
+    was empty. A share a narrow selection left empty is no failure, and never
+    hides one."""
+    failed = [code for code in codes if code not in (0, 5)]
+    if failed:
+        return failed[0]
+    return 5 if codes and all(code == 5 for code in codes) else 0
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
