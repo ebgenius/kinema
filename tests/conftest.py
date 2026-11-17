@@ -132,6 +132,10 @@ def pytest_collection_modifyitems(config, items):
     """Keep this process's share of the suite, where ``KINEMA_TEST_SHARD`` names one."""
     import os
 
+    if os.environ.get("KINEMA_RECORD_DURATIONS"):
+        # All of them, before the share: what the suite holds, for dev.py to drop
+        # the times of tests that are gone.
+        _collected[:] = [item.nodeid for item in items]
     shard = os.environ.get("KINEMA_TEST_SHARD")
     if not shard:
         return
@@ -147,6 +151,7 @@ def pytest_collection_modifyitems(config, items):
 
 
 _measured: dict[str, float] = {}
+_collected: list[str] = []
 
 
 def pytest_runtest_logreport(report):
@@ -158,13 +163,15 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Write the times measured, to the file ``KINEMA_RECORD_DURATIONS`` names."""
+    """Write the times measured, and every test collected, to the file
+    ``KINEMA_RECORD_DURATIONS`` names."""
     import json
     import os
 
     path = os.environ.get("KINEMA_RECORD_DURATIONS")
-    if path and _measured:
+    if path:
+        times = {k: round(v, 3) for k, v in sorted(_measured.items())}
         Path(path).write_text(
-            json.dumps({k: round(v, 3) for k, v in sorted(_measured.items())}, indent=0),
+            json.dumps({"collected": _collected, "times": times}, indent=0),
             encoding="utf-8",
         )

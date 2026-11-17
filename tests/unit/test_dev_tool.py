@@ -110,6 +110,24 @@ class TestRunningShares:
         assert killed == started
 
 
+class TestMergingDurations:
+    PARTS = [
+        {"collected": ["a", "b", "c"], "times": {"a": 2.0}},
+        {"collected": ["a", "b", "c"], "times": {"b": 3.0}},
+    ]
+
+    def test_the_whole_suite_drops_a_test_that_is_gone(self, dev):
+        merged = dev._merged_durations({"a": 1.0, "c": 4.0, "gone": 9.0}, self.PARTS, whole=True)
+        assert merged == {"a": 2.0, "b": 3.0, "c": 4.0}
+
+    def test_part_of_it_keeps_the_rest(self, dev):
+        merged = dev._merged_durations({"a": 1.0, "gone": 9.0}, self.PARTS, whole=False)
+        assert merged == {"a": 2.0, "b": 3.0, "gone": 9.0}
+
+    def test_no_process_reporting_drops_nothing(self, dev):
+        assert dev._merged_durations({"a": 1.0}, [], whole=True) == {"a": 1.0}
+
+
 class TestContainerMemory:
     def test_a_v2_limit_is_read(self, dev, tmp_path):
         (tmp_path / "memory.max").write_text(f"{8 * 2**30}\n", encoding="ascii")

@@ -263,6 +263,23 @@ def _summary(log: str) -> str:
     return "no summary: see its log"
 
 
+def _merged_durations(recorded: dict, parts: list[dict], whole: bool) -> dict:
+    """The recorded times, with each process's measured ones in their place.
+
+    After a run of the whole suite, a test no process collected -- renamed or
+    removed since -- is dropped, so its time isn't kept forever. After part of
+    it, the others are kept as they were.
+    """
+    merged = dict(recorded)
+    collected: set[str] = set()
+    for part in parts:
+        merged.update(part["times"])
+        collected.update(part["collected"])
+    if whole and collected:
+        merged = {k: v for k, v in merged.items() if k in collected}
+    return dict(sorted(merged.items()))
+
+
 def _run_shares(cmd: list[str], jobs: int, logs: Path, env_for) -> list[int]:
     """Start one Blender per share, logging to ``logs``, and wait for them all.
 
@@ -336,11 +353,12 @@ def cmd_test(args: argparse.Namespace) -> int:
         recorded = {}
         if DURATIONS.is_file():
             recorded = json.loads(DURATIONS.read_text(encoding="utf-8"))
-        for part in sorted(logs.glob("durations-*.json")):
-            recorded.update(json.loads(part.read_text(encoding="utf-8")))
-        DURATIONS.write_text(
-            json.dumps(dict(sorted(recorded.items())), indent=0) + "\n", encoding="utf-8"
-        )
+        parts = [
+            json.loads(part.read_text(encoding="utf-8"))
+            for part in sorted(logs.glob("durations-*.json"))
+        ]
+        recorded = _merged_durations(recorded, parts, whole=not args.pytest_args)
+        DURATIONS.write_text(json.dumps(recorded, indent=0) + "\n", encoding="utf-8")
         print(f"times of {len(recorded)} tests written to {DURATIONS.relative_to(REPO_ROOT)}")
     if all(code == 5 for code in codes):
         return 5
