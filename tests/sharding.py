@@ -19,6 +19,7 @@ neighbours change but not which comes first.
 from __future__ import annotations
 
 import json
+import os
 import statistics
 from pathlib import Path
 
@@ -28,8 +29,20 @@ TESTS = Path(__file__).resolve().parent
 DURATIONS = TESTS / "durations.json"
 
 
-def read_durations(path: Path = DURATIONS) -> dict[str, float]:
-    """The recorded times, or none where there are none yet."""
+#: Set by ``dev.py test`` to its copy of the times, taken once before any process starts.
+SNAPSHOT = "KINEMA_TEST_DURATIONS"
+
+
+def read_durations(path: Path | None = None) -> dict[str, float]:
+    """The recorded times, or none where there are none yet.
+
+    Without ``path``, the copy ``dev.py test`` took for this run, where it took
+    one, and the file otherwise. Each process collects, and so splits, at its
+    own moment, and the file can change in between -- another recording, a
+    checkout. Split by different times, a test could fall to no process at all.
+    """
+    if path is None:
+        path = Path(os.environ[SNAPSHOT]) if os.environ.get(SNAPSHOT) else DURATIONS
     try:
         return {str(k): float(v) for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
     except (OSError, ValueError, TypeError, AttributeError):

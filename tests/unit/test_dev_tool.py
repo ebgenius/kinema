@@ -151,6 +151,36 @@ class TestReports:
         assert dev._reports(tmp_path, 2) == [{"whole": True}, None]
 
 
+class TestShareEnv:
+    def test_every_share_splits_by_the_same_copy(self, dev, tmp_path):
+        snapshot = tmp_path / "durations.json"
+        envs = [dev._share_env({"PATH": "x"}, i, 3, tmp_path, snapshot, False) for i in range(3)]
+        assert [env["KINEMA_TEST_SHARD"] for env in envs] == ["0/3", "1/3", "2/3"]
+        assert {env["KINEMA_TEST_DURATIONS"] for env in envs} == {str(snapshot)}
+        assert all(env["PATH"] == "x" and "KINEMA_RECORD_DURATIONS" not in env for env in envs)
+
+    def test_recording_each_reports_to_a_file_of_its_own(self, dev, tmp_path):
+        env = dev._share_env({}, 1, 3, tmp_path, tmp_path / "d.json", True)
+        assert env["KINEMA_RECORD_DURATIONS"] == str(tmp_path / "durations-1.json")
+
+
+class TestSnapshot:
+    def test_it_is_a_copy_the_file_changing_after_does_not_touch(self, dev, tmp_path, monkeypatch):
+        source = tmp_path / "durations.json"
+        source.write_text('{"a": 1.0}', encoding="utf-8")
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        monkeypatch.setattr(dev, "DURATIONS", source)
+        snapshot = dev._snapshot_durations(logs)
+        source.write_text('{"a": 9.0}', encoding="utf-8")
+        assert snapshot.parent == logs
+        assert dev._read_json(snapshot) == {"a": 1.0}
+
+    def test_no_times_is_an_empty_copy(self, dev, tmp_path, monkeypatch):
+        monkeypatch.setattr(dev, "DURATIONS", tmp_path / "missing.json")
+        assert dev._read_json(dev._snapshot_durations(tmp_path)) == {}
+
+
 class TestWritingDurations:
     def test_it_lands_whole_and_leaves_nothing_beside_it(self, dev, tmp_path):
         path = tmp_path / "durations.json"

@@ -339,6 +339,28 @@ def _reports(logs: Path, jobs: int) -> list:
     return [_read_json(logs / f"durations-{index}.json") for index in range(jobs)]
 
 
+def _share_env(
+    env: dict[str, str], index: int, jobs: int, logs: Path, snapshot: Path, record: bool
+) -> dict[str, str]:
+    """``env`` for the process running share ``index`` of ``jobs``: which share,
+    the times every share splits by, and where to report its own, if recording."""
+    env = {**env, "KINEMA_TEST_SHARD": f"{index}/{jobs}", "KINEMA_TEST_DURATIONS": str(snapshot)}
+    if record:
+        env["KINEMA_RECORD_DURATIONS"] = str(logs / f"durations-{index}.json")
+    return env
+
+
+def _snapshot_durations(logs: Path) -> Path:
+    """A copy of the recorded times in ``logs``, for every process of a run to split
+    by the same ones: tests/sharding.py. No times where there are none."""
+    snapshot = logs / "durations.json"
+    try:
+        shutil.copyfile(DURATIONS, snapshot)
+    except OSError:
+        snapshot.write_text("{}", encoding="utf-8")
+    return snapshot
+
+
 def _write_durations(path: Path, durations: dict[str, float]) -> None:
     """Write ``durations`` over ``path`` whole: to a file of this run's own beside
     it, moved over it, so it is never left cut short, and two runs recording at
@@ -407,13 +429,10 @@ def cmd_test(args: argparse.Namespace) -> int:
     logs = Path(tempfile.mkdtemp(prefix="kinema-test-"))
     print(f"running the tests in {jobs} Blender processes at once; logs in {logs}")
     started = time.perf_counter()
+    snapshot = _snapshot_durations(logs)
 
     def env_for(index: int) -> dict[str, str]:
-        env = _launch_env(args)
-        env["KINEMA_TEST_SHARD"] = f"{index}/{jobs}"
-        if args.record_durations:
-            env["KINEMA_RECORD_DURATIONS"] = str(logs / f"durations-{index}.json")
-        return env
+        return _share_env(_launch_env(args), index, jobs, logs, snapshot, args.record_durations)
 
     codes = _run_shares(cmd, jobs, logs, env_for)
     worst = 0

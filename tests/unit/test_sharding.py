@@ -102,6 +102,18 @@ class TestShares:
         path.write_text('{"a": 1.5}', encoding="utf-8")
         assert sharding.read_durations(path) == {"a": 1.5}
 
+    def test_a_run_reads_its_copy_of_the_times_not_the_file(self, tmp_path, monkeypatch):
+        """The copy dev.py took before starting the processes, so each splits by the
+        same times when the file changes as they start."""
+        file, copy = tmp_path / "durations.json", tmp_path / "copy.json"
+        file.write_text('{"a": 1.0}', encoding="utf-8")
+        copy.write_text('{"a": 5.0}', encoding="utf-8")
+        monkeypatch.setattr(sharding, "DURATIONS", file)
+        monkeypatch.delenv(sharding.SNAPSHOT, raising=False)
+        assert sharding.read_durations() == {"a": 1.0}
+        monkeypatch.setenv(sharding.SNAPSHOT, str(copy))
+        assert sharding.read_durations() == {"a": 5.0}
+
     @pytest.mark.parametrize("text", ["[]", "null", "3", '{"a": "fast"}', '{"a": null}', "{"])
     def test_recorded_times_of_the_wrong_shape_count_as_none(self, tmp_path, text):
         """Every process reads them while collecting: one raising would fail them all."""
