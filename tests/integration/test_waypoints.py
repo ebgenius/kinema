@@ -1304,6 +1304,24 @@ class TestMotions:
         motion.end_name = "pick.002"
         assert motion.end == third.uid
 
+    def test_add_continues_from_where_the_last_motion_ends(self, arm6, builder):
+        """The last motion ends at pick on 61; with place highlighted, Add goes from
+        pick to place, from 61, and the job generates."""
+        import bpy
+
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 61, Q1, "JOINT", "pick")
+        bpy.context.scene.frame_set(1)
+        _set_q(builder, arm6, REACH_A)
+        assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="place", motion=False)
+        arm6.kinema_active_waypoint = 2
+
+        assert "FINISHED" in bpy.ops.kinema.add_motion()
+        added = _motions(arm6)[-1]
+        assert added[1:3] == ("pick", "place") and added[4] == 61
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert [row.name for row in arm6.kinema_motion_check] == ["pick", "place"]
+
     def test_renaming_a_waypoint_keeps_its_motions(self, arm6, builder):
         _teach(builder, arm6, 1, Q0, "JOINT", "home")
         pick = _teach(builder, arm6, 21, Q1, "JOINT", "pick")
