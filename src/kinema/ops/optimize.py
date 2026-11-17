@@ -418,11 +418,11 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
     prior_weight = np.where(moving, trajectory.JOB_WEIGHT, trajectory.PIN_WEIGHT)
     prior_weight = np.repeat(prior_weight[None], len(frames), axis=0)
     # By frame: a waypoint two motions share is taught on each of their frames,
-    # and a hold on every frame of it.
+    # and a hold or a pause on every frame of it.
     taught = {}
     for span in plan:
         taught[span.start_frame], taught[span.end_frame] = span.start, span.end
-        if span.made == MADE_HOLD:
+        if _still(span):
             for frame in range(span.start_frame + 1, span.end_frame):
                 taught[frame] = span.start
     for frame, waypoint in taught.items():
@@ -455,7 +455,7 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
             for frame in range(span.start_frame + 1, span.end_frame):
                 fraction = (frame - span.start_frame) / span.frames
                 aim(frame, wp._between(start, end, fraction))
-        elif span.made == MADE_HOLD:
+        elif _still(span):
             # Still at the waypoint, which nothing may pull it off: not an
             # obstacle, and not the smoothing either side.
             for frame in range(span.start_frame + 1, span.end_frame):
@@ -492,6 +492,12 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
 # --------------------------------------------------------------------------
 # solving and writing
 # --------------------------------------------------------------------------
+def _still(span) -> bool:
+    """Whether the robot stays at one waypoint over ``span``: a gap held there, or
+    a motion from a waypoint to itself, which is a pause."""
+    return span.made == MADE_HOLD or span.start.as_pointer() == span.end.as_pointer()
+
+
 def dispatch(job: Job) -> None:
     """Hand the solve to JAX. Compiles first if this kernel never has, which waits."""
     compiled = job.optimizer.compiled

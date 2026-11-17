@@ -108,11 +108,11 @@ Motion** re-aims every move to and from it, joint moves included:
 
 Baked keys are never touched.
 
-A waypoint is a pose and nothing else. When the robot moves, and how, is a **motion**,
-in the **Motions** list under the waypoints: a move from one waypoint to another, with its
-own **Start** and **End** frame, its length in frames shown beside them. So one waypoint
-can end one motion and start the next, a job can go back to `home` without teaching it
-twice, and a motion is retimed without touching the poses.
+A waypoint holds a pose and the joints taught there, and no time. When the robot moves, and
+how, is a **motion**, in the **Motions** list under the waypoints: a move from one waypoint
+to another, with its own **Start** and **End** frame, its length in frames shown beside
+them. So one waypoint can end one motion and start the next, a job can go back to `home`
+without teaching it twice, and a motion is retimed without touching the poses.
 - **Record** on a later frame than the last waypoint recorded also adds a joint motion from
   that waypoint to the new one, ending on this frame. Teaching a job pose by pose, frame by
   frame, is what it was. **Add** puts a motion after the last one, a second long.

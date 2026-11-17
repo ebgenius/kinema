@@ -795,9 +795,18 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
         # leave Generate Motion looking available until it was pressed.
         from ..ops.waypoints import ik_bone_name
 
-        wants_ik = any(m.move == MOVE_LINEAR for m in rig.kinema_motions)
-        if wants_ik and ik_bone_name(rig) is None:
+        if wants_ik(rig) and ik_bone_name(rig) is None:
             layout.label(text="Linear moves need an IK target", icon="ERROR")
+
+
+def wants_ik(rig) -> bool:
+    """Whether the rig's job has a linear move: its motions', or, saved before motions
+    and not yet converted, its waypoints'."""
+    if any(motion.move == MOVE_LINEAR for motion in rig.kinema_motions):
+        return True
+    return rig.kinema_job_version < 1 and any(
+        waypoint.move == MOVE_LINEAR for waypoint in rig.kinema_waypoints
+    )
 
 
 def check_outdated(rig, scene) -> str:

@@ -1371,6 +1371,53 @@ class TestMotions:
         assert "FINISHED" in bpy.ops.kinema.add_motion()
         assert _motions(arm6)[-1][1:5] == ("home", "pick", "JOINT", 5)
 
+    def test_renaming_a_waypoint_renames_its_marker(self, arm6, builder):
+        pick = _teach(builder, arm6, 1, Q0, "JOINT", "pick")
+        pick.name = "grasp"
+        assert pick.marker.name == f"{arm6.name}.grasp"
+        assert pick.marker["kinema_waypoint"] == "grasp"
+
+    def test_a_linear_move_saved_before_motions_still_asks_for_an_ik_target(
+        self, arm6, builder, addon
+    ):
+        """Not yet converted, the job's moves are its waypoints': the panel warns of
+        a linear one with no IK target to drive it."""
+        panel = importlib.import_module(f"{addon.__name__}.ui.panel")
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        arm6.kinema_motions.clear()
+        arm6.kinema_job_version = 0
+        assert not panel.wants_ik(arm6)
+        arm6.kinema_waypoints[1].move = "LINEAR"
+        assert panel.wants_ik(arm6)
+
+    def test_a_rig_linked_from_before_motions_is_read_as_it_was_saved(
+        self, arm6, builder, addon, tmp_path
+    ):
+        """Linked from a library it can't be written, so opening a file leaves it as it
+        is, and its job is read from its waypoints' frames and moves."""
+        import bpy
+
+        handlers = importlib.import_module(f"{addon.__name__}.handlers")
+        wp_ops = importlib.import_module(f"{addon.__name__}.ops.waypoints")
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, Q1, "JOINT", "pick")
+        for waypoint, frame in zip(arm6.kinema_waypoints, (1, 21), strict=True):
+            waypoint.frame, waypoint.move, waypoint.uid = frame, "JOINT", ""
+        arm6.kinema_motions.clear()
+        arm6.kinema_job_version = 0
+        library = tmp_path / "old_robot.blend"
+        bpy.data.libraries.write(str(library), {arm6})
+        with bpy.data.libraries.load(str(library), link=True) as (_, linked):
+            linked.objects = [arm6.name]
+        rig = linked.objects[0]
+        assert rig.library is not None, "precondition: linked, not local"
+
+        handlers.on_load_post()
+        assert rig.kinema_job_version == 0 and not len(rig.kinema_motions)
+        plan = wp_ops.job_plan(rig)
+        assert [(s.label, s.start_frame, s.end_frame) for s in plan.spans] == [("pick", 1, 21)]
+
     def test_renaming_a_waypoint_keeps_its_motions(self, arm6, builder):
         _teach(builder, arm6, 1, Q0, "JOINT", "home")
         pick = _teach(builder, arm6, 21, Q1, "JOINT", "pick")

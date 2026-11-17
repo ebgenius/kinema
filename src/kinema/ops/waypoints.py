@@ -92,6 +92,7 @@ from ..rig.waypoints import (
     MOVE_JOINT,
     MOVE_LINEAR,
     MotionsOverlap,
+    Plan,
     WaypointError,
     spans,
 )
@@ -234,7 +235,12 @@ def unique_name(rig, waypoint) -> None:
 
 
 def _on_waypoint_named(self, _context) -> None:
-    unique_name(self.id_data, self)
+    rig = self.id_data
+    unique_name(rig, self)
+    # The marker goes by the waypoint's name, in the Outliner as on the row.
+    if self.marker is not None and PROP_WAYPOINT in self.marker:
+        self.marker.name = f"{rig.name}.{self.name}"
+        self.marker[PROP_WAYPOINT] = self.name
 
 
 class KinemaWaypoint(PropertyGroup):
@@ -334,7 +340,8 @@ def convert_saved_before_motions(rig) -> bool:
     it arrives at, so the job plays as it did and its Motion Check rows keep
     their names. Recording goes on from its last waypoint.
     """
-    if rig.kinema_job_version >= JOB_VERSION:
+    if rig.kinema_job_version >= JOB_VERSION or rig.library is not None:
+        # Linked from a library, it can't be written: see job_plan.
         return False
     for waypoint in rig.kinema_waypoints:
         if not waypoint.uid:
@@ -373,9 +380,12 @@ def job_plan(rig):
     """The rig's job, as ``rig/waypoints.plan`` lays out its motions.
 
     Converts a rig saved before motions first, so it is for operators, never
-    for a panel's draw.
+    for a panel's draw. One linked from a library can't be converted, so its
+    job is read from its waypoints' frames and moves, as it was saved.
     """
     convert_saved_before_motions(rig)
+    if rig.kinema_job_version < JOB_VERSION:
+        return Plan(spans=spans(rig.kinema_waypoints), notes=[])
     if not len(rig.kinema_motions) and rig.kinema_unconverted:
         raise WaypointError(
             f"This job, saved before motions, couldn't be made into motions: "

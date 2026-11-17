@@ -163,6 +163,20 @@ def _waypoint_error_mm(modules, rig):
     return worst
 
 
+def _held_at_b(rig, kind):
+    """The taught ROOMY job with B held over frames 61-81: by a gap there, or by a
+    pause, a motion from B to B. Returns the Motion Check's name for it."""
+    for motion in list(rig.kinema_motions)[1:]:
+        motion.frame_start += 20
+        motion.frame_end += 20
+    if kind == "pause":
+        b = rig.kinema_waypoints["B"]
+        wait = rig.kinema_motions.add()
+        wait.name, wait.start, wait.end = "wait", b.uid, b.uid
+        wait.frame_start, wait.frame_end = 61, 81
+    return "hold at B" if kind == "gap" else "wait"
+
+
 class TestOptimizing:
     def test_a_waypoint_two_motions_share_is_pinned_on_each_of_its_frames(
         self, arm6, builder, modules
@@ -187,18 +201,18 @@ class TestOptimizing:
         taught = np.array(list(a.q)[: a.dof])
         assert np.allclose(job.problem.prior[row][moving], taught[moving], atol=1e-9)
 
-    def test_a_hold_is_kept_at_its_waypoint(self, arm6, builder, modules):
-        """B reached on frame 61 and left on 81: on every frame between, the tool is
-        aimed at B and its taught joints held, as at B itself."""
+    @pytest.mark.parametrize("kind", ["gap", "pause"])
+    def test_a_hold_is_kept_at_its_waypoint(self, arm6, builder, modules, kind):
+        """B reached on frame 61 and left on 81, by a gap held there or a motion from B
+        to B: on every frame between, the tool is aimed at B and its taught joints
+        held, as at B itself."""
         import bpy
 
         optimize, trajectory = modules("ops.optimize"), modules("solver.trajectory")
         _teach(builder, arm6, ROOMY)
-        for motion in list(arm6.kinema_motions)[1:]:
-            motion.frame_start += 20
-            motion.frame_end += 20
+        name = _held_at_b(arm6, kind)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
-        assert [row.name for row in arm6.kinema_motion_check][1] == "hold at B"
+        assert [row.name for row in arm6.kinema_motion_check][1] == name
 
         job = optimize.prepare(bpy.context, arm6)
         b = arm6.kinema_waypoints["B"]
@@ -211,23 +225,22 @@ class TestOptimizing:
             moving = weight < trajectory.PIN_WEIGHT
             assert np.allclose(job.problem.prior[row][moving], taught[moving], atol=1e-9)
 
+    @pytest.mark.parametrize("kind", ["gap", "pause"])
     def test_a_hold_stays_at_its_waypoint_with_a_post_pulling_on_it(
-        self, arm6, builder, modules
+        self, arm6, builder, modules, kind
     ):
-        """The hold at B, frames 61-81, with a post 30 mm into the arm there: solved,
-        the tool stays within 0.01 mm of B on every frame of it. Without its target
-        and joints, it strayed 12.6 mm."""
+        """The hold at B, frames 61-81, a gap or a pause, with a post 30 mm into the
+        arm there: solved, the tool stays within 0.01 mm of B on every frame of it.
+        Without its target and joints, it strayed 12.6 mm."""
         import bpy
 
         wp = modules("ops.waypoints")
         _teach(builder, arm6, ROOMY)
-        for motion in list(arm6.kinema_motions)[1:]:
-            motion.frame_start += 20
-            motion.frame_end += 20
+        name = _held_at_b(arm6, kind)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         _in_the_way(builder, modules, arm6, frame=61)
         assert "FINISHED" in bpy.ops.kinema.check_motion()
-        hold = next(r for r in arm6.kinema_motion_check if r.name == "hold at B")
+        hold = next(r for r in arm6.kinema_motion_check if r.name == name)
         assert hold.clearance < -0.02, "precondition: the post pulls on the hold"
 
         assert "FINISHED" in bpy.ops.kinema.optimize_motion()
