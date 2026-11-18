@@ -381,6 +381,38 @@ class TestFollowing:
         row = next(r for r in arm6.kinema_motion_check if r.name == "place")
         assert 0.0 <= row.line_error < CLOSE, "the Motion Check measures the moving line"
 
+    def test_a_line_from_the_base_to_a_moving_empty_blends_on_every_frame(
+        self, arm6, builder, fixture_empty, curves
+    ):
+        """'pick' at the base, 'place' on an Empty that drops 30 mm over the move.
+        On each frame the tool is that frame's fraction of the way from 'pick' to
+        where the Empty has 'place' then: with the drop keyed linearly, a parabola
+        in Z. Kept to the line from 'pick' to where 'place' ends up instead, the
+        tool would be 7.5 mm off it half-way."""
+        import bpy
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        place = _teach(builder, arm6, 41, REACH_B, "LINEAR", "place")
+        _relative(arm6, place, fixture_empty)
+        _key_slide(curves, fixture_empty, 1, 41, Vector((0.0, 0.0, -0.03)))
+        start = np.array(pick.marker.matrix_world)[:3, 3]
+        local = np.array(place.marker.matrix_basis)
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        bpy.context.scene.frame_set(41)
+        last = _on(fixture_empty, local)[:3, 3]
+        worst = bent = 0.0
+        for frame in range(1, 42):
+            bpy.context.scene.frame_set(frame)
+            fraction = (frame - 1) / 40
+            end = _on(fixture_empty, local)[:3, 3]
+            expected = start + fraction * (end - start)
+            worst = max(worst, float(np.linalg.norm(_tool_world(builder, arm6)[:3, 3] - expected)))
+            bent = max(bent, float(np.linalg.norm(expected - (start + fraction * (last - start)))))
+        assert bent == pytest.approx(0.0075, abs=1e-4), "precondition: the blend bends"
+        assert worst < CLOSE, f"{worst * 1000:.3f} mm from the blended line"
+
     def test_a_hold_on_a_moving_empty_follows_it(self, arm6, builder, fixture_empty, curves):
         """Held at 'place' over frames 21-41 while the Empty slides: the tool goes
         with it, as it would follow a conveyor."""
