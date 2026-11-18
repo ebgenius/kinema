@@ -1174,3 +1174,171 @@ class TestPlacement:
 
         references.Placement(arm6, [pick], range(1, 22), scene)
         assert (scene.frame_current, scene.frame_subframe) == (12, pytest.approx(0.5))
+
+
+class TestFingerprintEdges:
+    def test_a_curve_in_a_muted_group_still_plays(
+        self, arm6, builder, wp_ops, fixture_empty, curves
+    ):
+        """Blender 5.2 evaluates a curve whose group is muted: the slide goes on, so
+        scrubbing it is no edit."""
+        import bpy
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        start = fixture_empty.location.x
+        _key_slide(curves, fixture_empty, 1, 21, Vector((0.02, 0.0, 0.0)))
+        bag = fixture_empty.animation_data.action.layers[0].strips[0].channelbags[0]
+        for group in bag.groups:
+            group.mute = True
+        bpy.context.scene.frame_set(1)
+        signed = wp_ops.job_signature(arm6)
+        bpy.context.scene.frame_set(15)
+        assert fixture_empty.location.x != pytest.approx(start), "precondition: it plays"
+        assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
+
+    def test_a_soloed_track_plays_though_muted(
+        self, arm6, builder, wp_ops, fixture_empty, curves
+    ):
+        """Blender plays a soloed track whether muted or not: scrubbing it is no edit."""
+        import bpy
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        start = fixture_empty.location.x
+        _key_slide(curves, fixture_empty, 1, 21, Vector((0.02, 0.0, 0.0)))
+        anim = fixture_empty.animation_data
+        track = anim.nla_tracks.new()
+        track.strips.new("slide", 1, anim.action)
+        anim.action = None
+        track.mute = True
+        track.is_solo = True
+        bpy.context.scene.frame_set(1)
+        signed = wp_ops.job_signature(arm6)
+        bpy.context.scene.frame_set(15)
+        assert fixture_empty.location.x != pytest.approx(start), "precondition: it plays"
+        assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
+
+    def test_sliding_along_the_bone_it_hangs_from_outdates_the_job(
+        self, arm6, builder, wp_ops, references, fixture_empty
+    ):
+        """From the carriage's head to its tail, 100 mm on."""
+        gantry = _gantry(arm6)
+        _on_bone(fixture_empty, gantry, "Carriage")
+        if not hasattr(fixture_empty, "parent_bone_head_tail_factor"):
+            pytest.skip("this Blender hangs a child from the bone's tail only")
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        signed = wp_ops.job_signature(arm6)
+        before = _at(references, arm6, pick, 1)
+        fixture_empty.parent_bone_head_tail_factor = (
+            0.0 if fixture_empty.parent_bone_head_tail_factor else 1.0
+        )
+        moved = np.linalg.norm(_at(references, arm6, pick, 1)[:3, 3] - before[:3, 3])
+        assert moved == pytest.approx(0.1, abs=1e-6), "precondition: it is elsewhere"
+        assert wp_ops.job_signature(arm6) != signed
+
+
+class TestParentingEdges:
+    @staticmethod
+    def _on_the_wrist(builder, rig, waypoint):
+        waypoint.marker.parent = rig
+        waypoint.marker.parent_type = "BONE"
+        waypoint.marker.parent_bone = builder.joint_bones(rig)[-1].name
+
+    def test_clearing_relative_to_takes_a_marker_off_the_robots_bone(
+        self, arm6, builder, wp_ops, fixture_empty
+    ):
+        """On an Empty, then parented by hand to the robot's wrist: clearing the
+        field puts the marker on the robot as an object, where it is."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        self._on_the_wrist(builder, arm6, pick)
+        bpy.context.view_layer.update()
+        here = np.array(pick.marker.matrix_world)
+
+        pick.reference = None
+        bpy.context.view_layer.update()
+        assert pick.marker.parent == arm6 and pick.marker.parent_type == "OBJECT"
+        np.testing.assert_allclose(np.array(pick.marker.matrix_world), here, atol=1e-6)
+        assert wp_ops.refusal(arm6, pick) is None
+
+    def test_a_refused_assignment_leaves_a_hand_parented_marker_to_be_caught_up(
+        self, arm6, builder, wp_ops, references, fixture_empty
+    ):
+        """Taught at the base, parented by hand to the Empty, then given an object
+        under its own marker from a script: refused, and the next operator still
+        keeps where its joints were taught."""
+        import bpy
+
+        fixture_empty.location.x += 0.05
+        bpy.context.view_layer.update()
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        taught = np.array(pick.pose).reshape(4, 4)
+        _parent_by_hand(pick.marker, fixture_empty, arm6)
+        below = _empty("Below")
+        below.parent = pick.marker
+
+        pick.reference = below
+        assert pick.reference is None
+        wp_ops.job_plan(arm6)
+        assert pick.reference == fixture_empty
+        np.testing.assert_allclose(np.array(references.taught_pose(pick)), taught, atol=1e-6)
+
+    def test_record_after_clear_parent_goes_on_at_the_base(
+        self, arm6, builder, fixture_empty
+    ):
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        bpy.ops.object.select_all(action="DESELECT")
+        pick.marker.select_set(True)
+        bpy.context.view_layer.objects.active = pick.marker
+        assert "FINISHED" in bpy.ops.object.parent_clear(type="CLEAR_KEEP_TRANSFORM")
+        bpy.context.view_layer.objects.active = arm6
+        arm6.kinema_active_waypoint = 0
+
+        place = _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        assert place.reference is None
+        assert place.marker.parent == arm6
+
+    def test_an_object_taken_out_of_the_robots_scene_is_refused(
+        self, arm6, builder, fixture_empty
+    ):
+        """Relative to an Empty that has since moved to another scene, which the job
+        doesn't play: refused, naming it."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        elsewhere = bpy.data.scenes.new("Elsewhere")
+        try:
+            elsewhere.collection.objects.link(fixture_empty)
+            bpy.context.scene.collection.objects.unlink(fixture_empty)
+            with pytest.raises(RuntimeError, match="'Workpiece', which isn't in the robot"):
+                bpy.ops.kinema.generate_motion()
+        finally:
+            bpy.data.scenes.remove(elsewhere)
+
+    def test_the_panel_says_a_marker_on_the_robot_is_refused(
+        self, addon, arm6, builder, fixture_empty
+    ):
+        import bpy
+
+        panel = importlib.import_module(f"{addon.__name__}.ui.panel")
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        self._on_the_wrist(builder, arm6, pick)
+        bpy.context.view_layer.update()
+        assert "robot's own bone" in panel.reference_note(arm6, pick)

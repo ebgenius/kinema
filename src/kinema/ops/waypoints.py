@@ -461,6 +461,13 @@ def refusal(rig, waypoint) -> str | None:
             f"'{waypoint.name}': its marker is parented to {where}, so the tool would "
             f"chase its own tail. Parent it to something else, or back to the robot"
         )
+    reference = references.reference_of(rig, waypoint)
+    if reference is not None and not references.in_robots_scene(rig, reference):
+        return (
+            f"'{waypoint.name}': it is relative to '{reference.name}', which isn't in "
+            f"the robot's scene, so the job can't follow it. Link '{reference.name}' "
+            f"into the scene, or choose another object"
+        )
     part = references.on_a_part(rig, waypoint)
     if part is not None:
         if waypoint.marker.parent_type == "BONE":
@@ -620,13 +627,16 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
         # Taught relative to what the highlighted waypoint is: a job taught on
         # a workpiece stays on it, one point after another.
         highlighted = _waypoint_at(rig, -1)
-        reference = (
-            references.reference_of(rig, highlighted) if highlighted is not None else None
-        )
         refused = refusal(rig, highlighted) if highlighted is not None else None
         if refused is not None:
             self.report({"ERROR"}, refused)
             return {"CANCELLED"}
+        if highlighted is not None and rig.library is None:
+            # Its marker parented or cleared by hand since: what it is now.
+            references.sync(rig, highlighted)
+        reference = (
+            references.reference_of(rig, highlighted) if highlighted is not None else None
+        )
         waypoint = rig.kinema_waypoints.add()
         waypoint.uid = _new_uid()
         waypoint.name = self.name or f"point{len(rig.kinema_waypoints)}"

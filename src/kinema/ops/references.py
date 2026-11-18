@@ -195,9 +195,14 @@ def reexpress(rig, waypoint, reference) -> bool:
     """
     sync(rig, waypoint)
     was = reference_of(rig, waypoint)
-    # On a part of the very object chosen -- a bone of that armature -- it is
-    # still to be parented to the object itself.
-    if was == reference and on_a_part(rig, waypoint) is None:
+    # On a part of the very object chosen -- a bone of that armature -- or on
+    # the robot's own bone with the base chosen, it is still to be parented to
+    # the object itself.
+    if (
+        was == reference
+        and on_a_part(rig, waypoint) is None
+        and carried(rig, waypoint) is None
+    ):
         settle(waypoint, reference)
         return True
     try:
@@ -308,8 +313,14 @@ def on_reference_set(waypoint, _context) -> None:
     rig = waypoint.id_data
     reference = waypoint.reference
     if reference is not None and not may_be_reference(waypoint, reference):
-        # Refused by the field's own filter too; this catches a script.
-        settle(waypoint, reference_of(rig, waypoint))
+        # Refused by the field's own filter too; this catches a script. Only the
+        # field goes back: a marker parented by hand is still to be caught up
+        # by sync, which needs the records as they were.
+        waypoint["_settling"] = True
+        try:
+            waypoint.reference = waypoint.pose_space
+        finally:
+            del waypoint["_settling"]
         return
     reexpress(rig, waypoint, reference)
 
@@ -326,10 +337,15 @@ def may_be_reference(waypoint, obj) -> bool:
     rig = waypoint.id_data
     return (
         PROP_WAYPOINT not in obj
-        and any(scene in rig.users_scene for scene in obj.users_scene)
+        and in_robots_scene(rig, obj)
         and not relative_to_robot(rig, obj)
         and not _under(obj, waypoint.marker)
     )
+
+
+def in_robots_scene(rig, obj) -> bool:
+    """Whether ``obj`` is in a scene the robot is in, which is what a job plays."""
+    return any(scene in rig.users_scene for scene in obj.users_scene)
 
 
 def _under(obj, ancestor) -> bool:
@@ -416,6 +432,7 @@ def _curve(curve) -> tuple:
 def _drives(curve) -> bool:
     """Whether ``curve`` sets its channel. A muted one, or one with nothing in it,
     leaves the channel at its value as it stands."""
+    # Not a muted group: Blender 5.2 plays a curve in one all the same.
     if curve.mute:
         return False
     return bool(
@@ -484,7 +501,8 @@ def _animation(obj, paths=TRANSFORM) -> tuple[tuple, set]:
     soloed = any(track.is_solo for track in anim.nla_tracks)
     tracks = []
     for track in anim.nla_tracks:
-        played = anim.use_nla and not track.mute and (track.is_solo or not soloed)
+        # Blender's rule: with a track soloed, that track plays, muted or not.
+        played = anim.use_nla and (track.is_solo if soloed else not track.mute)
         strips = tuple(_strip(strip, transform_curves, played) for strip in track.strips)
         tracks.append((_settings(track), strips))
     return (_settings(anim), active, tuple(tracks)), keyed
@@ -560,7 +578,12 @@ def fingerprint(obj, depth: int = 0) -> tuple:
     )
     parent = obj.parent
     if obj.parent_type == "BONE" and parent is not None and parent.type == "ARMATURE":
-        placed += (_bones(parent, obj.parent_bone),)
+        # Where along the bone it hangs, head to tail, where Blender has that.
+        factor = getattr(obj, "parent_bone_head_tail_factor", None)
+        placed += (
+            _bones(parent, obj.parent_bone),
+            None if factor is None else round(float(factor), 6),
+        )
     constraints = _constraints(obj.constraints)
     return (obj.name, animation, still, placed, constraints, fingerprint(parent, depth + 1))
 

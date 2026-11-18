@@ -764,6 +764,11 @@ def reference_note(rig, waypoint) -> str:
     another object than its field names, until an operator catches the field up."""
     from ..ops import references
 
+    held = references.carried(rig, waypoint)
+    if held is not None:
+        if held == rig:
+            return "Its marker is parented to the robot's own bone: parent it elsewhere"
+        return f"Its marker is parented to '{held.name}', which the robot carries"
     part = references.on_a_part(rig, waypoint)
     if part is not None:
         return f"Its marker is parented to a part of '{part.name}': parent it to an object"
