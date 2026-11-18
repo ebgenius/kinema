@@ -1246,7 +1246,9 @@ class TestFingerprintEdges:
         bpy.context.scene.frame_set(1)
         signed = wp_ops.job_signature(arm6)
         quaternion = tuple(fixture_empty.rotation_quaternion)
+        turned = fixture_empty.rotation_euler.z
         bpy.context.scene.frame_set(11)
+        assert fixture_empty.rotation_euler.z != pytest.approx(turned), "precondition: it turns"
         assert tuple(fixture_empty.rotation_quaternion) == quaternion
         assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
 
