@@ -22,7 +22,10 @@ those, so every visit keeps the configuration taught.
 
 from __future__ import annotations
 
+import hashlib
+
 import bpy
+import numpy as np
 from mathutils import Matrix
 
 #: How far a frame of reference may move in a move before the move follows it
@@ -110,11 +113,15 @@ def relative_to_robot(rig, obj) -> bool:
 
 
 def carried(rig, waypoint):
-    """The object the robot carries that ``waypoint``'s marker is parented to, or None.
+    """The object the robot carries that ``waypoint``'s marker is parented to, or None:
+    the rig itself for a marker parented to one of its bones.
 
     The field refuses one, but Blender's own parenting doesn't ask: a marker
     parented by hand to a gripper would have the tool chase its own tail.
     """
+    marker = waypoint.marker
+    if marker is not None and marker.parent == rig and marker.parent_type == "BONE":
+        return rig
     reference = reference_of(rig, waypoint)
     if reference is not None and relative_to_robot(rig, reference):
         return reference
@@ -279,34 +286,77 @@ def _settings(struct) -> tuple:
     return tuple(out)
 
 
+#: A key's numbers and its kinds of easing, as ``foreach_get`` reads them: the
+#: number of values each holds.
+_KEY_FLOATS = (("co", 2), ("handle_left", 2), ("handle_right", 2), ("back", 1),
+               ("amplitude", 1), ("period", 1))
+_KEY_KINDS = ("interpolation", "easing")
+
+
+def _read(points, name: str, width: int, dtype) -> np.ndarray:
+    values = np.empty(len(points) * width, dtype=dtype)
+    if len(points):
+        points.foreach_get(name, values)
+    return values
+
+
 def _curve(curve) -> tuple:
-    """Everything an F-curve's value on any frame comes from."""
-    keys = tuple(
-        (
-            _rounded(p.co),
-            _rounded(p.handle_left),
-            _rounded(p.handle_right),
-            p.interpolation,
-            p.easing,
-            _rounded((p.back, p.amplitude, p.period)),
-        )
-        for p in curve.keyframe_points
-    )
+    """Everything an F-curve's value on any frame comes from: its keys, with their
+    handles and easing; the samples of a baked one; how it carries on past
+    them, and its modifiers.
+
+    The keys are read a field at a time, all at once, and digested: a curve
+    keyed on every frame of a long job is thousands of keys, and this runs
+    on every redraw of the Motion Check panel.
+    """
+    keys, samples = curve.keyframe_points, curve.sampled_points
+    # float32, as Blender holds them: any other type is copied a value at a time.
+    floats = [_read(keys, name, width, np.float32) for name, width in _KEY_FLOATS]
+    floats.append(_read(samples, "co", 2, np.float32))
+    # Rounded as the rest of a fingerprint is; adding zero makes -0.0 read as 0.0.
+    numbers = np.round(np.concatenate(floats), 6) + 0.0
+    kinds = np.concatenate([_read(keys, name, 1, np.int32) for name in _KEY_KINDS])
+    digest = hashlib.sha1(numbers.tobytes() + kinds.tobytes()).hexdigest()
     modifiers = tuple((m.type, _settings(m)) for m in curve.modifiers)
     return (
         curve.data_path,
         int(curve.array_index),
         curve.mute,
         curve.extrapolation,
-        keys,
+        len(keys),
+        digest,
         modifiers,
     )
+
+
+def _strip(strip, transform_curves) -> tuple:
+    """An NLA strip: its timing, the curves that animate its influence and time,
+    and its action's transform curves, or the strips a meta strip holds."""
+    animated = set()
+    if strip.use_animated_influence:
+        animated.add("influence")
+    if strip.use_animated_time:
+        animated.add("strip_time")
+    # An animated control's value as it stands changes as the timeline moves:
+    # its curve is what says where the strip goes.
+    settings = tuple(item for item in _settings(strip) if item[0] not in animated)
+    controls = tuple(_curve(curve) for curve in strip.fcurves)
+    action = strip.action
+    curves = ()
+    if action is not None:
+        slot = getattr(strip, "action_slot", None)
+        handle = getattr(slot, "handle", None)
+        from .ik import _iter_fcurve_containers
+
+        curves = transform_curves(_iter_fcurve_containers(action, handle))
+    inside = tuple(_strip(child, transform_curves) for child in strip.strips)
+    return (settings, controls, curves, inside)
 
 
 def _animation(obj) -> tuple[tuple, set]:
     """``obj``'s transform curves, in its active action and its NLA strips, and
     which channels they key."""
-    from .ik import _iter_fcurve_containers, own_fcurve_containers
+    from .ik import own_fcurve_containers
 
     anim = obj.animation_data
     if anim is None:
@@ -323,19 +373,11 @@ def _animation(obj) -> tuple[tuple, set]:
         return tuple(sorted(out, key=lambda c: (c[0], c[1])))
 
     active = transform_curves(own_fcurve_containers(obj) or ())
-    tracks = []
-    for track in anim.nla_tracks:
-        strips = []
-        for strip in track.strips:
-            action = strip.action
-            curves = ()
-            if action is not None:
-                slot = getattr(strip, "action_slot", None)
-                handle = getattr(slot, "handle", None)
-                curves = transform_curves(_iter_fcurve_containers(action, handle))
-            strips.append((_settings(strip), curves))
-        tracks.append((_settings(track), tuple(strips)))
-    return (_settings(anim), active, tuple(tracks)), keyed
+    tracks = tuple(
+        (_settings(track), tuple(_strip(strip, transform_curves) for strip in track.strips))
+        for track in anim.nla_tracks
+    )
+    return (_settings(anim), active, tracks), keyed
 
 
 def fingerprint(obj, depth: int = 0) -> tuple:

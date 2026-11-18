@@ -415,12 +415,12 @@ def job_plan(rig):
     waypoints' frames and moves, as it was saved.
     """
     convert_saved_before_motions(rig)
-    if rig.kinema_job_version < JOB_VERSION:
-        return Plan(spans=spans(rig.kinema_waypoints), notes=[])
     for waypoint in rig.kinema_waypoints:
         held = references.carried(rig, waypoint)
         if held is not None:
             raise WaypointError(_carried_text(waypoint, held))
+    if rig.kinema_job_version < JOB_VERSION:
+        return Plan(spans=spans(rig.kinema_waypoints), notes=[])
     notes = []
     if rig.library is None:
         # A marker parented elsewhere by hand moved its waypoint's frame of
@@ -445,10 +445,13 @@ def job_plan(rig):
 
 
 def _carried_text(waypoint, held) -> str:
+    if held == waypoint.id_data:
+        where = f"the robot's bone '{waypoint.marker.parent_bone}'"
+    else:
+        where = f"'{held.name}', which the robot carries"
     return (
-        f"'{waypoint.name}': its marker is parented to '{held.name}', which the robot "
-        f"carries, so the tool would chase its own tail. Parent it to something "
-        f"else, or back to the robot"
+        f"'{waypoint.name}': its marker is parented to {where}, so the tool would "
+        f"chase its own tail. Parent it to something else, or back to the robot"
     )
 
 
@@ -600,8 +603,9 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
         reference = (
             references.reference_of(rig, highlighted) if highlighted is not None else None
         )
-        if highlighted is not None and references.carried(rig, highlighted) is not None:
-            self.report({"ERROR"}, _carried_text(highlighted, reference))
+        held = references.carried(rig, highlighted) if highlighted is not None else None
+        if held is not None:
+            self.report({"ERROR"}, _carried_text(highlighted, held))
             return {"CANCELLED"}
         waypoint = rig.kinema_waypoints.add()
         waypoint.uid = _new_uid()
@@ -688,6 +692,13 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
         if waypoint is None:
             self.report({"ERROR"}, "No waypoint to go to")
             return {"CANCELLED"}
+        held = references.carried(rig, waypoint)
+        if held is not None:
+            self.report({"ERROR"}, _carried_text(waypoint, held))
+            return {"CANCELLED"}
+        # A marker parented by hand, or an object deleted, caught up first: where
+        # the waypoint is comes from its frame of reference.
+        lost = references.sync(rig, waypoint) if rig.library is None else None
 
         # The first frame a motion starts or ends there; where none does, the
         # robot is posed on the frame it is on.
@@ -726,7 +737,10 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
             rig.pose.bones[ik_name].matrix = here
         context.view_layer.update()
         frame = context.scene.frame_current
-        self.report({"INFO"}, f"At '{waypoint.name}', frame {frame}")
+        if lost:
+            self.report({"WARNING"}, f"At '{waypoint.name}', frame {frame}. {lost}")
+        else:
+            self.report({"INFO"}, f"At '{waypoint.name}', frame {frame}")
         return {"FINISHED"}
 
 
@@ -1808,6 +1822,9 @@ def job_signature(rig) -> str:
         return _signature_before_motions(rig)
     parts = []
     relative = False
+    # Once per object, however many waypoints are on it: a workpiece keyed on
+    # every frame of a long job takes milliseconds, and this runs per redraw.
+    placed = {}
     for waypoint in rig.kinema_waypoints:
         reference = references.reference_of(rig, waypoint)
         relative = relative or reference is not None
@@ -1821,11 +1838,11 @@ def job_signature(rig) -> str:
             tuple(round(float(v), 6) for v in list(waypoint.q)[: waypoint.dof]),
         )
         if reference is not None:
+            key = reference.as_pointer()
+            if key not in placed:
+                placed[key] = references.fingerprint(reference)
             # Only then, so a job with none keeps the fingerprint it always had.
-            part += (
-                tuple(round(float(v), 6) for v in waypoint.taught),
-                references.fingerprint(reference),
-            )
+            part += (tuple(round(float(v), 6) for v in waypoint.taught), placed[key])
         parts.append(part)
     if relative:
         # Where the robot stands decides where an object is from it; at the

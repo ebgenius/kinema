@@ -430,6 +430,49 @@ class TestFingerprint:
         strip.scale = 2.0
         assert wp_ops.job_signature(arm6) != signed, "slowed down, it is elsewhere"
 
+    def test_a_strip_with_animated_influence_is_read_by_its_curve(
+        self, arm6, builder, wp_ops, fixture_empty, curves
+    ):
+        """Its influence as it stands changes as the timeline moves; its curve is
+        what changes when it is edited."""
+        import bpy
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        _key_slide(curves, fixture_empty, 1, 21, Vector((0.02, 0.0, 0.0)))
+        anim = fixture_empty.animation_data
+        strip = anim.nla_tracks.new().strips.new("slide", 1, anim.action)
+        anim.action = None
+        strip.use_animated_influence = True
+        for frame, influence in ((1, 1.0), (21, 0.5)):
+            strip.influence = influence
+            strip.keyframe_insert("influence", frame=frame)
+        bpy.context.scene.frame_set(1)
+        signed = wp_ops.job_signature(arm6)
+        bpy.context.scene.frame_set(15)
+        assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
+        strip.fcurves[0].keyframe_points[-1].co[1] = 0.8
+        assert wp_ops.job_signature(arm6) != signed, "eased in less, it is elsewhere"
+
+    def test_a_baked_slide_is_read_by_its_samples(
+        self, arm6, builder, wp_ops, fixture_empty, curves
+    ):
+        """Baked to samples, a curve has no keys: its samples are where it goes."""
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        _key_slide(curves, fixture_empty, 1, 21, Vector((0.02, 0.0, 0.0)))
+        curve = curves(fixture_empty)[0]
+        curve.convert_to_samples(1, 21)
+        assert not len(curve.keyframe_points) and len(curve.sampled_points)
+        signed = wp_ops.job_signature(arm6)
+        curve.sampled_points[10].co[1] += 0.03
+        assert wp_ops.job_signature(arm6) != signed
+
     def test_moving_the_robot_outdates_a_job_on_an_object_and_no_other(
         self, arm6, builder, wp_ops, fixture_empty
     ):
@@ -570,7 +613,38 @@ class TestReparented:
             bpy.ops.kinema.add_waypoint(name="next")
         with pytest.raises(RuntimeError, match=carried):
             bpy.ops.kinema.update_waypoint(index=0)
+        with pytest.raises(RuntimeError, match=carried):
+            bpy.ops.kinema.goto_waypoint(index=0)
         assert len(arm6.kinema_waypoints) == 2
+
+    def test_a_marker_parented_to_one_of_the_robots_bones_is_refused(self, arm6, builder):
+        """Its parent is the rig, but it moves with the bone, not the base."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        wrist = builder.joint_bones(arm6)[-1].name
+        pick.marker.parent_type = "BONE"
+        pick.marker.parent_bone = wrist
+
+        with pytest.raises(RuntimeError, match=f"parented to the robot's bone '{wrist}'"):
+            bpy.ops.kinema.generate_motion()
+
+    def test_a_job_saved_before_motions_is_refused_a_carried_marker_too(
+        self, arm6, builder, wp_ops, monkeypatch
+    ):
+        """One linked from a library isn't converted, so it is planned as saved: the
+        marker is refused all the same."""
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        gripper = _empty("Gripper")
+        gripper.parent = arm6
+        pick.marker.parent = gripper
+        monkeypatch.setattr(wp_ops, "convert_saved_before_motions", lambda rig: False)
+        arm6.kinema_job_version = 0
+
+        with pytest.raises(wp_ops.WaypointError, match="which the robot carries"):
+            wp_ops.job_plan(arm6)
 
 
 class TestLost:
@@ -594,6 +668,26 @@ class TestLost:
         assert pick.marker.parent == arm6
         assert pick.reference is None
         bpy.context.scene.frame_set(1)
+        np.testing.assert_allclose(_tool_world(builder, arm6), taught, atol=CLOSE)
+
+    def test_go_to_one_whose_object_is_deleted_goes_where_it_was_taught(
+        self, arm6, builder, fixture_empty
+    ):
+        """Before anything has generated since: Go To catches it up itself."""
+        import bpy
+        from mathutils import Vector
+
+        fixture_empty.location = Vector((0.05, 0.02, 0.0))
+        bpy.context.view_layer.update()
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        taught = np.array(pick.marker.matrix_world)
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        bpy.data.objects.remove(fixture_empty)
+        arm6.kinema_ik_enabled = True
+
+        assert "FINISHED" in bpy.ops.kinema.goto_waypoint(index=0)
+        assert pick.marker.parent == arm6
         np.testing.assert_allclose(_tool_world(builder, arm6), taught, atol=CLOSE)
 
     def test_an_object_scaled_to_nothing_is_refused(self, arm6, builder, fixture_empty):

@@ -116,6 +116,8 @@ class TestLinearMoves:
             "cut", "LINEAR", 1, 3, start, end, samples, [JOINT], FPS, along=along
         )
         assert moving.twist_error == pytest.approx(0.0, abs=1e-9)
+        # Turned about its own ends, the line stays where it was: the tool is on it.
+        assert moving.line_error == pytest.approx(0.0, abs=1e-12)
         still = check.check_move("cut", "LINEAR", 1, 3, start, end, samples, [JOINT], FPS)
         assert still.twist_error == pytest.approx(math.radians(10))
 
