@@ -169,6 +169,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A swivel no longer pulls a stretched arm's tool off a goal it can reach** (#50). Near
+  full stretch the elbow's circle is smaller than the floor that keeps its goal off the
+  shoulder-to-wrist line, and the floor applied there too, putting the goal where the
+  elbow can't be. A straight arm7 lost 0.31 mm of tool to it. The floor now applies only
+  to a wrist past the arm's reach, where it keeps the elbow from flipping.
 - **COLLADA (`.dae`) meshes import as the file describes them.** Four bugs in the importer,
   found by kinema_catalog's mesh converter, which converts through it and measures the
   result:
