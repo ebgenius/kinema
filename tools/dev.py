@@ -19,12 +19,15 @@ the change up immediately -- no rebuild, no reinstall.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -192,6 +195,227 @@ def cmd_debug(args: argparse.Namespace) -> int:
     return cmd_run(args)
 
 
+#: Each test's last measured time, which a split suite is balanced by: tests/sharding.py.
+DURATIONS = REPO_ROOT / "tests" / "durations.json"
+#: Memory one Blender test process can take at its peak, solving and compiling.
+GB_PER_JOB = 6
+
+
+def _memory_gb() -> float | None:
+    """The memory free for the tests now, in GB, or None where it can't be read.
+
+    What is free, not the total: a Blender, a browser or another test run
+    already open has its share. On Windows, the lower of the physical memory
+    free and the commit charge left, since memory is refused past the commit
+    limit even with RAM to spare. On Linux, ``MemAvailable``, and in a container
+    no more than its limit less what it uses. Elsewhere, the total.
+    """
+    if sys.platform == "win32":
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
+                        ("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong),
+                        ("page_total", ctypes.c_ulonglong), ("page_free", ctypes.c_ulonglong),
+                        ("virtual_total", ctypes.c_ulonglong), ("virtual_free", ctypes.c_ulonglong),
+                        ("extended", ctypes.c_ulonglong)]
+
+        status = Status(length=ctypes.sizeof(Status))
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            # page_free is the commit charge left, page file and RAM together.
+            return min(status.free, status.page_free) / 2**30
+        return None
+    free = [gb for gb in (_available_gb(), _container_free_gb()) if gb is not None]
+    if free:
+        return min(free)
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def _available_gb(meminfo: Path = Path("/proc/meminfo")) -> float | None:
+    """Linux's estimate of the memory a new process can have, or None."""
+    try:
+        for line in meminfo.read_text(encoding="ascii").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 2**20  # in kB
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _container_free_gb(root: Path = Path("/sys/fs/cgroup")) -> float | None:
+    """What this process's control group may still use on Linux, its limit less
+    what it uses, or None where it has no limit."""
+    for limit_name, used_name in (
+        ("memory.max", "memory.current"),  # cgroup v2
+        ("memory/memory.limit_in_bytes", "memory/memory.usage_in_bytes"),  # v1
+    ):
+        try:
+            text = (root / limit_name).read_text(encoding="ascii").strip()
+        except OSError:
+            continue
+        if not (text.isdigit() and int(text) < 2**60):  # "max", or v1's huge number
+            return None
+        try:
+            used = int((root / used_name).read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            used = 0
+        return max(0, int(text) - used) / 2**30
+    return None
+
+
+def _jobs(asked: str) -> int:
+    """How many Blender processes to run the suite in: ``auto``, or a number.
+
+    ``auto`` is half the logical cores, and no more than the memory free holds
+    at :data:`GB_PER_JOB` each, at most 8. Measured on 20 cores and 64 GB: four
+    processes solved as fast each as one did, and eight 25% slower each; the
+    whole suite took 281 s in five and 225 s in eight, where one took 21 minutes.
+    """
+    if asked != "auto":
+        return max(1, int(asked))
+    cores = os.cpu_count() or 1
+    memory = _memory_gb()
+    by_memory = int(memory // GB_PER_JOB) if memory else 1
+    return max(1, min(cores // 2, by_memory, 8))
+
+
+def _summary(log: str) -> str:
+    """The last line pytest printed with its counts, or how the process ended.
+
+    A share with nothing of a narrow selection in it prints only how many it
+    deselected."""
+    words = (" passed", " failed", " error", "no tests ran", " deselected in ")
+    for line in reversed(log.splitlines()):
+        if any(word in line for word in words):
+            return line.strip().strip("=").strip()
+    return "no summary: see its log"
+
+
+def _read_json(path: Path):
+    """A JSON file's value, or None where it is missing, unreadable or cut short."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _times(value) -> dict[str, float]:
+    """``value``'s times in seconds by test, or none where it isn't a mapping of them."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(k): float(v) for k, v in value.items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
+
+
+def _merged_durations(recorded, parts: list) -> dict[str, float]:
+    """The recorded times, with each process's measured ones in their place.
+
+    ``recorded`` and each part are as read, so maybe None or of the wrong shape;
+    a bad file counts as no times, and is written over whole. A test no process
+    collected -- renamed or removed since -- is dropped, so its time isn't kept
+    forever, but only where every process says it collected the whole suite
+    without an error. After part of it, a failed import, or a process whose
+    report can't be read, the others are kept as they were.
+    """
+    merged = _times(recorded)
+    collected: set[str] = set()
+    whole = bool(parts)
+    for part in parts:
+        if not isinstance(part, dict):
+            whole = False
+            continue
+        merged.update(_times(part.get("times")))
+        collected.update(str(n) for n in part.get("collected") or ())
+        whole = whole and part.get("whole") is True
+    if whole and collected:
+        merged = {k: v for k, v in merged.items() if k in collected}
+    return dict(sorted(merged.items()))
+
+
+def _reports(logs: Path, jobs: int) -> list:
+    """Each process's report of the times it measured, by its number: one that
+    wrote none is None, as one that can't be read, and keeps every time."""
+    return [_read_json(logs / f"durations-{index}.json") for index in range(jobs)]
+
+
+def _share_env(
+    env: dict[str, str], index: int, jobs: int, logs: Path, snapshot: Path, record: bool
+) -> dict[str, str]:
+    """``env`` for the process running share ``index`` of ``jobs``: which share,
+    the times every share splits by, and where to report its own, if recording."""
+    env = {**env, "KINEMA_TEST_SHARD": f"{index}/{jobs}", "KINEMA_TEST_DURATIONS": str(snapshot)}
+    if record:
+        env["KINEMA_RECORD_DURATIONS"] = str(logs / f"durations-{index}.json")
+    return env
+
+
+def _snapshot_durations(logs: Path) -> Path:
+    """A copy of the recorded times in ``logs``, for every process of a run to split
+    by the same ones: tests/sharding.py. No times where there are none."""
+    snapshot = logs / "durations.json"
+    try:
+        shutil.copyfile(DURATIONS, snapshot)
+    except OSError:
+        snapshot.write_text("{}", encoding="utf-8")
+    return snapshot
+
+
+def _write_durations(path: Path, durations: dict[str, float]) -> None:
+    """Write ``durations`` over ``path`` whole: to a file of this run's own beside
+    it, moved over it, so it is never left cut short, and two runs recording at
+    once never write or move each other's. It keeps the file's mode: mkstemp's
+    own is the owner's alone."""
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    handle, written = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(json.dumps(durations, indent=0) + "\n")
+        os.chmod(written, mode)
+        os.replace(written, path)
+    except BaseException:
+        Path(written).unlink(missing_ok=True)
+        raise
+
+
+def _run_shares(cmd: list[str], jobs: int, logs: Path, env_for) -> list[int]:
+    """Start one Blender per share, logging to ``logs``, and wait for them all.
+
+    Returns their exit codes. Should one fail to start, or the wait be
+    interrupted, those already started are stopped: none is left running.
+    """
+    running = []
+    try:
+        for index in range(jobs):
+            out = (logs / f"share-{index}.log").open("w", encoding="utf-8", errors="replace")
+            try:
+                process = subprocess.Popen(
+                    cmd, env=env_for(index), stdout=out, stderr=subprocess.STDOUT
+                )
+            except BaseException:
+                out.close()
+                raise
+            running.append((process, out))
+        return [process.wait() for process, _ in running]
+    finally:
+        for process, out in running:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            out.close()
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     blender = find_blender()
     runner = REPO_ROOT / "tests" / "run_in_blender.py"
@@ -201,7 +425,44 @@ def cmd_test(args: argparse.Namespace) -> int:
            "--python", str(BOOTSTRAP), "--python", str(runner)]
     if args.pytest_args:
         cmd += ["--", *args.pytest_args]
-    return subprocess.call(cmd, env=_launch_env(args))
+    jobs = _jobs(args.jobs)
+    if jobs == 1 and not args.record_durations:
+        return subprocess.call(cmd, env=_launch_env(args))
+
+    # Each process works out its own share: tests/sharding.py.
+    logs = Path(tempfile.mkdtemp(prefix="kinema-test-"))
+    print(f"running the tests in {jobs} Blender processes at once; logs in {logs}")
+    started = time.perf_counter()
+    snapshot = _snapshot_durations(logs)
+
+    def env_for(index: int) -> dict[str, str]:
+        return _share_env(_launch_env(args), index, jobs, logs, snapshot, args.record_durations)
+
+    codes = _run_shares(cmd, jobs, logs, env_for)
+    for index in range(jobs):
+        log = (logs / f"share-{index}.log").read_text(encoding="utf-8", errors="replace")
+        for line in log.splitlines():
+            if line.startswith(("FAILED", "ERROR")):
+                print(f"  [{index + 1}/{jobs}] {line}")
+        print(f"share {index + 1}/{jobs}: {_summary(log)}")
+    print(f"{jobs} processes, {time.perf_counter() - started:.0f} s in all")
+
+    if args.record_durations:
+        recorded = _merged_durations(_read_json(DURATIONS), _reports(logs, jobs))
+        _write_durations(DURATIONS, recorded)
+        print(f"times of {len(recorded)} tests written to {DURATIONS.relative_to(REPO_ROOT)}")
+    return _exit_code(codes)
+
+
+def _exit_code(codes: list[int]) -> int:
+    """The run's exit code from its processes': the first that failed, 0 where
+    none did, and pytest's 5 -- no tests collected -- only where every share
+    was empty. A share a narrow selection left empty is no failure, and never
+    hides one."""
+    failed = [code for code in codes if code not in (0, 5)]
+    if failed:
+        return failed[0]
+    return 5 if codes and all(code == 5 for code in codes) else 0
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -313,6 +574,17 @@ def main() -> int:
                        help="start listening but do not block on attach")
 
     test = sub.add_parser("test", help="run tests inside Blender")
+    test.add_argument(
+        "-j", "--jobs", default="auto",
+        help="Blender processes to split the tests across: a number, or auto "
+             "(half the cores, within the memory, at most 8). 1 runs them in one, "
+             "as before",
+    )
+    test.add_argument(
+        "--record-durations", action="store_true",
+        help="time every test and write the times to tests/durations.json, "
+             "which the split is balanced by",
+    )
     test.add_argument("pytest_args", nargs="*", help="extra args passed to pytest")
 
     sub.add_parser("validate", help="validate blender_manifest.toml")

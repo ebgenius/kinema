@@ -123,3 +123,71 @@ def clean_scene():
 @pytest.fixture(scope="session")
 def fixture_dir() -> Path:
     return FIXTURE_DIR
+
+
+# --------------------------------------------------------------------------
+# running a share of the suite, and timing it: tools/dev.py test -j, --record-durations
+# --------------------------------------------------------------------------
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(session, config, items):
+    """Keep this process's share of the suite, where ``KINEMA_TEST_SHARD`` names one.
+
+    First, before ``-k``, ``-m`` or ``--deselect`` take any away: what was
+    collected is then every test in the paths asked for.
+    """
+    import os
+
+    from .sharding import covers_suite, narrowed, parse_shard, read_durations, shares
+
+    if os.environ.get("KINEMA_RECORD_DURATIONS"):
+        # For dev.py to drop the times of tests that are gone: only where this
+        # is the whole suite, and collecting it failed nowhere.
+        _collected[:] = [item.nodeid for item in items]
+        source = getattr(config, "args_source", None)
+        base = config.rootpath if source == config.ArgsSource.TESTPATHS else (
+            config.invocation_params.dir
+        )
+        _whole[:] = [
+            covers_suite(config.args, base)
+            and not narrowed(config.getoption)
+            and not session.testsfailed
+        ]
+    shard = os.environ.get("KINEMA_TEST_SHARD")
+    if not shard:
+        return
+
+    index, count = parse_shard(shard)
+    owners = shares([item.nodeid for item in items], read_durations(), count)
+    kept = [item for item, owner in zip(items, owners, strict=True) if owner == index]
+    dropped = [item for item, owner in zip(items, owners, strict=True) if owner != index]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+    items[:] = kept
+
+
+_measured: dict[str, float] = {}
+_collected: list[str] = []
+_whole: list[bool] = [False]
+
+
+def pytest_runtest_logreport(report):
+    """Add up each test's setup, call and teardown, where they are being recorded."""
+    import os
+
+    if os.environ.get("KINEMA_RECORD_DURATIONS"):
+        _measured[report.nodeid] = _measured.get(report.nodeid, 0.0) + float(report.duration)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Write the times measured, and every test collected, to the file
+    ``KINEMA_RECORD_DURATIONS`` names."""
+    import json
+    import os
+
+    path = os.environ.get("KINEMA_RECORD_DURATIONS")
+    if path:
+        times = {k: round(v, 3) for k, v in sorted(_measured.items())}
+        Path(path).write_text(
+            json.dumps({"whole": _whole[0], "collected": _collected, "times": times}, indent=0),
+            encoding="utf-8",
+        )

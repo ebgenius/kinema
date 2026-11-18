@@ -130,6 +130,14 @@ def _no_builds(monkeypatch, manager):
 
 
 class TestChangingTheTcp:
+    @pytest.fixture(autouse=True)
+    def _nothing_compiled_yet(self, manager):
+        """These tests count the solvers compiled for ``arm6``. Every test builds its
+        own ``arm6``, and what an earlier one compiled stays cached under that name:
+        counted, it would be this one's. Which test ran before depends on how the
+        suite is split (``dev.py test -j``)."""
+        manager.invalidate()
+
     def test_the_same_link_keeps_its_solver_and_the_arm_its_pose(
         self, arm6, builder, handlers, manager, monkeypatch
     ):

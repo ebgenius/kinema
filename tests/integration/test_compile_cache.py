@@ -66,11 +66,14 @@ def test_unticked_it_is_off_and_still_clearable(runtime, preferences):
 
 
 def test_an_ik_compile_is_kept_on_disk(
-    addon, runtime, manager, preferences, fixture_dir, clean_scene
+    addon, runtime, manager, preferences, fixture_dir, clean_scene, tmp_path
 ):
-    """Cleared first, and solved on a fresh solver, so an entry left by an
-    earlier run -- or a kernel already compiled in this process -- cannot pass
-    for this compile's.
+    """Solved on a fresh solver, into an empty folder of its own, so an entry left
+    by an earlier run, a kernel already compiled in this process, or a compile of
+    another Blender running the tests at the same time (``dev.py test -j``)
+    cannot pass for this compile's. The add-on's folder is checked to be the one
+    JAX was given, and is left alone: clearing it would make every other process
+    compile again.
 
     JAX keeps only compiles over a second. arm6's takes about four here, but a
     faster machine could come in under, so the thresholds are lifted for the
@@ -90,10 +93,15 @@ def test_an_ik_compile_is_kept_on_disk(
         config.jax_persistent_cache_min_compile_time_secs,
         config.jax_persistent_cache_min_entry_size_bytes,
     )
+    # JAX sets its cache up once, on the first compile: reset, it is set up
+    # again, in the folder now configured.
+    cache = importlib.import_module("jax.experimental.compilation_cache.compilation_cache")
+    own = str(tmp_path)
     try:
         config.update("jax_persistent_cache_min_compile_time_secs", 0)
         config.update("jax_persistent_cache_min_entry_size_bytes", -1)
-        runtime.clear_compile_cache(folder)
+        config.update("jax_compilation_cache_dir", own)
+        cache.reset_cache()
 
         assert "FINISHED" in bpy.ops.kinema.build_robot(
             filepath=str(fixture_dir / "arm6.urdf")
@@ -105,10 +113,12 @@ def test_an_ik_compile_is_kept_on_disk(
         assert "FINISHED" in bpy.ops.kinema.add_ik()  # warms the solver: the compile
         solver = manager.get_solver(rig)
         assert solver.pyroki(rig, build=False) is not None, "PyRoki did not compile"
-        assert _solver_entries(folder), "the compiled IK solver was not kept"
+        assert _solver_entries(own), "the compiled IK solver was not kept"
     finally:
         config.update("jax_persistent_cache_min_compile_time_secs", thresholds[0])
         config.update("jax_persistent_cache_min_entry_size_bytes", thresholds[1])
+        config.update("jax_compilation_cache_dir", folder)
+        cache.reset_cache()
         manager.invalidate()
 
 
