@@ -364,6 +364,44 @@ class TestBake:
         assert any("joint1" in p for p in paths)
         assert not rig.kinema_ik_enabled, "live IK should be off after baking"
 
+    def test_clearing_keeps_the_keys_outside_the_baked_range(self, rig, builder):
+        """#74: joint6 keyed by hand at 1, 16, 30 and 40, then IK baked over
+        frames 11-19 at Step 2. The keys at 1, 30 and 40 are someone else's
+        animation and stay; the one at 16, between two baked frames, is in the
+        range and goes."""
+        import bpy
+        from mathutils import Vector
+
+        bpy.ops.kinema.add_ik()
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        wrist = builder.joint_bones(rig)[-1]
+        for frame, value in ((1, 0.2), (16, 0.7), (30, 0.5), (40, 1.0)):
+            wrist.rotation_euler[1] = value
+            wrist.keyframe_insert("rotation_euler", index=1, frame=frame)
+        scene = bpy.context.scene
+        goal = rig.pose.bones[ik_name]
+        base = goal.matrix.copy()
+        for frame, offset in ((11, (0, 0, 0)), (19, (0.0, 0.0, -0.08))):
+            scene.frame_set(frame)
+            matrix = base.copy()
+            matrix.translation += Vector(offset)
+            goal.matrix = matrix
+            goal.keyframe_insert("location", frame=frame)
+
+        assert bpy.ops.kinema.bake_ik(
+            frame_start=11, frame_end=19, step=2, clear_existing=True
+        ) == {"FINISHED"}
+
+        path = wrist.path_from_id("rotation_euler")
+        curve = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == path and c.array_index == 1
+        )
+        keys = {round(p.co[0]): p.co[1] for p in curve.keyframe_points}
+        assert sorted(keys) == [1, 11, 13, 15, 17, 19, 30, 40]
+        for frame, value in ((1, 0.2), (30, 0.5), (40, 1.0)):
+            assert keys[frame] == pytest.approx(value), f"frame {frame}"
+
     def test_baked_animation_plays_without_the_solver(self, rig, builder):
         """The whole point: a delivered .blend must not need Kinema to animate."""
         import bpy

@@ -812,7 +812,7 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
                 else None
             )
             if self.clear_existing:
-                self._clear_keys(rig, bones)
+                self._clear_keys(rig, bones, self.frame_start, self.frame_end)
 
             window.progress_begin(0, len(frames))
             try:
@@ -918,15 +918,29 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         return played
 
     @staticmethod
-    def _clear_keys(rig, bone_names: list[str]) -> None:
+    def _clear_keys(rig, bone_names: list[str], first: int, last: int) -> None:
+        """Remove the baked joints' keys from ``first`` to ``last``, both inclusive.
+
+        The range, not the curves: keys either side are animation the bake was
+        never asked to touch -- an FK section after an IK one, the rest of a
+        job baked in part. Keys between baked frames, with Step above 1, are in
+        the range and go. A curve is removed only once nothing is left on it.
+        """
         wanted = {f'pose.bones["{name}"]' for name in bone_names}
         # Blender 4.4+ stores curves in slotted layers/strips rather than
         # directly on the action, and only this rig's slot is ours to clear --
         # a rig sharing the action almost certainly has bones by the same names.
         for curves in own_fcurve_containers(rig):
             for curve in list(curves):
-                if any(curve.data_path.startswith(prefix) for prefix in wanted):
+                if not any(curve.data_path.startswith(prefix) for prefix in wanted):
+                    continue
+                for point in reversed(list(curve.keyframe_points)):
+                    if first <= point.co[0] <= last:
+                        curve.keyframe_points.remove(point)
+                if not len(curve.keyframe_points):
                     curves.remove(curve)
+                else:
+                    curve.update()
 
 
 #: Data path of the keyframable IK tip, on the rig object.

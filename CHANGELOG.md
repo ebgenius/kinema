@@ -169,6 +169,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bake IK's Clear Existing Keys clears only the baked range** (#74). It removed the baked
+  joints' whole curves, so a bake over part of a shot deleted every key those joints had
+  outside it: an FK section after an IK one, or the rest of a job baked in part. Keys
+  inside the range go, those between baked frames included when Step is above 1, and a
+  curve is removed only once it's empty.
 - **COLLADA (`.dae`) meshes import as the file describes them.** Four bugs in the importer,
   found by kinema_catalog's mesh converter, which converts through it and measures the
   result:
