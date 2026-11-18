@@ -195,7 +195,9 @@ def reexpress(rig, waypoint, reference) -> bool:
     """
     sync(rig, waypoint)
     was = reference_of(rig, waypoint)
-    if was == reference:
+    # On a part of the very object chosen -- a bone of that armature -- it is
+    # still to be parented to the object itself.
+    if was == reference and on_a_part(rig, waypoint) is None:
         settle(waypoint, reference)
         return True
     try:

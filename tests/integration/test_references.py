@@ -933,6 +933,27 @@ class TestReparented:
         np.testing.assert_allclose(np.array(references.taught_pose(pick)), taught, atol=1e-6)
         wp_ops.job_plan(arm6)
 
+    def test_relative_to_the_armature_its_bone_belongs_to_takes_it_off_the_bone(
+        self, arm6, builder, wp_ops, references
+    ):
+        """Parented by hand to a gantry's bone, then given the gantry itself in the
+        field: parented to the gantry as an object, where the marker is, and no
+        longer refused."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        gantry = _gantry(arm6)
+        _on_bone(pick.marker, gantry, "Carriage")
+        here = np.array(pick.marker.matrix_world)
+
+        pick.reference = gantry
+        bpy.context.view_layer.update()
+        assert pick.marker.parent == gantry and pick.marker.parent_type == "OBJECT"
+        np.testing.assert_allclose(np.array(pick.marker.matrix_world), here, atol=1e-6)
+        assert references.on_a_part(arm6, pick) is None
+        wp_ops.job_plan(arm6)
+
     def test_a_job_saved_before_motions_is_refused_a_carried_marker_too(
         self, arm6, builder, wp_ops, monkeypatch
     ):
