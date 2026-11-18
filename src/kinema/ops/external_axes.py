@@ -342,14 +342,42 @@ def _remap_joint_indices(rig, before: list[str], after: list[str]) -> None:
 
 def _move_waypoints(rig, shift: np.ndarray) -> None:
     """Move every taught pose with the robot, marker and stored copy alike."""
+    from . import references
+
     moved = _matrix(shift)
     for waypoint in rig.kinema_waypoints:
+        if references.carried(rig, waypoint) is not None:
+            # Parented by hand to something the robot carries, or to one of its
+            # bones, which every operator refuses until it is parented elsewhere.
+            # Its records move with the robot, each in the space it is held in;
+            # the marker goes wherever its parent takes it.
+            if waypoint.pose_space is not None or any(waypoint.taught):
+                taught = np.array([float(v) for v in waypoint.taught]).reshape(4, 4)
+                waypoint.taught = _flat(shift @ taught)
+            else:
+                stored = np.array([float(v) for v in waypoint.pose]).reshape(4, 4)
+                waypoint.pose = _flat(shift @ stored)
+            continue
+        # A marker reparented by hand is caught up first, so where its joints
+        # were taught is known before it moves.
+        references.sync(rig, waypoint)
+        if references.reference_of(rig, waypoint) is not None:
+            # On an object, its pose is the object's business; only where its
+            # joints were taught, in rig space, moves with the robot.
+            taught = np.array(references.taught_pose(waypoint), dtype=float)
+            waypoint.taught = _flat(shift @ taught)
+            continue
         # Row-major, the way ops/waypoints.py stores it.
         stored = np.array([float(v) for v in waypoint.pose]).reshape(4, 4)
         waypoint.pose = _flat(shift @ stored)
         marker = waypoint.marker
         if marker is not None and marker.parent == rig:
-            marker.matrix_basis = moved @ marker.matrix_basis
+            # Moved in rig space, through whatever parent inverse it was given.
+            inverse = marker.matrix_parent_inverse
+            try:
+                marker.matrix_basis = inverse.inverted() @ moved @ inverse @ marker.matrix_basis
+            except ValueError:
+                marker.matrix_basis = moved @ marker.matrix_basis
 
 
 def _tcp_offset(rig, tcp) -> list[float]:

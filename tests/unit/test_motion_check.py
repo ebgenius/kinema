@@ -83,6 +83,44 @@ class TestLinearMoves:
         assert result.line_error == pytest.approx(0.003)
         assert "3.0 mm off the line" in check.problems(result)
 
+    def test_a_line_that_moves_is_measured_where_it_is_on_each_frame(self):
+        """A line on a workpiece that steps 10 mm across it on frame 2 and back on 3.
+        The tool follows it: on the moving line, 10 mm off the line as it stood."""
+        start, end = _pose((0, 0, 0)), _pose((0.2, 0, 0))
+        shift = {1: 0.0, 2: 0.01, 3: 0.0}
+        along = {
+            f: (_pose((0, dy, 0)), _pose((0.2, dy, 0))) for f, dy in shift.items()
+        }
+        tools = [_pose((0.1 * (f - 1), shift[f], 0)) for f in (1, 2, 3)]
+        samples = _samples([1, 2, 3], [[0.0]] * 3, tools)
+
+        moving = check.check_move(
+            "cut", "LINEAR", 1, 3, start, end, samples, [JOINT], FPS, along=along
+        )
+        assert moving.line_error == pytest.approx(0.0, abs=1e-12)
+        still = check.check_move("cut", "LINEAR", 1, 3, start, end, samples, [JOINT], FPS)
+        assert still.line_error == pytest.approx(0.01)
+
+    def test_a_line_that_turns_is_measured_turned_on_each_frame(self):
+        """The workpiece turns 10 degrees on frame 2 and back on 3, both ends and
+        the tool with it: on the turning line, 10 degrees off the line as it stood."""
+        start, end = _pose((0, 0, 0)), _pose((0.2, 0, 0))
+        turn = {1: 0.0, 2: math.radians(10), 3: 0.0}
+        along = {
+            f: (_pose((0, 0, 0), turn=t), _pose((0.2, 0, 0), turn=t)) for f, t in turn.items()
+        }
+        tools = [_pose((0.1 * (f - 1), 0, 0), turn=turn[f]) for f in (1, 2, 3)]
+        samples = _samples([1, 2, 3], [[0.0]] * 3, tools)
+
+        moving = check.check_move(
+            "cut", "LINEAR", 1, 3, start, end, samples, [JOINT], FPS, along=along
+        )
+        assert moving.twist_error == pytest.approx(0.0, abs=1e-9)
+        # Turned about its own ends, the line stays where it was: the tool is on it.
+        assert moving.line_error == pytest.approx(0.0, abs=1e-12)
+        still = check.check_move("cut", "LINEAR", 1, 3, start, end, samples, [JOINT], FPS)
+        assert still.twist_error == pytest.approx(math.radians(10))
+
     def test_a_turn_is_compared_with_the_short_way_round(self):
         start, end = _pose(turn=math.radians(170)), _pose(turn=math.radians(-170))
         # Halfway through a 20 degree turn, the tool should be at 180.

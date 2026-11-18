@@ -38,6 +38,17 @@ def test_the_popup_lists_the_catalogue(props):
     assert len(item_keys(props)) > 100
 
 
+def test_the_category_filter_offers_every_tag(props):
+    """Set through Blender, which checks the value against the items callback it
+    registered. A lambda there could not see the module it was written in, so
+    it offered nothing and every tag was refused."""
+    tags = catalog.available_tags()
+    assert tags
+    for tag in tags:
+        props.catalog_tag = tag
+        assert props.catalog_tag == tag
+
+
 def test_curated_out_entries_are_hidden_by_default(props):
     hidden = {e.key for e in catalog.all_entries() if e.is_curated_out}
     assert hidden, "curation.json should cross out at least one entry"

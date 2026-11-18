@@ -128,6 +128,33 @@ without teaching it twice, and a motion is retimed without touching the poses.
 - A file saved before motions opens with them: each pair of waypoints in frame order
   becomes a motion with their frames and move, and the job plays as it did.
 
+A waypoint can be taught **relative to an object**, a workpiece or a fixture, set in its
+**Relative To** field under the list. Its marker is then parented to the object without a
+parent inverse, as Blender's *Make Parent without Inverse* (Shift+Ctrl+P) parents it, so
+the marker's own Location and Rotation are the pose in the object's space. Parenting a
+marker with that operator does the same, and Kinema reads the marker's parent.
+- Changing the field keeps the waypoint where it is in the scene. Empty means the robot's
+  base, as before.
+- **Record** goes on relative to what the highlighted waypoint is, so a job taught on a
+  workpiece stays on it.
+- Move or animate the object and the job follows it. Wherever the job meets a waypoint
+  away from where it was taught, the joints are walked there from the taught ones, keeping
+  their configuration. Unlike a marker dragged at the base, these don't replace the taught
+  joints, since the object can be somewhere else on every visit: **Update** re-teaches it.
+- Delete the object and its waypoints go back where they were taught, relative to the
+  robot, and Generate Motion says so. A marker parented to something the robot carries is
+  refused, and so is one parented to a bone or vertices of another object: parent it to
+  the object, or to an Empty on the bone.
+- On an object that moves while the robot is on it, a linear move keeps to its line where
+  the object has it on every frame, and a hold stays on the object, as on a conveyor. Both
+  need the IK target. A joint move ends where the object is, its path free between.
+- The Motion Check and **Optimize Motion** measure and aim for the moving line. The panel
+  marks the check outdated when the object or the robot is moved, or the object re-keyed,
+  re-eased or retimed in the NLA, or a bone of another armature it hangs from is, but not
+  when you scrub.
+  What moves it from elsewhere, a constraint or a driver, isn't seen: **Check Again**
+  catches that.
+
 (The keys **Generate Motion** writes are the *output*. Dragging those in the dope sheet
 retimes the animation, as it would for anything else, but the next regeneration writes the
 motion's own frames again, so the Motions list is where a retime belongs if you want it to

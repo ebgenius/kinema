@@ -112,7 +112,7 @@ class KinemaSceneProps(PropertyGroup):
     catalog_tag: EnumProperty(
         name="Category",
         description="Filter the catalog by robot type",
-        items=lambda self, context: _tag_items(),
+        items=_catalog_tags,
     )
     catalog_pick: StringProperty(
         name="Catalog Pick",
@@ -156,6 +156,18 @@ def _tag_items():
     return [("", "All", "Every robot in the catalog")] + [
         (tag, tag.replace("_", " ").title(), f"Robots tagged '{tag}'") for tag in tags
     ]
+
+
+#: The Category filter's items, kept referenced: Blender reads a dynamic enum's
+#: strings after its callback has returned.
+_TAG_ITEMS: list = []
+
+
+def _catalog_tags(_self, _context) -> list:
+    """The Category filter's items. A module function, not a lambda: see
+    tests/unit/test_property_callbacks.py."""
+    _TAG_ITEMS[:] = _tag_items()
+    return _TAG_ITEMS
 
 
 def _draw_catalog(layout, context: bpy.types.Context) -> None:
@@ -671,6 +683,12 @@ class KINEMA_UL_waypoints(UIList):
     ):
         row = layout.row(align=True)
         row.prop(item, "name", text="", emboss=False, icon="EMPTY_ARROWS")
+        from ..ops import references
+
+        # What the waypoint is relative to now, which a marker parented by hand
+        # decides before the field catches up.
+        if references.reference_of(data, item) is not None:
+            row.label(text="", icon="CON_CHILDOF")
         row.operator(
             "kinema.goto_waypoint", text="", icon="PLAY", emboss=False
         ).index = index
@@ -732,6 +750,34 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
             "KINEMA_UL_waypoints", "", rig, "kinema_waypoints",
             rig, "kinema_active_waypoint", rows=4,
         )
+        index = rig.kinema_active_waypoint
+        if 0 <= index < len(rig.kinema_waypoints):
+            waypoint = rig.kinema_waypoints[index]
+            layout.prop(waypoint, "reference", icon="CON_CHILDOF")
+            note = reference_note(rig, waypoint)
+            if note:
+                layout.label(text=note, icon="INFO")
+
+
+def reference_note(rig, waypoint) -> str:
+    """What the panel says where a waypoint's marker has been parented by hand to
+    another object than its field names, until an operator catches the field up."""
+    from ..ops import references
+
+    held = references.carried(rig, waypoint)
+    if held is not None:
+        if held == rig:
+            return "Its marker is parented to the robot's own bone: parent it elsewhere"
+        return f"Its marker is parented to '{held.name}', which the robot carries"
+    part = references.on_a_part(rig, waypoint)
+    if part is not None:
+        return f"Its marker is parented to a part of '{part.name}': parent it to an object"
+    actual = references.reference_of(rig, waypoint)
+    if actual == waypoint.reference:
+        return ""
+    if actual is None:
+        return "Its marker is parented to the robot, so it's relative to the base"
+    return f"Its marker is parented to '{actual.name}', so it's relative to that"
 
 
 class KINEMA_PT_motions(KinemaPanelBase, Panel):
@@ -825,8 +871,9 @@ def check_outdated(rig, scene) -> str:
     from ..ops import collision
     from ..ops.waypoints import job_signature
 
-    # A handful of waypoints hashed per redraw; cheap, and it keeps findings
-    # about a job since edited from passing as current.
+    # A handful of waypoints hashed per redraw, and the objects any are on: about
+    # 6 ms for an object keyed on six channels over 1000 frames, little for a
+    # few keys. It keeps findings about a job since edited from passing as current.
     if rig.kinema_motion_check_job != job_signature(rig):
         return "The waypoints or motions have changed since this check"
     if not collision.check_measured_this(rig, scene):
