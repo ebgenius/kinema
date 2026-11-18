@@ -50,11 +50,12 @@ from bpy.props import BoolProperty, FloatProperty
 from bpy.types import Operator
 
 from ..rig import builder, motion_check
-from ..rig.waypoints import MADE_HOLD, MOVE_LINEAR, MotionsOverlap, WaypointError
+from ..rig.waypoints import MOVE_LINEAR, MotionsOverlap, WaypointError
 from ..solver import manager, trajectory
 from ..solver.base import SolverError
 from ..ui.panel import active_rig
 from . import collision as collision_ops
+from . import references
 from . import waypoints as wp
 from .ik import (
     _key_switch_off,
@@ -175,7 +176,10 @@ def prepare(context, rig) -> Job:
     samples = wp.play_job(context, rig, plan)
     if samples is None:
         raise Refused("This rig has no TCP to aim the tool by")
-    problem, free = assemble(rig, plan, samples, solver, pyroki, 1.0 / wp.scene_fps(context.scene))
+    placement = wp.place_job(context, rig, plan)
+    problem, free = assemble(
+        rig, plan, samples, solver, pyroki, 1.0 / wp.scene_fps(context.scene), placement
+    )
     if riding is not None:
         problem = replace(
             problem,
@@ -391,10 +395,14 @@ def _matrix(matrix) -> np.ndarray:
     return np.array([[matrix[r][c] for c in range(4)] for r in range(4)])
 
 
-def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem, list]:
+def assemble(
+    rig, plan, samples, solver, pyroki, dt, placement=None
+) -> tuple[trajectory.Problem, list]:
     """The trajectory problem for ``plan``, starting from the job as ``samples`` played it.
 
     Returns the problem and the joints it may move, as :attr:`Job.free`.
+    ``placement`` is where the waypoints are on each frame (``wp.place_job``):
+    on an object that moves, the tool is aimed where the object has them then.
     """
     first, last = plan[0].start_frame, plan[-1].end_frame
     frames = range(first, last + 1)
@@ -433,14 +441,20 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
     taught = {}
     for span in plan:
         taught[span.start_frame], taught[span.end_frame] = span.start, span.end
-        if _still(span):
+        if wp.is_still(span):
             for frame in range(span.start_frame + 1, span.end_frame):
                 taught[frame] = span.start
     for frame, waypoint in taught.items():
         if waypoint.dof != len(bones):
             continue  # taught with other joints: its values don't line up
         row = frame - first
-        prior[row, moving] = full(list(waypoint.q)[: waypoint.dof])[moving]
+        if references.reference_of(rig, waypoint) is None:
+            prior[row, moving] = full(list(waypoint.q)[: waypoint.dof])[moving]
+        else:
+            # On an object: the joints the job reaches it with there, walked from
+            # the taught ones (Generate Motion keyed them), not the taught ones,
+            # which hold where the object was.
+            prior[row, moving] = q_job[row, moving]
         prior_weight[row, moving] = trajectory.WAYPOINT_WEIGHT
     # The job's own ends, exactly: the frames either side play them.
     prior[0], prior[-1] = q_job[0], q_job[-1]
@@ -457,20 +471,19 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
         weight[frame - first] = 1.0
 
     for span in plan:
-        start, end = wp.pose_of(span.start), wp.pose_of(span.end)
-        aim(span.start_frame, start)
-        aim(span.end_frame, end)
-        if span.move == MOVE_LINEAR:
+        aim(span.start_frame, wp.pose_of(span.start, placement, span.start_frame))
+        aim(span.end_frame, wp.pose_of(span.end, placement, span.end_frame))
+        if span.move == MOVE_LINEAR or wp.is_still(span):
             # The tool's line, carried to the link afterwards: the link's own
-            # origin doesn't travel in a straight line when the tool does.
+            # origin doesn't travel in a straight line when the tool does. A
+            # hold is still at its waypoint, which nothing may pull it off: not
+            # an obstacle, and not the smoothing either side. On an object that
+            # moves, both are where it has them on each frame.
             for frame in range(span.start_frame + 1, span.end_frame):
                 fraction = (frame - span.start_frame) / span.frames
+                start = wp.pose_of(span.start, placement, frame)
+                end = wp.pose_of(span.end, placement, frame)
                 aim(frame, wp._between(start, end, fraction))
-        elif _still(span):
-            # Still at the waypoint, which nothing may pull it off: not an
-            # obstacle, and not the smoothing either side.
-            for frame in range(span.start_frame + 1, span.end_frame):
-                aim(frame, start)
 
     # The limits the Motion Check measures against: the bones'.
     speed = np.full(dof, trajectory.UNLIMITED)
@@ -503,12 +516,6 @@ def assemble(rig, plan, samples, solver, pyroki, dt) -> tuple[trajectory.Problem
 # --------------------------------------------------------------------------
 # solving and writing
 # --------------------------------------------------------------------------
-def _still(span) -> bool:
-    """Whether the robot stays at one waypoint over ``span``: a gap held there, or
-    a motion from a waypoint to itself, which is a pause."""
-    return span.made == MADE_HOLD or span.start.as_pointer() == span.end.as_pointer()
-
-
 def dispatch(job: Job) -> None:
     """Hand the solve to JAX. Compiles first if this kernel never has, which waits."""
     compiled = job.optimizer.compiled

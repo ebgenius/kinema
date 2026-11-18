@@ -152,12 +152,15 @@ def check_move(
     joints: list[Joint],
     fps: float,
     capsules: tuple = (),
+    along: dict | None = None,
 ) -> MoveCheck:
     """Findings for the move from ``start_frame`` to ``end_frame``, both inclusive.
 
     ``samples`` may cover more than the move; only its own frames are read.
     ``capsules`` are the robot's, in the order of each sample's segments: what
-    the clearance is measured with.
+    the clearance is measured with. ``along`` gives a linear move's two ends
+    on each frame, by frame, where they move -- a line on a moving workpiece:
+    each frame is measured against the line as it is then.
     """
     own = sorted(
         (s for s in samples if start_frame <= s.frame <= end_frame),
@@ -169,7 +172,7 @@ def check_move(
 
     if move == MOVE_LINEAR:
         result.line_error, result.twist_error = _line_errors(
-            own, start_frame, end_frame, start_pose, end_pose
+            own, start_frame, end_frame, start_pose, end_pose, along
         )
 
     values = np.array([s.q for s in own], dtype=float)
@@ -399,31 +402,38 @@ def _line_errors(
     end_frame: int,
     start_pose: np.ndarray,
     end_pose: np.ndarray,
+    along: dict | None = None,
 ) -> tuple[float, float]:
     """Worst distance from the segment, and worst angle off the shortest turn.
+
+    Against the segment as it is on each sample's frame, where ``along`` says
+    it moves.
 
     Distance to the *segment*, not to where the tool should be at that frame:
     the claim a linear move makes is about the path. The turn is compared at the
     frame's own fraction of the move, since orientation has no path to measure
     against otherwise.
     """
-    a = np.asarray(start_pose, dtype=float)[:3, 3]
-    b = np.asarray(end_pose, dtype=float)[:3, 3]
-    segment = b - a
-    length_squared = float(segment @ segment)
-    q_start = quaternion(np.asarray(start_pose)[:3, :3])
-    q_end = quaternion(np.asarray(end_pose)[:3, :3])
     span = max(end_frame - start_frame, 1)
 
     worst_line = worst_twist = 0.0
     for sample in samples:
+        first, last = start_pose, end_pose
+        if along is not None and int(sample.frame) in along:
+            first, last = along[int(sample.frame)]
+        a = np.asarray(first, dtype=float)[:3, 3]
+        b = np.asarray(last, dtype=float)[:3, 3]
+        segment = b - a
+        length_squared = float(segment @ segment)
         point = np.asarray(sample.tool, dtype=float)[:3, 3]
         if length_squared > 0.0:
-            along = float(np.clip((point - a) @ segment / length_squared, 0.0, 1.0))
+            fraction = float(np.clip((point - a) @ segment / length_squared, 0.0, 1.0))
         else:
-            along = 0.0
-        worst_line = max(worst_line, float(np.linalg.norm(point - (a + along * segment))))
+            fraction = 0.0
+        worst_line = max(worst_line, float(np.linalg.norm(point - (a + fraction * segment))))
 
+        q_start = quaternion(np.asarray(first)[:3, :3])
+        q_end = quaternion(np.asarray(last)[:3, :3])
         expected = slerp(q_start, q_end, (sample.frame - start_frame) / span)
         worst_twist = max(
             worst_twist, angle_between(quaternion(np.asarray(sample.tool)[:3, :3]), expected)

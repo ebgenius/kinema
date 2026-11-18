@@ -342,8 +342,16 @@ def _remap_joint_indices(rig, before: list[str], after: list[str]) -> None:
 
 def _move_waypoints(rig, shift: np.ndarray) -> None:
     """Move every taught pose with the robot, marker and stored copy alike."""
+    from . import references
+
     moved = _matrix(shift)
     for waypoint in rig.kinema_waypoints:
+        if references.reference_of(rig, waypoint) is not None:
+            # On an object, its pose is the object's business; only where its
+            # joints were taught, in rig space, moves with the robot.
+            taught = np.array([float(v) for v in waypoint.taught]).reshape(4, 4)
+            waypoint.taught = _flat(shift @ taught)
+            continue
         # Row-major, the way ops/waypoints.py stores it.
         stored = np.array([float(v) for v in waypoint.pose]).reshape(4, 4)
         waypoint.pose = _flat(shift @ stored)

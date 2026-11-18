@@ -837,9 +837,9 @@ class TestConfiguration:
         judged = wp_ops._arrival
         calls = []
 
-        def first_not_judged(rig, span, chain, start, end):
+        def first_not_judged(rig, span, chain, start, end, placement=None):
             calls.append(span.end.name)
-            return None if len(calls) == 1 else judged(rig, span, chain, start, end)
+            return None if len(calls) == 1 else judged(rig, span, chain, start, end, placement)
 
         monkeypatch.setattr(wp_ops, "_arrival", first_not_judged)
         _teach(builder, wide6, 1, WRIST + [FLIP - 0.2], "JOINT", "a")

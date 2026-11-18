@@ -250,6 +250,60 @@ class TestOptimizing:
             tool = np.array(arm6.pose.bones[wp._tool_bone(arm6)].matrix)
             assert 1000.0 * np.linalg.norm(tool[:3, 3] - goal[:3, 3]) < 0.01, frame
 
+    def test_a_job_on_a_moving_workpiece_stays_on_it(self, arm6, builder, modules):
+        """The ROOMY job taught relative to an Empty that goes 30 mm out across C's
+        line and back while it runs, frames 61-121. Optimized, the tool keeps to the
+        line where the Empty has it on each frame, and meets each waypoint where
+        the Empty has it then."""
+        import bpy
+        from mathutils import Vector
+
+        wp = modules("ops.waypoints")
+        empty = bpy.data.objects.new("Workpiece", None)
+        bpy.context.scene.collection.objects.link(empty)
+        empty.matrix_world = arm6.matrix_world.copy()
+        bpy.context.view_layer.update()
+        ik_name = arm6[builder.PROP_IK_BONE]
+        tcp = arm6.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+        for index, (frame, offset, move) in enumerate(zip(ROOMY, OFFSETS, MOVES, strict=True)):
+            bpy.context.scene.frame_set(frame)
+            _set_q(builder, arm6, HOME + np.array(offset))
+            arm6.pose.bones[ik_name].matrix = arm6.pose.bones[tcp].matrix.copy()
+            bpy.context.view_layer.update()
+            assert "FINISHED" in bpy.ops.kinema.add_waypoint(name="ABCD"[index])
+            if index:
+                arm6.kinema_motions[-1].move = move
+            else:
+                arm6.kinema_waypoints[0].reference = empty
+        # Slid only after teaching, so what was taught is where the Empty stood.
+        empty.keyframe_insert(data_path="location", frame=61)
+        empty.location += Vector((0.0, 0.03, 0.0))
+        empty.keyframe_insert(data_path="location", frame=91)
+        empty.location -= Vector((0.0, 0.03, 0.0))
+        # Eased, as Blender keys it: a workpiece that turned back at once would
+        # take more than any joint's acceleration limit to follow.
+        empty.keyframe_insert(data_path="location", frame=121)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+
+        assert "FINISHED" in bpy.ops.kinema.optimize_motion()
+        placement = wp.place_job(bpy.context, arm6, wp.job_plan(arm6).spans)
+        b, c = arm6.kinema_waypoints["B"], arm6.kinema_waypoints["C"]
+        worst = 0.0
+        for frame in range(61, 122):
+            bpy.context.scene.frame_set(frame)
+            start = np.array(wp.pose_of(b, placement, frame))[:3, 3]
+            end = np.array(wp.pose_of(c, placement, frame))[:3, 3]
+            tool = np.array(arm6.pose.bones[wp._tool_bone(arm6)].matrix)[:3, 3]
+            line = end - start
+            along = np.clip((tool - start) @ line / (line @ line), 0.0, 1.0)
+            worst = max(worst, float(np.linalg.norm(tool - (start + along * line))))
+        assert 1000.0 * worst < 0.01, f"{1000.0 * worst:.4f} mm off the moving line"
+        for name, frame in zip("ABCD", ROOMY, strict=True):
+            bpy.context.scene.frame_set(frame)
+            tool = np.array(arm6.pose.bones[wp._tool_bone(arm6)].matrix)[:3, 3]
+            goal = np.array(wp.pose_of(arm6.kinema_waypoints[name], placement, frame))[:3, 3]
+            assert 1000.0 * np.linalg.norm(tool - goal) < 0.01, name
+
     def test_a_job_over_its_limits_comes_back_within_them(self, arm6, builder, modules):
         """As generated, joint 1 runs at 153% of its acceleration limit, and 113% of its speed."""
         import bpy
