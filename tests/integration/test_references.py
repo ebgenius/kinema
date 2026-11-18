@@ -1199,6 +1199,25 @@ class TestFingerprintEdges:
         assert fixture_empty.location.x != pytest.approx(start), "precondition: it plays"
         assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
 
+    def test_scrubbing_a_turning_object_is_no_edit(self, arm6, builder, wp_ops, fixture_empty):
+        """A turntable keyed on Euler rotation. Blender keeps an object's quaternion
+        and axis-angle as values of their own, not views of the Euler, so they
+        stand still as it turns: none of the fingerprint moves with the frame."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        fixture_empty.keyframe_insert("rotation_euler", frame=1)
+        fixture_empty.rotation_euler.z += 1.5
+        fixture_empty.keyframe_insert("rotation_euler", frame=21)
+        bpy.context.scene.frame_set(1)
+        signed = wp_ops.job_signature(arm6)
+        quaternion = tuple(fixture_empty.rotation_quaternion)
+        bpy.context.scene.frame_set(11)
+        assert tuple(fixture_empty.rotation_quaternion) == quaternion
+        assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
+
     def test_moving_an_envelope_point_outdates_the_job(
         self, arm6, builder, wp_ops, fixture_empty, curves
     ):
