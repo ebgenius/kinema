@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its joints walked there from the taught ones; a linear move keeps to its line on the
   object, and a hold stays on it, every frame. The Motion Check and Optimize Motion follow
   it too. Changing the field keeps the waypoint where it is, and Record goes on relative
-  to what the highlighted waypoint is.
+  to what the highlighted waypoint is. Deleting the object puts its waypoints back where
+  they were taught, relative to the robot.
 - **glTF meshes** (`.glb`, `.gltf`) in a description, visual or collision, as kinema_catalog
   writes them. Each lands where the same mesh as `.stl` does, with its node placement, its
   materials and its normals, whatever the scene's unit scale; the file's empties are

@@ -33,6 +33,19 @@ TRACK_TOLERANCE = 1e-6
 #: Marks an Empty as belonging to a waypoint (as ``waypoints.PROP_WAYPOINT``).
 PROP_WAYPOINT = "kinema_waypoint"
 
+#: An object's own transform channels: what places it, keyed or not.
+TRANSFORM = (
+    "location",
+    "rotation_euler",
+    "rotation_quaternion",
+    "rotation_axis_angle",
+    "scale",
+    "delta_location",
+    "delta_rotation_euler",
+    "delta_rotation_quaternion",
+    "delta_scale",
+)
+
 
 def _unflatten(values) -> Matrix:
     return Matrix([[float(values[row * 4 + col]) for col in range(4)] for row in range(4)])
@@ -96,6 +109,18 @@ def relative_to_robot(rig, obj) -> bool:
     return False
 
 
+def carried(rig, waypoint):
+    """The object the robot carries that ``waypoint``'s marker is parented to, or None.
+
+    The field refuses one, but Blender's own parenting doesn't ask: a marker
+    parented by hand to a gripper would have the tool chase its own tail.
+    """
+    reference = reference_of(rig, waypoint)
+    if reference is not None and relative_to_robot(rig, reference):
+        return reference
+    return None
+
+
 def place_marker(rig, waypoint, reference, local: Matrix) -> None:
     """Parent the marker to ``reference`` (the rig for None) without an inverse, at ``local``."""
     marker = waypoint.marker
@@ -106,22 +131,37 @@ def place_marker(rig, waypoint, reference, local: Matrix) -> None:
     marker.matrix_basis = local
 
 
-def reexpress(rig, waypoint, reference) -> None:
+def reexpress(rig, waypoint, reference) -> bool:
     """Make ``reference`` the waypoint's frame, keeping it where it is in the scene.
 
     As *Make Parent without Inverse* with *Keep Transform*: the pose is worked
     out again in the new object's space, so nothing moves. The joints stay
     where they were taught.
+
+    A marker reparented by hand is caught up first (:func:`sync`), so where
+    its joints were taught is kept before its frame changes again. False, and
+    nothing changed, for an object scaled to nothing, which has no space to
+    be in.
+
+    Without a marker, a waypoint at the base is where its joints were taught,
+    since there is nothing else to hold where it is: put back there, it goes
+    back there.
     """
+    sync(rig, waypoint)
     was = reference_of(rig, waypoint)
     if was == reference:
         settle(waypoint, reference)
-        return
+        return True
+    try:
+        into = in_rig(rig, reference).inverted()
+    except ValueError:
+        settle(waypoint, was)
+        return False
     here = in_rig(rig, was) @ local_pose(waypoint)
     if was is None:
         # From the base, where the stored pose is where the joints were taught.
         waypoint.taught = _flatten(taught_pose(waypoint))
-    local = in_rig(rig, reference).inverted() @ here
+    local = into @ here
     if reference is None:
         # Back to the base, where the stored pose is the taught one again and
         # the marker is where the waypoint is now: the next generation walks
@@ -132,6 +172,7 @@ def reexpress(rig, waypoint, reference) -> None:
         waypoint.pose = _flatten(local)
     place_marker(rig, waypoint, reference, local)
     settle(waypoint, reference)
+    return True
 
 
 def settle(waypoint, reference) -> None:
@@ -146,24 +187,48 @@ def settle(waypoint, reference) -> None:
             del waypoint["_settling"]
 
 
-def sync(rig, waypoint) -> None:
-    """Bring the waypoint's field up to its marker, after Blender reparented it.
+def sync(rig, waypoint) -> str | None:
+    """Bring the waypoint's records up to its marker, after Blender reparented it.
 
     Parented with *Keep Transform*, the marker has moved nowhere and its numbers
     are new; without, it kept the numbers and moved with the object. Either way
-    the marker says where the waypoint is, and this only records which object
-    it is relative to now.
+    the marker says where the waypoint is, and this records which object it is
+    relative to now, and its pose there.
+
+    An object deleted takes itself out of both the field and the marker's
+    parent, and leaves a pose in the space of something that is gone. The
+    waypoint goes back where its joints were taught, relative to the robot,
+    and what is returned says so. A marker parented to something the robot
+    carries is left as it is: see :func:`carried`.
     """
+    if carried(rig, waypoint) is not None:
+        return None
     reference = reference_of(rig, waypoint)
-    if reference is not None and waypoint.pose_space is None and not any(waypoint.taught):
-        # Taught at the base and reparented by hand: the joints hold where the
-        # pose was stored.
-        waypoint.taught = list(waypoint.pose)
-    elif reference is None and waypoint.pose_space is not None:
-        # Back on the rig by hand: at the base the stored pose is the taught one.
-        waypoint.pose = list(waypoint.taught)
+    marker = waypoint.marker
+    note = None
+    if reference is None and (waypoint.pose_space is not None or any(waypoint.taught)):
+        # Back at the base, by hand or because its object is gone: there the
+        # stored pose is the taught one.
+        gone = waypoint.pose_space is None and (marker is None or marker.parent is None)
+        taught = taught_pose(waypoint)
+        waypoint.pose = _flatten(taught)
         waypoint.taught = [0.0] * 16
+        if gone:
+            place_marker(rig, waypoint, None, taught)
+            note = (
+                f"'{waypoint.name}': the object it was relative to is gone, so it is "
+                f"back where it was taught, relative to the robot"
+            )
+    elif reference is not None:
+        if waypoint.pose_space is None and not any(waypoint.taught):
+            # Taught at the base and reparented by hand: the joints hold where
+            # the pose was stored.
+            waypoint.taught = list(waypoint.pose)
+        if waypoint.pose_space != reference and marker is not None:
+            # Its pose in its new frame, which is what the marker now holds.
+            waypoint.pose = _flatten(local_pose(waypoint))
     settle(waypoint, reference)
+    return note
 
 
 def on_reference_set(waypoint, _context) -> None:
@@ -185,37 +250,127 @@ def may_be_reference(waypoint, obj) -> bool:
     return PROP_WAYPOINT not in obj and not relative_to_robot(rig, obj)
 
 
+def _rounded(values, places: int = 6) -> tuple:
+    return tuple(round(float(v), places) for v in values)
+
+
+def _settings(struct) -> tuple:
+    """A struct's own editable values: an NLA strip's timing, a curve modifier's
+    kind of shaping. Selection and what is shown are left out, since clicking
+    on something changes nothing about where it goes."""
+    out = []
+    for prop in struct.bl_rna.properties:
+        name = prop.identifier
+        if (
+            prop.is_readonly
+            or prop.type not in {"BOOLEAN", "INT", "FLOAT", "ENUM"}
+            or name.startswith(("select", "show_"))
+            or name in {"active", "is_valid"}
+        ):
+            continue
+        value = getattr(struct, name)
+        if isinstance(value, set):
+            value = tuple(sorted(value))
+        elif hasattr(value, "__len__") and not isinstance(value, str):
+            value = _rounded(value)
+        elif isinstance(value, float):
+            value = round(value, 6)
+        out.append((name, value))
+    return tuple(out)
+
+
+def _curve(curve) -> tuple:
+    """Everything an F-curve's value on any frame comes from."""
+    keys = tuple(
+        (
+            _rounded(p.co),
+            _rounded(p.handle_left),
+            _rounded(p.handle_right),
+            p.interpolation,
+            p.easing,
+            _rounded((p.back, p.amplitude, p.period)),
+        )
+        for p in curve.keyframe_points
+    )
+    modifiers = tuple((m.type, _settings(m)) for m in curve.modifiers)
+    return (
+        curve.data_path,
+        int(curve.array_index),
+        curve.mute,
+        curve.extrapolation,
+        keys,
+        modifiers,
+    )
+
+
+def _animation(obj) -> tuple[tuple, set]:
+    """``obj``'s transform curves, in its active action and its NLA strips, and
+    which channels they key."""
+    from .ik import _iter_fcurve_containers, own_fcurve_containers
+
+    anim = obj.animation_data
+    if anim is None:
+        return (), set()
+    keyed = set()
+
+    def transform_curves(containers):
+        out = []
+        for container in containers:
+            for curve in container:
+                if curve.data_path in TRANSFORM:
+                    keyed.add((curve.data_path, int(curve.array_index)))
+                    out.append(_curve(curve))
+        return tuple(sorted(out, key=lambda c: (c[0], c[1])))
+
+    active = transform_curves(own_fcurve_containers(obj) or ())
+    tracks = []
+    for track in anim.nla_tracks:
+        strips = []
+        for strip in track.strips:
+            action = strip.action
+            curves = ()
+            if action is not None:
+                slot = getattr(strip, "action_slot", None)
+                handle = getattr(slot, "handle", None)
+                curves = transform_curves(_iter_fcurve_containers(action, handle))
+            strips.append((_settings(strip), curves))
+        tracks.append((_settings(track), tuple(strips)))
+    return (_settings(anim), active, tuple(tracks)), keyed
+
+
 def fingerprint(obj, depth: int = 0) -> tuple:
     """What ``obj``'s place over a job comes from, as far as it can be read without
-    playing the job: its keys where it is animated, its transform where it is
-    not, and its parent's the same way.
+    playing the job: its transform curves -- keys, interpolation, modifiers --
+    in its action and its NLA strips; the channels nothing keys, as they stand;
+    and its parent's the same way.
 
     For a job's fingerprint (``waypoints.job_signature``), so moving a
     workpiece, or re-keying it, marks a Motion Check of it as outdated. Read
-    off the data, not the scene, so scrubbing the timeline changes nothing.
-    What drives it from elsewhere -- a constraint's target, a driver -- is not
-    in it: Check Again catches that.
+    off the data, not the scene -- a keyed channel's value as it stands is left
+    out -- so scrubbing the timeline changes nothing. Only the object's own
+    transform is in it, so a robot's fingerprint is not its joints' keys. What
+    drives it from elsewhere -- a constraint's target, a driver -- is not in it:
+    Check Again catches that.
     """
     if obj is None or depth > 16:
         return ()
-    from .ik import own_fcurve_containers
-
-    keys = []
-    for container in own_fcurve_containers(obj) or ():
-        for curve in container:
-            points = tuple(
-                (round(float(p.co[0]), 3), round(float(p.co[1]), 6)) for p in curve.keyframe_points
-            )
-            keys.append((curve.data_path, int(curve.array_index), points))
-    if keys:
-        placed = tuple(sorted(keys))
-    else:
-        local = obj.matrix_parent_inverse @ obj.matrix_basis
-        placed = tuple(round(float(v), 6) for v in _flatten(local))
+    animation, keyed = _animation(obj)
+    still = tuple(
+        (path, index, round(float(value), 6))
+        for path in TRANSFORM
+        for index, value in enumerate(getattr(obj, path))
+        if (path, index) not in keyed
+    )
+    placed = (
+        obj.rotation_mode,
+        obj.parent_type,
+        obj.parent_bone,
+        _rounded(_flatten(obj.matrix_parent_inverse)),
+    )
     constraints = tuple(
         (c.type, getattr(getattr(c, "target", None), "name", "")) for c in obj.constraints
     )
-    return (obj.name, placed, constraints, fingerprint(obj.parent, depth + 1))
+    return (obj.name, animation, still, placed, constraints, fingerprint(obj.parent, depth + 1))
 
 
 class Placement:
@@ -233,8 +388,10 @@ class Placement:
         for waypoint in waypoints:
             reference = reference_of(rig, waypoint)
             if reference is not None:
-                self.references[reference.name] = reference
-        self._at: dict[int, dict[str, Matrix]] = {}
+                # By identity: two objects linked from different libraries can
+                # share a name.
+                self.references[reference.as_pointer()] = reference
+        self._at: dict[int, dict[int, Matrix]] = {}
         frames = sorted(set(int(f) for f in frames))
         if self.references and frames:
             self._read(frames, scene or bpy.context.scene)
@@ -242,16 +399,16 @@ class Placement:
     def _read(self, frames, scene) -> None:
         from .. import handlers
 
-        original = scene.frame_current
+        original, subframe = scene.frame_current, scene.frame_subframe
         try:
             with handlers.suspended():
                 for frame in frames:
                     scene.frame_set(frame)
                     self._at[frame] = {
-                        name: in_rig(self.rig, obj) for name, obj in self.references.items()
+                        key: in_rig(self.rig, obj) for key, obj in self.references.items()
                     }
         finally:
-            scene.frame_set(original)
+            scene.frame_set(original, subframe=subframe)
 
     @property
     def relative(self) -> bool:
@@ -263,8 +420,8 @@ class Placement:
         if reference is None:
             return Matrix.Identity(4)
         at = self._at.get(int(frame)) if frame is not None else None
-        if at is not None and reference.name in at:
-            return at[reference.name].copy()
+        if at is not None and reference.as_pointer() in at:
+            return at[reference.as_pointer()].copy()
         return in_rig(self.rig, reference)
 
     def pose(self, waypoint, frame: int | None = None) -> Matrix:

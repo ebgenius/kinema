@@ -286,23 +286,31 @@ class TestOptimizing:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
 
         assert "FINISHED" in bpy.ops.kinema.optimize_motion()
-        placement = wp.place_job(bpy.context, arm6, wp.job_plan(arm6).spans)
-        b, c = arm6.kinema_waypoints["B"], arm6.kinema_waypoints["C"]
-        worst = 0.0
+        # Where the Empty has each waypoint, read off the Empty itself rather
+        # than Kinema's placement of it.
+        local = {w.name: np.array(w.marker.matrix_basis) for w in arm6.kinema_waypoints}
+
+        def on_empty(name):
+            to_rig = np.linalg.inv(np.array(arm6.matrix_world)) @ np.array(empty.matrix_world)
+            return (to_rig @ local[name])[:3, 3]
+
+        worst = behind = 0.0
         for frame in range(61, 122):
             bpy.context.scene.frame_set(frame)
-            start = np.array(wp.pose_of(b, placement, frame))[:3, 3]
-            end = np.array(wp.pose_of(c, placement, frame))[:3, 3]
+            start, end = on_empty("B"), on_empty("C")
             tool = np.array(arm6.pose.bones[wp._tool_bone(arm6)].matrix)[:3, 3]
             line = end - start
             along = np.clip((tool - start) @ line / (line @ line), 0.0, 1.0)
             worst = max(worst, float(np.linalg.norm(tool - (start + along * line))))
+            # And at its pace along it.
+            paced = start + (frame - 61) / 60 * line
+            behind = max(behind, float(np.linalg.norm(tool - paced)))
         assert 1000.0 * worst < 0.01, f"{1000.0 * worst:.4f} mm off the moving line"
+        assert 1000.0 * behind < 0.01, f"{1000.0 * behind:.4f} mm from its place on the line"
         for name, frame in zip("ABCD", ROOMY, strict=True):
             bpy.context.scene.frame_set(frame)
             tool = np.array(arm6.pose.bones[wp._tool_bone(arm6)].matrix)[:3, 3]
-            goal = np.array(wp.pose_of(arm6.kinema_waypoints[name], placement, frame))[:3, 3]
-            assert 1000.0 * np.linalg.norm(tool - goal) < 0.01, name
+            assert 1000.0 * np.linalg.norm(tool - on_empty(name)) < 0.01, name
 
     def test_a_job_over_its_limits_comes_back_within_them(self, arm6, builder, modules):
         """As generated, joint 1 runs at 153% of its acceleration limit, and 113% of its speed."""

@@ -139,12 +139,17 @@ marker with that operator does the same, and Kinema reads the marker's parent.
   workpiece stays on it.
 - Move or animate the object and the job follows it. Wherever the job meets a waypoint
   away from where it was taught, the joints are walked there from the taught ones, keeping
-  their configuration.
+  their configuration. Unlike a marker dragged at the base, these don't replace the taught
+  joints, since the object can be somewhere else on every visit: **Update** re-teaches it.
+- Delete the object and its waypoints go back where they were taught, relative to the
+  robot, and Generate Motion says so. A marker parented to something the robot carries is
+  refused.
 - On an object that moves while the robot is on it, a linear move keeps to its line where
   the object has it on every frame, and a hold stays on the object, as on a conveyor. Both
   need the IK target. A joint move ends where the object is, its path free between.
 - The Motion Check and **Optimize Motion** measure and aim for the moving line. The panel
-  marks the check outdated when the object is moved or re-keyed, but not when you scrub.
+  marks the check outdated when the object or the robot is moved, or the object re-keyed,
+  re-eased or retimed in the NLA, but not when you scrub.
   What moves it from elsewhere, a constraint or a driver, isn't seen: **Check Again**
   catches that.
 

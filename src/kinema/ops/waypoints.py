@@ -417,11 +417,19 @@ def job_plan(rig):
     convert_saved_before_motions(rig)
     if rig.kinema_job_version < JOB_VERSION:
         return Plan(spans=spans(rig.kinema_waypoints), notes=[])
+    for waypoint in rig.kinema_waypoints:
+        held = references.carried(rig, waypoint)
+        if held is not None:
+            raise WaypointError(_carried_text(waypoint, held))
+    notes = []
     if rig.library is None:
         # A marker parented elsewhere by hand moved its waypoint's frame of
-        # reference: its field and stored records catch up here.
+        # reference, and a deleted object took its waypoints' with it: their
+        # fields and stored records catch up here.
         for waypoint in rig.kinema_waypoints:
-            references.sync(rig, waypoint)
+            note = references.sync(rig, waypoint)
+            if note:
+                notes.append(note)
     if len(rig.kinema_motions) and rig.kinema_unconverted and rig.library is None:
         # Motions made since say more than why the old job made none. Written
         # only then, and not to a rig linked from a library, where it isn't kept.
@@ -431,7 +439,17 @@ def job_plan(rig):
             f"This job, saved before motions, couldn't be made into motions: "
             f"{rig.kinema_unconverted}. Add its motions in the Motions list"
         )
-    return plan_motions(rig.kinema_motions, rig.kinema_waypoints)
+    job = plan_motions(rig.kinema_motions, rig.kinema_waypoints)
+    job.notes[:0] = notes
+    return job
+
+
+def _carried_text(waypoint, held) -> str:
+    return (
+        f"'{waypoint.name}': its marker is parented to '{held.name}', which the robot "
+        f"carries, so the tool would chase its own tail. Parent it to something "
+        f"else, or back to the robot"
+    )
 
 
 class KinemaWaypointOperator(Operator):
@@ -536,7 +554,11 @@ def _record(rig, waypoint, reference=None) -> str | None:
         waypoint.pose = _flatten(matrix)
         waypoint.taught = [0.0] * 16
     else:
-        waypoint.pose = _flatten(references.in_rig(rig, reference).inverted() @ matrix)
+        try:
+            into = references.in_rig(rig, reference).inverted()
+        except ValueError:
+            return f"'{reference.name}' is scaled to nothing, so nothing can be relative to it"
+        waypoint.pose = _flatten(into @ matrix)
         waypoint.taught = _flatten(matrix)
     references.settle(waypoint, reference)
     waypoint.dof = len(values)
@@ -578,6 +600,9 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
         reference = (
             references.reference_of(rig, highlighted) if highlighted is not None else None
         )
+        if highlighted is not None and references.carried(rig, highlighted) is not None:
+            self.report({"ERROR"}, _carried_text(highlighted, reference))
+            return {"CANCELLED"}
         waypoint = rig.kinema_waypoints.add()
         waypoint.uid = _new_uid()
         waypoint.name = self.name or f"point{len(rig.kinema_waypoints)}"
@@ -630,6 +655,10 @@ class KINEMA_OT_update_waypoint(KinemaWaypointOperator):
             return {"CANCELLED"}
 
         context.view_layer.update()
+        held = references.carried(rig, waypoint)
+        if held is not None:
+            self.report({"ERROR"}, _carried_text(waypoint, held))
+            return {"CANCELLED"}
         references.sync(rig, waypoint)
         reference = references.reference_of(rig, waypoint)
         error = _record(rig, waypoint, reference)
@@ -684,6 +713,8 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
                     f"The robot can't reach '{waypoint.name}' where its object is now "
                     f"from the configuration it was taught in; shown as taught",
                 )
+                # The goal with the joints, so live IK leaves them as taught.
+                here = taught
             else:
                 values = walked
         _apply_joint_values(rig, values[: waypoint.dof])
@@ -692,7 +723,7 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
         ik_name = rig.get(builder.PROP_IK_BONE)
         context.view_layer.update()
         if ik_name and ik_name in rig.pose.bones:
-            rig.pose.bones[ik_name].matrix = pose_of(waypoint)
+            rig.pose.bones[ik_name].matrix = here
         context.view_layer.update()
         frame = context.scene.frame_current
         self.report({"INFO"}, f"At '{waypoint.name}', frame {frame}")
@@ -886,10 +917,10 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             return {"CANCELLED"}
         changed = {waypoint.as_pointer(): values for waypoint, values in followed}
         changed.update(visits)
-        refused, turned, shared = (
+        refused, turned, shared, changed = (
             settle_configurations(rig, plan, changed, placement)
             if needs_ik
-            else ([], [], [])
+            else ([], [], [], changed)
         )
         if shared:
             names = ", ".join(f"'{name}'" for name in shared)
@@ -923,8 +954,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                     # joints stay where they were taught, and each visit walks
                     # from there.
                     waypoint.pose = _flatten(references.local_pose(waypoint))
-        for waypoint, values, _, frame in turned:
-            changed[_visit_key(rig, waypoint, frame)] = values
+        for waypoint, values, _, _ in turned:
             if references.reference_of(rig, waypoint) is None:
                 waypoint.q = values
 
@@ -1325,8 +1355,8 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
     relative to an object is under ``(as_pointer(), frame)``, as
     :func:`values_at` reads them, and so is what it arrives with.
 
-    Returns ``(refused, turned, shared)`` and writes nothing, so a refusal
-    leaves the waypoints exactly as they were:
+    Returns ``(refused, turned, shared, settled)`` and writes nothing, so a
+    refusal leaves the waypoints exactly as they were:
 
     - ``refused``: the linear moves whose two ends were taught in different
       configurations, named by the waypoint each arrives at. A straight line
@@ -1343,24 +1373,31 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
       an earlier linear move started or ended there with the turns as they
       were. A waypoint holds one set of joint values for every motion that
       uses it, so changing it would leave the earlier line a whole turn off.
+    - ``settled``: ``overrides`` with what this found: each end's turns as its
+      line arrives, and a pause ending as it began.
 
     Settled in time order, so a move that starts where an earlier one's turns
-    were changed walks from the changed values.
+    were changed walks from the changed values. A hold on an object that moves
+    is walked as a line is, since its goal is keyed on every frame as a line's
+    is; one on an object standing still ends with the joints it began with,
+    which a visit walked afresh from the taught joints need not have.
     """
     solver = manager.get_solver(rig, ik_bone_name(rig))
     # A waypoint's pose is the TCP's. With the tip handed to another bone the
     # solver is aiming something else at it, and the walk would prove nothing.
+    changed = dict(overrides or {})
     if solver is None or solver.tip_bone != _tool_bone(rig):
-        return [], [], []
+        return [], [], [], changed
     chain = solver.chain
     refused, turned, shared = [], [], []
-    changed = dict(overrides or {})
     lined = set()  # waypoints an earlier linear move started or ended at
     for span in plan:
-        if span.move != MOVE_LINEAR:
-            continue
         start_key = _visit_key(rig, span.start, span.start_frame)
         end_key = _visit_key(rig, span.end, span.end_frame)
+        if keyed_as(span, placement) != MOVE_LINEAR:
+            if is_still(span) and start_key != end_key:
+                changed[end_key] = values_at(rig, span.start, span.start_frame, changed)
+            continue
         start = values_at(rig, span.start, span.start_frame, changed)
         end = values_at(rig, span.end, span.end_frame, changed)
         arrival = _arrival(rig, span, chain, start, end, placement)
@@ -1380,7 +1417,7 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
                 (span.end, values, _turn_description(rig, chain, span, end, values), span.end_frame)
             )
         lined.update((start_key, end_key))
-    return refused, turned, shared
+    return refused, turned, shared, changed
 
 
 def _arrival(rig, span, chain, start_values, end_values, placement=None):
@@ -1770,8 +1807,10 @@ def job_signature(rig) -> str:
     if rig.kinema_job_version < JOB_VERSION:
         return _signature_before_motions(rig)
     parts = []
+    relative = False
     for waypoint in rig.kinema_waypoints:
         reference = references.reference_of(rig, waypoint)
+        relative = relative or reference is not None
         # In its frame of reference: a waypoint on a workpiece is where it is on
         # the workpiece, wherever the workpiece is on this frame.
         pose = references.local_pose(waypoint)
@@ -1788,6 +1827,10 @@ def job_signature(rig) -> str:
                 references.fingerprint(reference),
             )
         parts.append(part)
+    if relative:
+        # Where the robot stands decides where an object is from it; at the
+        # base, a waypoint goes with the robot wherever that is.
+        parts.append(("robot", references.fingerprint(rig)))
     for motion in sorted(rig.kinema_motions, key=lambda m: int(m.frame_start)):
         parts.append(
             (motion.name, motion.start, motion.end, motion.move,
@@ -1855,10 +1898,10 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
             )
             return {"CANCELLED"}
         message = f"Checked {len(plan)} move{'s' if len(plan) != 1 else ''}"
-        if flagged:
-            self.report({"WARNING"}, f"{message}; {_flagged_text(flagged)}")
-        else:
-            self.report({"INFO"}, f"{message}; nothing to report")
+        message += f"; {_flagged_text(flagged)}" if flagged else "; nothing to report"
+        for note in job.notes:
+            message += f". {note}"
+        self.report({"WARNING"} if flagged or job.notes else {"INFO"}, message)
         return {"FINISHED"}
 
 

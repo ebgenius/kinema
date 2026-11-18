@@ -671,7 +671,11 @@ class KINEMA_UL_waypoints(UIList):
     ):
         row = layout.row(align=True)
         row.prop(item, "name", text="", emboss=False, icon="EMPTY_ARROWS")
-        if item.reference is not None:
+        from ..ops import references
+
+        # What the waypoint is relative to now, which a marker parented by hand
+        # decides before the field catches up.
+        if references.reference_of(data, item) is not None:
             row.label(text="", icon="CON_CHILDOF")
         row.operator(
             "kinema.goto_waypoint", text="", icon="PLAY", emboss=False

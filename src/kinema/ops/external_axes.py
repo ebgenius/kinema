@@ -346,10 +346,13 @@ def _move_waypoints(rig, shift: np.ndarray) -> None:
 
     moved = _matrix(shift)
     for waypoint in rig.kinema_waypoints:
+        # A marker reparented by hand is caught up first, so where its joints
+        # were taught is known before it moves.
+        references.sync(rig, waypoint)
         if references.reference_of(rig, waypoint) is not None:
             # On an object, its pose is the object's business; only where its
             # joints were taught, in rig space, moves with the robot.
-            taught = np.array([float(v) for v in waypoint.taught]).reshape(4, 4)
+            taught = np.array(references.taught_pose(waypoint), dtype=float)
             waypoint.taught = _flat(shift @ taught)
             continue
         # Row-major, the way ops/waypoints.py stores it.
@@ -357,7 +360,12 @@ def _move_waypoints(rig, shift: np.ndarray) -> None:
         waypoint.pose = _flat(shift @ stored)
         marker = waypoint.marker
         if marker is not None and marker.parent == rig:
-            marker.matrix_basis = moved @ marker.matrix_basis
+            # Moved in rig space, through whatever parent inverse it was given.
+            inverse = marker.matrix_parent_inverse
+            try:
+                marker.matrix_basis = inverse.inverted() @ moved @ inverse @ marker.matrix_basis
+            except ValueError:
+                marker.matrix_basis = moved @ marker.matrix_basis
 
 
 def _tcp_offset(rig, tcp) -> list[float]:
