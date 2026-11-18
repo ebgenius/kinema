@@ -238,9 +238,13 @@ class TestTeaching:
         shape.use_fake_user = True
         assert not references.may_be_reference(pick, shape), "in no scene"
         elsewhere = bpy.data.scenes.new("Elsewhere")
-        away = bpy.data.objects.new("Away", None)
-        elsewhere.collection.objects.link(away)
-        assert not references.may_be_reference(pick, away), "only in a scene not played"
+        try:
+            away = bpy.data.objects.new("Away", None)
+            elsewhere.collection.objects.link(away)
+            assert not references.may_be_reference(pick, away), "only in a scene not played"
+        finally:
+            # The scene-wide clean-up between tests clears objects, not scenes.
+            bpy.data.scenes.remove(elsewhere)
 
     def test_an_object_under_its_own_marker_is_refused_by_the_field(
         self, arm6, builder, references, fixture_empty
