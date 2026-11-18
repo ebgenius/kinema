@@ -207,11 +207,26 @@ def sync(rig, waypoint) -> str | None:
     waypoint goes back where its joints were taught, relative to the robot,
     and what is returned says so. A marker parented to something the robot
     carries is left as it is: see :func:`carried`.
+
+    A marker whose parent was cleared by hand (*Clear Parent*) puts the
+    waypoint back at the base where the marker now is, as clearing Relative To
+    does, rather than leave a marker nothing reads.
     """
     if carried(rig, waypoint) is not None:
         return None
-    reference = reference_of(rig, waypoint)
     marker = waypoint.marker
+    relative = waypoint.pose_space is not None or any(waypoint.taught)
+    if marker is not None and marker.parent is None and waypoint.pose_space is not None:
+        here = rig.matrix_world.inverted() @ marker.matrix_world
+        waypoint.pose = _flatten(taught_pose(waypoint))
+        waypoint.taught = [0.0] * 16
+        place_marker(rig, waypoint, None, here)
+        settle(waypoint, None)
+        return None
+    if marker is not None and marker.parent is None and not relative:
+        # At the base already: the marker stays where it is, read again.
+        place_marker(rig, waypoint, None, rig.matrix_world.inverted() @ marker.matrix_world)
+    reference = reference_of(rig, waypoint)
     note = None
     if reference is None and (waypoint.pose_space is not None or any(waypoint.taught)):
         # Back at the base, by hand or because its object is gone: there the
@@ -244,7 +259,7 @@ def on_reference_set(waypoint, _context) -> None:
         return
     rig = waypoint.id_data
     reference = waypoint.reference
-    if reference is not None and relative_to_robot(rig, reference):
+    if reference is not None and not may_be_reference(waypoint, reference):
         # Refused by the field's own filter too; this catches a script.
         settle(waypoint, reference_of(rig, waypoint))
         return
@@ -252,15 +267,30 @@ def on_reference_set(waypoint, _context) -> None:
 
 
 def may_be_reference(waypoint, obj) -> bool:
-    """The field's filter: any object in a scene but the robot, what it carries, and
-    markers. An object in no scene -- a bone's custom shape, kept with a fake
-    user -- is nowhere for a waypoint to be."""
+    """The field's filter: any object in the robot's scene but the robot, what it
+    carries, markers, and what hangs from the waypoint's own marker.
+
+    An object in no scene -- a bone's custom shape, kept with a fake user -- is
+    nowhere for a waypoint to be, and one only in another scene is not played
+    when the job is: :class:`Placement` steps the robot's. Parenting the marker
+    under something parented to it would be a loop, which Blender undoes.
+    """
     rig = waypoint.id_data
     return (
         PROP_WAYPOINT not in obj
-        and bool(obj.users_scene)
+        and any(scene in rig.users_scene for scene in obj.users_scene)
         and not relative_to_robot(rig, obj)
+        and not _under(obj, waypoint.marker)
     )
+
+
+def _under(obj, ancestor) -> bool:
+    """Whether ``obj`` is ``ancestor`` or hangs from it."""
+    while ancestor is not None and obj is not None:
+        if obj == ancestor:
+            return True
+        obj = obj.parent
+    return False
 
 
 def _rounded(values, places: int = 6) -> tuple:
@@ -355,8 +385,10 @@ def _strip(strip, transform_curves) -> tuple:
         from .ik import _iter_fcurve_containers
 
         curves = transform_curves(_iter_fcurve_containers(action, handle))
+    # Its own modifiers -- noise, a cycle -- shape the whole strip.
+    modifiers = tuple((m.type, _settings(m)) for m in strip.modifiers)
     inside = tuple(_strip(child, transform_curves) for child in strip.strips)
-    return (settings, controls, curves, inside)
+    return (settings, controls, curves, modifiers, inside)
 
 
 def _animation(obj) -> tuple[tuple, set]:

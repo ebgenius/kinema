@@ -28,11 +28,24 @@ def _deferred(tree: ast.Module) -> bool:
     )
 
 
+def _class_statements(body):
+    """A class body's statements, those under an ``if`` or ``try`` there included,
+    but not a method's or a nested class's, which are scanned as their own."""
+    for statement in body:
+        yield statement
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            yield from _class_statements(getattr(statement, field, []))
+        for handler in getattr(statement, "handlers", []):
+            yield from _class_statements(handler.body)
+
+
 def _lambdas_in_annotations(tree: ast.Module):
     for cls in ast.walk(tree):
         if not isinstance(cls, ast.ClassDef):
             continue
-        for statement in cls.body:
+        for statement in _class_statements(cls.body):
             if not isinstance(statement, ast.AnnAssign):
                 continue
             for node in ast.walk(statement.annotation):
@@ -60,3 +73,23 @@ def test_the_check_finds_one():
     )
     assert _deferred(tree)
     assert list(_lambdas_in_annotations(tree)) == ["KinemaWaypoint.reference (line 4)"]
+
+
+def test_the_check_finds_one_under_a_class_level_if_or_try():
+    tree = ast.parse(
+        "from __future__ import annotations\n"
+        "class KinemaWaypoint:\n"
+        "    if True:\n"
+        "        a: PointerProperty(poll=lambda self, obj: True)\n"
+        "    try:\n"
+        "        b: PointerProperty(poll=lambda self, obj: True)\n"
+        "    except ImportError:\n"
+        "        c: PointerProperty(poll=lambda self, obj: True)\n"
+        "    def method(self):\n"
+        "        d: int = (lambda: 1)()\n"
+    )
+    assert list(_lambdas_in_annotations(tree)) == [
+        "KinemaWaypoint.a (line 4)",
+        "KinemaWaypoint.b (line 6)",
+        "KinemaWaypoint.c (line 8)",
+    ]

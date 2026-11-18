@@ -237,6 +237,27 @@ class TestTeaching:
         shape = bpy.data.objects.new("WGT-shape", None)
         shape.use_fake_user = True
         assert not references.may_be_reference(pick, shape), "in no scene"
+        elsewhere = bpy.data.scenes.new("Elsewhere")
+        away = bpy.data.objects.new("Away", None)
+        elsewhere.collection.objects.link(away)
+        assert not references.may_be_reference(pick, away), "only in a scene not played"
+
+    def test_an_object_under_its_own_marker_is_refused_by_the_field(
+        self, arm6, builder, references, fixture_empty
+    ):
+        """It would be a loop. Not offered; set from a script, past the filter, the
+        field goes back and nothing moves."""
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        stored = list(pick.pose)
+        below = _empty("Below")
+        below.parent = pick.marker
+        assert not references.may_be_reference(pick, below)
+
+        pick.reference = below
+        assert pick.reference == fixture_empty
+        assert pick.marker.parent == fixture_empty
+        assert list(pick.pose) == stored
 
     def test_blenders_parent_without_inverse_is_read(
         self, arm6, builder, wp_ops, fixture_empty
@@ -626,6 +647,54 @@ class TestReparented:
 
         external_axes._move_waypoints(arm6, shift)
         np.testing.assert_allclose(np.array(references.local_pose(pick)), shift @ before, atol=1e-6)
+
+    def test_clearing_its_parent_puts_it_at_the_base_where_the_marker_is(
+        self, arm6, builder, wp_ops, references, fixture_empty
+    ):
+        """Blender's Clear Parent, Keep Transform, on a marker relative to an Empty
+        that has moved since: as clearing Relative To, it stays where it is, at
+        the base, and the next generation walks the joints there."""
+        import bpy
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        taught = np.array(pick.pose).reshape(4, 4)
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        fixture_empty.location += Vector((0.02, 0.0, 0.0))
+        bpy.context.view_layer.update()
+        here = np.array(pick.marker.matrix_world)
+        bpy.ops.object.select_all(action="DESELECT")
+        pick.marker.select_set(True)
+        bpy.context.view_layer.objects.active = pick.marker
+        assert "FINISHED" in bpy.ops.object.parent_clear(type="CLEAR_KEEP_TRANSFORM")
+        bpy.context.view_layer.objects.active = arm6
+
+        wp_ops.job_plan(arm6)
+        bpy.context.view_layer.update()
+        assert pick.marker.parent == arm6 and pick.reference is None
+        np.testing.assert_allclose(np.array(pick.marker.matrix_world), here, atol=1e-6)
+        np.testing.assert_allclose(np.array(pick.pose).reshape(4, 4), taught, atol=1e-6)
+        assert not any(pick.taught)
+        assert wp_ops.marker_has_moved(pick)
+
+    def test_clearing_a_base_markers_parent_keeps_it_read(self, arm6, builder, wp_ops):
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        here = np.array(pick.marker.matrix_world)
+        bpy.ops.object.select_all(action="DESELECT")
+        pick.marker.select_set(True)
+        bpy.context.view_layer.objects.active = pick.marker
+        assert "FINISHED" in bpy.ops.object.parent_clear(type="CLEAR_KEEP_TRANSFORM")
+        bpy.context.view_layer.objects.active = arm6
+
+        wp_ops.job_plan(arm6)
+        bpy.context.view_layer.update()
+        assert pick.marker.parent == arm6
+        np.testing.assert_allclose(np.array(pick.marker.matrix_world), here, atol=1e-6)
+        assert not wp_ops.marker_has_moved(pick)
 
     def test_a_marker_parented_to_what_the_robot_carries_is_refused(
         self, arm6, builder, fixture_empty
