@@ -573,6 +573,37 @@ class TestReparented:
         wp_ops.job_plan(arm6)
         np.testing.assert_allclose(np.array(pick.pose).reshape(4, 4), shift @ taught, atol=1e-6)
 
+    def test_an_axis_added_with_a_carried_marker_moves_its_records_at_the_base(
+        self, arm6, builder, wp_ops, external_axes
+    ):
+        """One marker on a gripper, one on a wrist bone: refused until parented
+        elsewhere, but their stored poses move with the robot all the same, and
+        stay at the base, where they were taught. The markers go with their parents."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        place = _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        before = {w.name: np.array(w.pose).reshape(4, 4) for w in (pick, place)}
+        gripper = _empty("Gripper")
+        gripper.parent = arm6
+        pick.marker.parent = gripper
+        place.marker.parent_type = "BONE"
+        place.marker.parent_bone = builder.joint_bones(arm6)[-1].name
+        bpy.context.view_layer.update()
+        held = {w.name: np.array(w.marker.matrix_basis) for w in (pick, place)}
+        shift = np.eye(4)
+        shift[0, 3] = 0.1
+
+        external_axes._move_waypoints(arm6, shift)
+        for waypoint in (pick, place):
+            np.testing.assert_allclose(
+                np.array(waypoint.pose).reshape(4, 4), shift @ before[waypoint.name], atol=1e-6
+            )
+            assert not any(waypoint.taught), waypoint.name
+            np.testing.assert_allclose(
+                np.array(waypoint.marker.matrix_basis), held[waypoint.name], atol=1e-9
+            )
+
     def test_a_marker_given_a_parent_inverse_moves_with_the_robot_as_the_robot_does(
         self, arm6, builder, references, external_axes
     ):
