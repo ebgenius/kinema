@@ -252,9 +252,15 @@ def on_reference_set(waypoint, _context) -> None:
 
 
 def may_be_reference(waypoint, obj) -> bool:
-    """The field's filter: any object but the robot, what it carries, and markers."""
+    """The field's filter: any object in a scene but the robot, what it carries, and
+    markers. An object in no scene -- a bone's custom shape, kept with a fake
+    user -- is nowhere for a waypoint to be."""
     rig = waypoint.id_data
-    return PROP_WAYPOINT not in obj and not relative_to_robot(rig, obj)
+    return (
+        PROP_WAYPOINT not in obj
+        and bool(obj.users_scene)
+        and not relative_to_robot(rig, obj)
+    )
 
 
 def _rounded(values, places: int = 6) -> tuple:

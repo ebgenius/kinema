@@ -112,7 +112,7 @@ class KinemaSceneProps(PropertyGroup):
     catalog_tag: EnumProperty(
         name="Category",
         description="Filter the catalog by robot type",
-        items=lambda self, context: _tag_items(),
+        items=_catalog_tags,
     )
     catalog_pick: StringProperty(
         name="Catalog Pick",
@@ -156,6 +156,18 @@ def _tag_items():
     return [("", "All", "Every robot in the catalog")] + [
         (tag, tag.replace("_", " ").title(), f"Robots tagged '{tag}'") for tag in tags
     ]
+
+
+#: The Category filter's items, kept referenced: Blender reads a dynamic enum's
+#: strings after its callback has returned.
+_TAG_ITEMS: list = []
+
+
+def _catalog_tags(_self, _context) -> list:
+    """The Category filter's items. A module function, not a lambda: see
+    tests/unit/test_property_callbacks.py."""
+    _TAG_ITEMS[:] = _tag_items()
+    return _TAG_ITEMS
 
 
 def _draw_catalog(layout, context: bpy.types.Context) -> None:

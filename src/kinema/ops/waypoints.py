@@ -275,7 +275,7 @@ class KinemaWaypoint(PropertyGroup):
             "fixture. It follows the object as it moves or is animated. Empty "
             "for the robot's base. Changing it keeps the waypoint where it is"
         ),
-        poll=lambda self, obj: references.may_be_reference(self, obj),
+        poll=references.may_be_reference,
         update=references.on_reference_set,
     )
     #: The object ``pose`` is in, as Kinema last expressed it: what the field

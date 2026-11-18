@@ -234,6 +234,9 @@ class TestTeaching:
         assert not references.may_be_reference(pick, carried)
         assert not references.may_be_reference(pick, pick.marker)
         assert references.may_be_reference(pick, fixture_empty)
+        shape = bpy.data.objects.new("WGT-shape", None)
+        shape.use_fake_user = True
+        assert not references.may_be_reference(pick, shape), "in no scene"
 
     def test_blenders_parent_without_inverse_is_read(
         self, arm6, builder, wp_ops, fixture_empty
