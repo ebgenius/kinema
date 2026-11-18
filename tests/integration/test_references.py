@@ -1199,6 +1199,25 @@ class TestFingerprintEdges:
         assert fixture_empty.location.x != pytest.approx(start), "precondition: it plays"
         assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
 
+    def test_moving_an_envelope_point_outdates_the_job(
+        self, arm6, builder, wp_ops, fixture_empty, curves
+    ):
+        """An Envelope modifier's control points reshape the slide; they're kept in
+        a collection of their own."""
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        _key_slide(curves, fixture_empty, 1, 21, Vector((0.02, 0.0, 0.0)))
+        x = next(c for c in curves(fixture_empty) if c.array_index == 0)
+        envelope = x.modifiers.new("ENVELOPE")
+        point = envelope.control_points.add(11)
+        point.min, point.max = -1.0, 1.0
+        signed = wp_ops.job_signature(arm6)
+        point.max = 2.0
+        assert wp_ops.job_signature(arm6) != signed
+
     def test_a_soloed_track_plays_though_muted(
         self, arm6, builder, wp_ops, fixture_empty, curves
     ):

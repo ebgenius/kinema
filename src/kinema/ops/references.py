@@ -400,6 +400,17 @@ def _read(points, name: str, width: int, dtype) -> np.ndarray:
     return values
 
 
+def _modifier(modifier) -> tuple:
+    """An F-curve modifier: its kind, its settings, and the items of any collection
+    it keeps -- an Envelope's control points, each with its frame, min and max."""
+    collections = tuple(
+        (prop.identifier, tuple(_settings(item) for item in getattr(modifier, prop.identifier)))
+        for prop in modifier.bl_rna.properties
+        if prop.type == "COLLECTION"
+    )
+    return (modifier.type, _settings(modifier), collections)
+
+
 def _curve(curve) -> tuple:
     """Everything an F-curve's value on any frame comes from: its keys, with their
     handles and easing; the samples of a baked one; how it carries on past
@@ -417,7 +428,7 @@ def _curve(curve) -> tuple:
     numbers = np.round(np.concatenate(floats), 6) + 0.0
     kinds = np.concatenate([_read(keys, name, 1, np.int32) for name in _KEY_KINDS])
     digest = hashlib.sha1(numbers.tobytes() + kinds.tobytes()).hexdigest()
-    modifiers = tuple((m.type, _settings(m)) for m in curve.modifiers)
+    modifiers = tuple(_modifier(m) for m in curve.modifiers)
     return (
         curve.data_path,
         int(curve.array_index),
@@ -465,7 +476,7 @@ def _strip(strip, transform_curves, played: bool) -> tuple:
 
         curves = transform_curves(_iter_fcurve_containers(action, handle), played)
     # Its own modifiers -- noise, a cycle -- shape the whole strip.
-    modifiers = tuple((m.type, _settings(m)) for m in strip.modifiers)
+    modifiers = tuple(_modifier(m) for m in strip.modifiers)
     inside = tuple(_strip(child, transform_curves, played) for child in strip.strips)
     return (settings, controls, curves, modifiers, inside)
 
