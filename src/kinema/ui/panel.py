@@ -764,6 +764,9 @@ def reference_note(rig, waypoint) -> str:
     another object than its field names, until an operator catches the field up."""
     from ..ops import references
 
+    part = references.on_a_part(rig, waypoint)
+    if part is not None:
+        return f"Its marker is parented to a part of '{part.name}': parent it to an object"
     actual = references.reference_of(rig, waypoint)
     if actual == waypoint.reference:
         return ""

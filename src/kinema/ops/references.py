@@ -49,6 +49,28 @@ TRANSFORM = (
     "delta_scale",
 )
 
+#: A pose bone's own transform channels.
+BONE_TRANSFORM = (
+    "location",
+    "rotation_euler",
+    "rotation_quaternion",
+    "rotation_axis_angle",
+    "scale",
+)
+
+#: How a bone places what hangs from it, past its pose.
+BONE_INHERITS = (
+    "use_connect",
+    "use_inherit_rotation",
+    "inherit_scale",
+    "use_local_location",
+    "use_relative_parent",
+)
+
+#: Parenting to a part of an object -- a bone, vertices -- whose space is the
+#: part's, not the object's.
+PART_PARENTS = {"BONE", "VERTEX", "VERTEX_3"}
+
 
 def _unflatten(values) -> Matrix:
     return Matrix([[float(values[row * 4 + col]) for col in range(4)] for row in range(4)])
@@ -128,12 +150,27 @@ def carried(rig, waypoint):
     return None
 
 
+def on_a_part(rig, waypoint):
+    """The object ``waypoint``'s marker is parented to a part of -- a bone of an
+    armature other than the robot, a mesh's vertices -- or None.
+
+    The marker's numbers are then in the part's space, and a frame of
+    reference is an object, so every operator refuses one until it is
+    parented to an object. The robot's own bones are :func:`carried`.
+    """
+    marker = waypoint.marker
+    if marker is None or marker.parent is None or marker.parent == rig:
+        return None
+    return marker.parent if marker.parent_type in PART_PARENTS else None
+
+
 def place_marker(rig, waypoint, reference, local: Matrix) -> None:
     """Parent the marker to ``reference`` (the rig for None) without an inverse, at ``local``."""
     marker = waypoint.marker
     if marker is None:
         return
     marker.parent = reference if reference is not None else rig
+    marker.parent_type = "OBJECT"
     marker.matrix_parent_inverse = Matrix.Identity(4)
     marker.matrix_basis = local
 
@@ -146,7 +183,9 @@ def reexpress(rig, waypoint, reference) -> bool:
     where they were taught.
 
     A marker reparented by hand is caught up first (:func:`sync`), so where
-    its joints were taught is kept before its frame changes again. False, and
+    its joints were taught is kept before its frame changes again. One parented
+    to a bone or vertices is taken from where it is in the scene, and parented
+    to the object itself. False, and
     nothing changed, for an object scaled to nothing, which has no space to
     be in.
 
@@ -164,9 +203,15 @@ def reexpress(rig, waypoint, reference) -> bool:
     except ValueError:
         settle(waypoint, was)
         return False
-    here = in_rig(rig, was) @ local_pose(waypoint)
-    if was is None:
-        # From the base, where the stored pose is where the joints were taught.
+    marker = waypoint.marker
+    if marker is not None and marker.parent is not None and marker.parent_type in PART_PARENTS:
+        # Its numbers are in the part's space, not the object's.
+        here = rig.matrix_world.inverted() @ marker.matrix_world
+    else:
+        here = in_rig(rig, was) @ local_pose(waypoint)
+    if was is None or (waypoint.pose_space is None and not any(waypoint.taught)):
+        # From the base, where the stored pose is where the joints were taught;
+        # or parented by hand from there to a part, which sync leaves as it is.
         waypoint.taught = _flatten(taught_pose(waypoint))
     local = into @ here
     if reference is None:
@@ -206,13 +251,14 @@ def sync(rig, waypoint) -> str | None:
     parent, and leaves a pose in the space of something that is gone. The
     waypoint goes back where its joints were taught, relative to the robot,
     and what is returned says so. A marker parented to something the robot
-    carries is left as it is: see :func:`carried`.
+    carries, or to a part of an object, is left as it is: see :func:`carried`
+    and :func:`on_a_part`.
 
     A marker whose parent was cleared by hand (*Clear Parent*) puts the
     waypoint back at the base where the marker now is, as clearing Relative To
     does, rather than leave a marker nothing reads.
     """
-    if carried(rig, waypoint) is not None:
+    if carried(rig, waypoint) is not None or on_a_part(rig, waypoint) is not None:
         return None
     marker = waypoint.marker
     relative = waypoint.pose_space is not None or any(waypoint.taught)
@@ -365,9 +411,23 @@ def _curve(curve) -> tuple:
     )
 
 
-def _strip(strip, transform_curves) -> tuple:
+def _drives(curve) -> bool:
+    """Whether ``curve`` sets its channel. A muted one, or one with nothing in it,
+    leaves the channel at its value as it stands."""
+    if curve.mute:
+        return False
+    return bool(
+        len(curve.keyframe_points)
+        or len(curve.sampled_points)
+        or any(m.type in {"GENERATOR", "FNGENERATOR"} for m in curve.modifiers)
+    )
+
+
+def _strip(strip, transform_curves, played: bool) -> tuple:
     """An NLA strip: its timing, the curves that animate its influence and time,
-    and its action's transform curves, or the strips a meta strip holds."""
+    and its action's transform curves, or the strips a meta strip holds.
+    ``played`` is whether its track is.
+    """
     animated = set()
     if strip.use_animated_influence:
         animated.add("influence")
@@ -384,16 +444,23 @@ def _strip(strip, transform_curves) -> tuple:
         handle = getattr(slot, "handle", None)
         from .ik import _iter_fcurve_containers
 
-        curves = transform_curves(_iter_fcurve_containers(action, handle))
+        curves = transform_curves(_iter_fcurve_containers(action, handle), played)
     # Its own modifiers -- noise, a cycle -- shape the whole strip.
     modifiers = tuple((m.type, _settings(m)) for m in strip.modifiers)
-    inside = tuple(_strip(child, transform_curves) for child in strip.strips)
+    inside = tuple(_strip(child, transform_curves, played) for child in strip.strips)
     return (settings, controls, curves, modifiers, inside)
 
 
-def _animation(obj) -> tuple[tuple, set]:
-    """``obj``'s transform curves, in its active action and its NLA strips, and
-    which channels they key."""
+def _animation(obj, paths=TRANSFORM) -> tuple[tuple, set]:
+    """``obj``'s curves for ``paths``, in its active action and its NLA strips, and
+    which channels they key: those whose value as it stands is not what
+    places it.
+
+    A muted curve keys nothing, and nor does a track that isn't played -- muted,
+    another one soloed, or the NLA off -- which Blender leaves at its value as
+    it stands. A muted strip still keys its channels: they go to their
+    defaults on its track.
+    """
     from .ik import own_fcurve_containers
 
     anim = obj.animation_data
@@ -401,21 +468,66 @@ def _animation(obj) -> tuple[tuple, set]:
         return (), set()
     keyed = set()
 
-    def transform_curves(containers):
+    def transform_curves(containers, played=True):
         out = []
         for container in containers:
             for curve in container:
-                if curve.data_path in TRANSFORM:
-                    keyed.add((curve.data_path, int(curve.array_index)))
+                if curve.data_path in paths:
+                    if played and _drives(curve):
+                        keyed.add((curve.data_path, int(curve.array_index)))
                     out.append(_curve(curve))
         return tuple(sorted(out, key=lambda c: (c[0], c[1])))
 
     active = transform_curves(own_fcurve_containers(obj) or ())
-    tracks = tuple(
-        (_settings(track), tuple(_strip(strip, transform_curves) for strip in track.strips))
-        for track in anim.nla_tracks
+    soloed = any(track.is_solo for track in anim.nla_tracks)
+    tracks = []
+    for track in anim.nla_tracks:
+        played = anim.use_nla and not track.mute and (track.is_solo or not soloed)
+        strips = tuple(_strip(strip, transform_curves, played) for strip in track.strips)
+        tracks.append((_settings(track), strips))
+    return (_settings(anim), active, tuple(tracks)), keyed
+
+
+def _still(struct, channels, keyed, path=None) -> tuple:
+    """The channels of ``struct`` nothing keys, as they stand. ``path`` turns a
+    channel's name into its curves' data path, where that differs."""
+    return tuple(
+        (name, index, round(float(value), 6))
+        for name in channels
+        for index, value in enumerate(getattr(struct, name))
+        if ((path(name) if path else name), index) not in keyed
     )
-    return (_settings(anim), active, tracks), keyed
+
+
+def _constraints(constraints) -> tuple:
+    return tuple((c.type, getattr(getattr(c, "target", None), "name", "")) for c in constraints)
+
+
+def _bones(armature, name: str) -> tuple:
+    """What places what hangs from ``armature``'s bone ``name``: that bone's and its
+    parents' keys, their channels nothing keys as they stand, their rest, and
+    how each one inherits; and whether the armature is posed at all."""
+    pose = armature.pose
+    bone = pose.bones.get(name) if pose is not None else None
+    chain = []
+    while bone is not None and len(chain) < 256:
+        chain.append(bone)
+        bone = bone.parent
+    paths = {bone.path_from_id(channel) for bone in chain for channel in BONE_TRANSFORM}
+    animation, keyed = _animation(armature, paths)
+    bones = tuple(
+        (
+            bone.name,
+            bone.rotation_mode,
+            _still(bone, BONE_TRANSFORM, keyed, bone.path_from_id),
+            _rounded(_flatten(bone.bone.matrix_local)),
+            round(float(bone.bone.length), 6),
+            tuple(getattr(bone.bone, flag) for flag in BONE_INHERITS),
+            _constraints(bone.constraints),
+        )
+        for bone in chain
+    )
+    return (name, armature.data.pose_position, animation, bones)
 
 
 def fingerprint(obj, depth: int = 0) -> tuple:
@@ -428,29 +540,27 @@ def fingerprint(obj, depth: int = 0) -> tuple:
     workpiece, or re-keying it, marks a Motion Check of it as outdated. Read
     off the data, not the scene -- a keyed channel's value as it stands is left
     out -- so scrubbing the timeline changes nothing. Only the object's own
-    transform is in it, so a robot's fingerprint is not its joints' keys. What
-    drives it from elsewhere -- a constraint's target, a driver -- is not in it:
-    Check Again catches that.
+    transform is in it, so a robot's fingerprint is not its joints' keys; but
+    an object parented to another armature's bone takes in that bone's, and
+    its parent bones', the same way. What drives it from elsewhere -- a
+    constraint's target, a driver, what deforms the mesh it hangs from by
+    vertices -- is not in it: Check Again catches that.
     """
     if obj is None or depth > 16:
         return ()
     animation, keyed = _animation(obj)
-    still = tuple(
-        (path, index, round(float(value), 6))
-        for path in TRANSFORM
-        for index, value in enumerate(getattr(obj, path))
-        if (path, index) not in keyed
-    )
+    still = _still(obj, TRANSFORM, keyed)
     placed = (
         obj.rotation_mode,
         obj.parent_type,
         obj.parent_bone,
         _rounded(_flatten(obj.matrix_parent_inverse)),
     )
-    constraints = tuple(
-        (c.type, getattr(getattr(c, "target", None), "name", "")) for c in obj.constraints
-    )
-    return (obj.name, animation, still, placed, constraints, fingerprint(obj.parent, depth + 1))
+    parent = obj.parent
+    if obj.parent_type == "BONE" and parent is not None and parent.type == "ARMATURE":
+        placed += (_bones(parent, obj.parent_bone),)
+    constraints = _constraints(obj.constraints)
+    return (obj.name, animation, still, placed, constraints, fingerprint(parent, depth + 1))
 
 
 class Placement:

@@ -416,9 +416,9 @@ def job_plan(rig):
     """
     convert_saved_before_motions(rig)
     for waypoint in rig.kinema_waypoints:
-        held = references.carried(rig, waypoint)
-        if held is not None:
-            raise WaypointError(_carried_text(waypoint, held))
+        refused = refusal(rig, waypoint)
+        if refused is not None:
+            raise WaypointError(refused)
     if rig.kinema_job_version < JOB_VERSION:
         return Plan(spans=spans(rig.kinema_waypoints), notes=[])
     notes = []
@@ -444,15 +444,35 @@ def job_plan(rig):
     return job
 
 
-def _carried_text(waypoint, held) -> str:
-    if held == waypoint.id_data:
-        where = f"the robot's bone '{waypoint.marker.parent_bone}'"
-    else:
-        where = f"'{held.name}', which the robot carries"
-    return (
-        f"'{waypoint.name}': its marker is parented to {where}, so the tool would "
-        f"chase its own tail. Parent it to something else, or back to the robot"
-    )
+def refusal(rig, waypoint) -> str | None:
+    """Why no operator can place ``waypoint`` as its marker is parented, or None.
+
+    Parented to what the robot carries, the tool would chase its own tail;
+    parented to a bone or vertices of another object, its numbers are in a
+    space a frame of reference, an object, doesn't have.
+    """
+    held = references.carried(rig, waypoint)
+    if held is not None:
+        if held == rig:
+            where = f"the robot's bone '{waypoint.marker.parent_bone}'"
+        else:
+            where = f"'{held.name}', which the robot carries"
+        return (
+            f"'{waypoint.name}': its marker is parented to {where}, so the tool would "
+            f"chase its own tail. Parent it to something else, or back to the robot"
+        )
+    part = references.on_a_part(rig, waypoint)
+    if part is not None:
+        if waypoint.marker.parent_type == "BONE":
+            where, there = f"the bone '{waypoint.marker.parent_bone}' of", "the bone"
+        else:
+            where, there = "vertices of", "them"
+        return (
+            f"'{waypoint.name}': its marker is parented to {where} '{part.name}', and "
+            f"a waypoint is relative to an object, not a part of one. Parent it to "
+            f"'{part.name}' itself, or to an Empty parented to {there}"
+        )
+    return None
 
 
 class KinemaWaypointOperator(Operator):
@@ -603,9 +623,9 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
         reference = (
             references.reference_of(rig, highlighted) if highlighted is not None else None
         )
-        held = references.carried(rig, highlighted) if highlighted is not None else None
-        if held is not None:
-            self.report({"ERROR"}, _carried_text(highlighted, held))
+        refused = refusal(rig, highlighted) if highlighted is not None else None
+        if refused is not None:
+            self.report({"ERROR"}, refused)
             return {"CANCELLED"}
         waypoint = rig.kinema_waypoints.add()
         waypoint.uid = _new_uid()
@@ -659,9 +679,9 @@ class KINEMA_OT_update_waypoint(KinemaWaypointOperator):
             return {"CANCELLED"}
 
         context.view_layer.update()
-        held = references.carried(rig, waypoint)
-        if held is not None:
-            self.report({"ERROR"}, _carried_text(waypoint, held))
+        refused = refusal(rig, waypoint)
+        if refused is not None:
+            self.report({"ERROR"}, refused)
             return {"CANCELLED"}
         references.sync(rig, waypoint)
         reference = references.reference_of(rig, waypoint)
@@ -692,9 +712,9 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
         if waypoint is None:
             self.report({"ERROR"}, "No waypoint to go to")
             return {"CANCELLED"}
-        held = references.carried(rig, waypoint)
-        if held is not None:
-            self.report({"ERROR"}, _carried_text(waypoint, held))
+        refused = refusal(rig, waypoint)
+        if refused is not None:
+            self.report({"ERROR"}, refused)
             return {"CANCELLED"}
         # A marker parented by hand, or an object deleted, caught up first: where
         # the waypoint is comes from its frame of reference.

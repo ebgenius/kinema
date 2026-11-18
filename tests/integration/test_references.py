@@ -168,6 +168,41 @@ def _key_slide(curves, empty, first, last, offset, back=False):
             point.interpolation = "LINEAR"
 
 
+def _gantry(rig):
+    """Another armature, where ``rig`` is: a 'Beam' bone, and a 'Carriage' on it."""
+    import bpy
+
+    armature = bpy.data.objects.new("Gantry", bpy.data.armatures.new("Gantry"))
+    bpy.context.scene.collection.objects.link(armature)
+    armature.matrix_world = rig.matrix_world.copy()
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode="EDIT")
+    beam = armature.data.edit_bones.new("Beam")
+    beam.head, beam.tail = (0.0, 0.0, 0.0), (0.0, 0.0, 0.2)
+    carriage = armature.data.edit_bones.new("Carriage")
+    carriage.head, carriage.tail = (0.0, 0.0, 0.2), (0.0, 0.0, 0.3)
+    carriage.parent = beam
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.objects.active = rig
+    bpy.context.view_layer.update()
+    return armature
+
+
+def _on_bone(obj, armature, bone):
+    """Parent ``obj`` to ``armature``'s ``bone``, as a script does, with no inverse."""
+    import bpy
+    from mathutils import Matrix
+
+    obj.parent, obj.parent_type, obj.parent_bone = armature, "BONE", bone
+    obj.matrix_parent_inverse = Matrix.Identity(4)
+    bpy.context.view_layer.update()
+
+
+def _at(references, rig, waypoint, frame):
+    """Where ``waypoint`` is on ``frame``, in rig space, as the job places it."""
+    return np.array(references.Placement(rig, [waypoint], [frame]).pose(waypoint, frame))
+
+
 class TestTeaching:
     def test_the_marker_is_parented_without_an_inverse_and_stays_put(
         self, arm6, builder, fixture_empty
@@ -437,6 +472,97 @@ class TestFingerprint:
         fixture_empty.rotation_euler.z += 0.1
         bpy.context.view_layer.update()
         assert wp_ops.job_signature(arm6) != signed, "turned, it has the waypoints elsewhere"
+
+    def test_a_muted_curve_leaves_its_channel_to_the_value_it_has(
+        self, arm6, builder, wp_ops, references, fixture_empty, curves
+    ):
+        """Muted, the slide's x curve keys nothing: the Empty's own x is where it is
+        on every frame, so moving that is an edit. Scrubbing still isn't."""
+        import bpy
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        _key_slide(curves, fixture_empty, 1, 21, Vector((0.02, 0.0, 0.0)))
+        next(c for c in curves(fixture_empty) if c.array_index == 0).mute = True
+        bpy.context.scene.frame_set(1)
+        signed = wp_ops.job_signature(arm6)
+        bpy.context.scene.frame_set(15)
+        assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
+
+        before = _at(references, arm6, pick, 11)
+        fixture_empty.location.x += 0.05
+        bpy.context.view_layer.update()
+        moved = np.linalg.norm(_at(references, arm6, pick, 11)[:3, 3] - before[:3, 3])
+        assert moved == pytest.approx(0.05, abs=1e-6), "the waypoint is elsewhere"
+        assert wp_ops.job_signature(arm6) != signed
+
+    @pytest.mark.parametrize("unplayed", ["muted", "another soloed", "NLA off"])
+    def test_a_track_not_played_leaves_its_channels_to_the_values_they_have(
+        self, arm6, builder, wp_ops, references, fixture_empty, curves, unplayed
+    ):
+        import bpy
+        from mathutils import Vector
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        _key_slide(curves, fixture_empty, 1, 21, Vector((0.02, 0.0, 0.0)))
+        anim = fixture_empty.animation_data
+        track = anim.nla_tracks.new()
+        track.strips.new("slide", 1, anim.action)
+        anim.action = None
+        if unplayed == "muted":
+            track.mute = True
+        elif unplayed == "another soloed":
+            anim.nla_tracks.new().is_solo = True
+        else:
+            anim.use_nla = False
+        bpy.context.scene.frame_set(1)
+        signed = wp_ops.job_signature(arm6)
+
+        before = _at(references, arm6, pick, 11)
+        fixture_empty.location.x += 0.05
+        bpy.context.view_layer.update()
+        moved = np.linalg.norm(_at(references, arm6, pick, 11)[:3, 3] - before[:3, 3])
+        assert moved == pytest.approx(0.05, abs=1e-6), "the waypoint is elsewhere"
+        assert wp_ops.job_signature(arm6) != signed
+
+    def test_an_object_on_another_armatures_bone_follows_the_bones_keys(
+        self, arm6, builder, wp_ops, references, fixture_empty, curves
+    ):
+        """A workpiece on a gantry's carriage: re-keying the carriage, or turning
+        the beam it hangs from, has the waypoints elsewhere. Scrubbing doesn't."""
+        import bpy
+        from mathutils import Quaternion
+
+        gantry = _gantry(arm6)
+        _on_bone(fixture_empty, gantry, "Carriage")
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        carriage = gantry.pose.bones["Carriage"]
+        carriage.keyframe_insert("location", frame=1)
+        carriage.location.x = 0.03
+        carriage.keyframe_insert("location", frame=21)
+        bpy.context.scene.frame_set(1)
+        signed = wp_ops.job_signature(arm6)
+        bpy.context.scene.frame_set(15)
+        assert wp_ops.job_signature(arm6) == signed, "the frame shown is no edit"
+
+        before = _at(references, arm6, pick, 21)
+        path = carriage.path_from_id("location")
+        curve = next(c for c in curves(gantry) if c.data_path == path and c.array_index == 0)
+        curve.keyframe_points[-1].co[1] += 0.06
+        moved = np.linalg.norm(_at(references, arm6, pick, 21)[:3, 3] - before[:3, 3])
+        assert moved == pytest.approx(0.06, abs=1e-6), "the waypoint is elsewhere"
+        assert wp_ops.job_signature(arm6) != signed, "re-keyed, it goes elsewhere"
+
+        signed = wp_ops.job_signature(arm6)
+        gantry.pose.bones["Beam"].rotation_quaternion = Quaternion((0.0, 0.0, 1.0), 0.1)
+        bpy.context.view_layer.update()
+        assert wp_ops.job_signature(arm6) != signed, "the beam turned, it is elsewhere"
 
     def test_a_slide_pushed_down_to_the_nla_is_read_and_scrubbing_it_is_no_edit(
         self, arm6, builder, wp_ops, fixture_empty, curves
@@ -736,6 +862,76 @@ class TestReparented:
 
         with pytest.raises(RuntimeError, match=f"parented to the robot's bone '{wrist}'"):
             bpy.ops.kinema.generate_motion()
+
+    def test_a_marker_on_another_armatures_bone_is_refused(
+        self, addon, arm6, builder, references
+    ):
+        """Its numbers are in the bone's space, a metre or so from where its
+        object's space would put it: every operator says so, and so does the panel."""
+        import bpy
+
+        panel = importlib.import_module(f"{addon.__name__}.ui.panel")
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        gantry = _gantry(arm6)
+        _on_bone(pick.marker, gantry, "Carriage")
+        arm6.kinema_active_waypoint = 0
+        shown = np.array(arm6.matrix_world.inverted() @ pick.marker.matrix_world)
+        assert np.linalg.norm(_at(references, arm6, pick, 1)[:3, 3] - shown[:3, 3]) > 0.1
+
+        refused = "'pick': its marker is parented to the bone 'Carriage' of 'Gantry'"
+        with pytest.raises(RuntimeError, match=refused):
+            bpy.ops.kinema.generate_motion()
+        with pytest.raises(RuntimeError, match=refused):
+            bpy.ops.kinema.add_waypoint(name="next")
+        with pytest.raises(RuntimeError, match=refused):
+            bpy.ops.kinema.update_waypoint(index=0)
+        with pytest.raises(RuntimeError, match=refused):
+            bpy.ops.kinema.goto_waypoint(index=0)
+        assert len(arm6.kinema_waypoints) == 2
+        assert "a part of 'Gantry'" in panel.reference_note(arm6, pick)
+
+    def test_a_marker_on_a_meshs_vertices_is_refused(self, arm6, builder):
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        mesh = bpy.data.meshes.new("Plate")
+        mesh.from_pydata([(0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.0, 0.1, 0.0)], [], [(0, 1, 2)])
+        plate = bpy.data.objects.new("Plate", mesh)
+        bpy.context.scene.collection.objects.link(plate)
+        pick.marker.parent = plate
+        pick.marker.parent_type = "VERTEX"
+        pick.marker.parent_vertices[0] = 1
+        bpy.context.view_layer.update()
+
+        with pytest.raises(RuntimeError, match="parented to vertices of 'Plate'"):
+            bpy.ops.kinema.generate_motion()
+
+    def test_relative_to_takes_a_marker_off_a_bone_where_it_is(
+        self, arm6, builder, wp_ops, references, fixture_empty
+    ):
+        """Taught at the base, parented by hand to a gantry's bone, then given an
+        object in the field: it stays where the marker is, on the object itself,
+        and its joints stay where they were taught."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        taught = np.array(pick.pose).reshape(4, 4)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        gantry = _gantry(arm6)
+        _on_bone(pick.marker, gantry, "Carriage")
+        here = np.array(pick.marker.matrix_world)
+
+        pick.reference = fixture_empty
+        bpy.context.view_layer.update()
+        assert pick.marker.parent == fixture_empty and pick.marker.parent_type == "OBJECT"
+        np.testing.assert_allclose(np.array(pick.marker.matrix_world), here, atol=1e-6)
+        shown = np.array(arm6.matrix_world.inverted()) @ here
+        np.testing.assert_allclose(_at(references, arm6, pick, 1), shown, atol=1e-6)
+        np.testing.assert_allclose(np.array(references.taught_pose(pick)), taught, atol=1e-6)
+        wp_ops.job_plan(arm6)
 
     def test_a_job_saved_before_motions_is_refused_a_carried_marker_too(
         self, arm6, builder, wp_ops, monkeypatch
