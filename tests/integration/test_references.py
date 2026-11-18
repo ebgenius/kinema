@@ -1326,8 +1326,52 @@ class TestParentingEdges:
         try:
             elsewhere.collection.objects.link(fixture_empty)
             bpy.context.scene.collection.objects.unlink(fixture_empty)
-            with pytest.raises(RuntimeError, match="'Workpiece', which isn't in the robot"):
+            with pytest.raises(RuntimeError, match="'Workpiece', which isn't in the scene"):
                 bpy.ops.kinema.generate_motion()
+        finally:
+            bpy.data.scenes.remove(elsewhere)
+
+    def test_an_object_only_in_another_of_the_robots_scenes_is_refused_here(
+        self, arm6, builder, fixture_empty
+    ):
+        """The robot is in two scenes and the Empty only in the other one: the job is
+        played in this one, where the Empty isn't."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _relative(arm6, pick, fixture_empty)
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        other = bpy.data.scenes.new("Other")
+        try:
+            other.collection.objects.link(arm6)
+            other.collection.objects.link(fixture_empty)
+            bpy.context.scene.collection.objects.unlink(fixture_empty)
+            with pytest.raises(RuntimeError, match="isn't in the scene 'Scene'"):
+                bpy.ops.kinema.generate_motion()
+        finally:
+            bpy.data.scenes.remove(other)
+
+    def test_a_cleared_marker_isnt_held_back_by_the_object_it_left(
+        self, arm6, builder, fixture_empty
+    ):
+        """Its parent cleared by hand, then its old Empty moved to another scene: it
+        goes back to the base, and the job generates."""
+        import bpy
+
+        pick = _teach(builder, arm6, 1, REACH_A, "JOINT", "pick")
+        _teach(builder, arm6, 21, REACH_B, "JOINT", "place")
+        _relative(arm6, pick, fixture_empty)
+        bpy.ops.object.select_all(action="DESELECT")
+        pick.marker.select_set(True)
+        bpy.context.view_layer.objects.active = pick.marker
+        assert "FINISHED" in bpy.ops.object.parent_clear(type="CLEAR_KEEP_TRANSFORM")
+        bpy.context.view_layer.objects.active = arm6
+        elsewhere = bpy.data.scenes.new("Elsewhere")
+        try:
+            elsewhere.collection.objects.link(fixture_empty)
+            bpy.context.scene.collection.objects.unlink(fixture_empty)
+            assert "FINISHED" in bpy.ops.kinema.generate_motion()
+            assert pick.marker.parent == arm6 and pick.reference is None
         finally:
             bpy.data.scenes.remove(elsewhere)
 

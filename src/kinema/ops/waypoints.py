@@ -461,12 +461,18 @@ def refusal(rig, waypoint) -> str | None:
             f"'{waypoint.name}': its marker is parented to {where}, so the tool would "
             f"chase its own tail. Parent it to something else, or back to the robot"
         )
+    # A marker whose parent was cleared by hand goes back to the base when it is
+    # caught up (references.sync), so the object it was on no longer matters.
+    marker = waypoint.marker
+    cleared = marker is not None and marker.parent is None
     reference = references.reference_of(rig, waypoint)
-    if reference is not None and not references.in_robots_scene(rig, reference):
+    # The scene the operator runs in is the one the job is played in (place_job).
+    scene = bpy.context.scene
+    if reference is not None and not cleared and scene not in reference.users_scene:
         return (
             f"'{waypoint.name}': it is relative to '{reference.name}', which isn't in "
-            f"the robot's scene, so the job can't follow it. Link '{reference.name}' "
-            f"into the scene, or choose another object"
+            f"the scene '{scene.name}', so the job can't follow it there. Link "
+            f"'{reference.name}' into it, or choose another object"
         )
     part = references.on_a_part(rig, waypoint)
     if part is not None:
