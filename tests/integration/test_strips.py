@@ -593,9 +593,69 @@ class TestBake:
         track = _track(arm6, strips.BAKED_TRACK)[0]
         shared = track.strips[0].action
         name = shared.name
-        strips._new_strip(track, "copy", 40.0, 50.0, shared, track.strips[0].action_slot)
+        copy = strips._new_strip(track, "copy", 40.0, 50.0, shared, track.strips[0].action_slot)
+        copy.extrapolation = "NOTHING"  # as a duplicate of the bake has it
         assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=60)
         laid = [[(s.frame_start, s.frame_end) for s in t.strips]
                 for t in _track(arm6, strips.BAKED_TRACK)]
         assert laid == [[(1.0, 60.0)]], laid
         assert name not in bpy.data.actions
+
+    def test_a_bake_that_holds_past_its_frames_stays(self, arm6, builder, strips, prefs):
+        """An earlier bake set to hold past its frames plays outside them, so one
+        wholly under a new bake is kept, still holding there."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=20, frame_end=40)
+        _track(arm6, strips.BAKED_TRACK)[0].strips[0].extrapolation = "HOLD_FORWARD"
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=10, frame_end=50)
+        laid = [[(s.frame_start, s.frame_end, s.extrapolation) for s in t.strips]
+                for t in _track(arm6, strips.BAKED_TRACK)]
+        assert laid == [[(20.0, 40.0, "HOLD_FORWARD")], [(10.0, 50.0, "NOTHING")]], laid
+
+    @pytest.mark.parametrize("state", ["nla-off", "soloed"])
+    def test_a_bake_that_wouldnt_play_is_refused(self, arm6, builder, strips, prefs, state):
+        """With the NLA off the strip wouldn't play, and with a track soloed the copy
+        being baked wouldn't either: refused before anything changes."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        first = builder.joint_bones(arm6)[0]
+        first.rotation_euler[1] = 0.9
+        first.keyframe_insert("rotation_euler", index=1, frame=125)
+        anim = arm6.animation_data
+        hand, job = anim.action, arm6.kinema_job_action
+        before = _keys(job)
+        if state == "nla-off":
+            anim.use_nla = False
+        else:
+            _track(arm6, strips.JOB_TRACK)[0].is_solo = True
+
+        with pytest.raises(RuntimeError, match="NLA is off" if state == "nla-off" else "soloed"):
+            bpy.ops.kinema.bake_ik(frame_start=1, frame_end=81)
+        assert anim.action == hand
+        assert _keys(job) == before
+        assert not _track(arm6, strips.BAKED_TRACK)
+
+    def test_keys_past_a_manual_frame_range_are_covered(self, arm6, builder, strips, prefs):
+        """A manual frame range on the job's action doesn't stop keys past it from
+        playing, so the strips reach them too."""
+        import bpy
+
+        prefs.job_as_strips = True
+        wrist = _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        job = arm6.kinema_job_action
+        job.use_frame_range = True
+        job.frame_start, job.frame_end = 1, 81
+        frame = bpy.context.scene.frame_end + 50
+        wrist.scale[0] = 3.0
+        wrist.keyframe_insert("scale", index=0, frame=frame)
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=81)
+        bpy.context.scene.frame_set(frame)
+        assert wrist.scale[0] == pytest.approx(3.0)

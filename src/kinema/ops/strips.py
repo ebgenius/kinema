@@ -323,7 +323,10 @@ def _reach(job) -> tuple[float, float]:
     its own, so one that starts where another ends on a subframe would first
     land inside it, and be refused.
     """
-    start, end = (float(v) for v in job.frame_range)
+    # Its keys as well as its range: a manual range doesn't stop the keys past it
+    # from playing.
+    keys, shown = job.curve_frame_range, job.frame_range
+    start, end = min(float(keys[0]), float(shown[0])), max(float(keys[1]), float(shown[1]))
     scene = bpy.context.scene
     if scene is not None:
         start, end = min(start, float(scene.frame_start)), max(end, float(scene.frame_end))
@@ -422,6 +425,26 @@ def bakes_to_strip(rig) -> bool:
     return anim is not None and not anim.use_tweak_mode and laid_out(rig)
 
 
+def bake_refusal(rig, first: int, last: int) -> str:
+    """Why a bake onto a strip can't go ahead, in words, or "" if it can. Asked
+    before anything changes."""
+    if not bakes_to_strip(rig):
+        return ""
+    anim = rig.animation_data
+    if last == first:
+        return (
+            f"A job on the NLA bakes onto a strip, which needs two frames or more: "
+            f"bake {first}-{first + 1}"
+        )
+    if not anim.use_nla:
+        # The strip it bakes onto wouldn't play, and nor does the job now.
+        return "The robot's NLA is off, so the job's strips don't play: turn it on to bake"
+    if any(track.is_solo for track in anim.nla_tracks):
+        # A soloed track plays alone, without the copy the bake plays and keys.
+        return "An NLA track of the robot's is soloed: un-solo it to bake"
+    return ""
+
+
 class Bake:
     """What :func:`baking` yields: ``into_strip`` says whether the bake goes into a
     copy of the job's action, and the bake sets ``keep`` once it has finished, so
@@ -493,14 +516,18 @@ def _place_bake(rig, baked, slot, first: float, last: float) -> None:
     one above.
 
     An earlier bake is left as it is, settings and all, and plays wherever the
-    new one doesn't reach. One wholly under it can never play again, so it goes,
-    with its action, and so does a track of bakes left empty.
+    new one doesn't reach. One wholly under it that holds nothing past its frames
+    can never play again, so it goes, with its action, and so does a track of
+    bakes left empty.
     """
     anim = rig.animation_data
     gone = []
     for track in _baked_tracks(rig):
         for strip in list(track.strips):
-            if strip.frame_start >= first and strip.frame_end <= last:
+            if (
+                strip.frame_start >= first and strip.frame_end <= last
+                and strip.extrapolation == "NOTHING"
+            ):
                 # Once each: strips duplicated in the NLA editor share one.
                 if all(strip.action != action for action in gone):
                     gone.append(strip.action)

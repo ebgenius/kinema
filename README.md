@@ -305,6 +305,8 @@ are left as they were: mute the *Kinema Baked* tracks to go back to the live job
   active action plays over them.
 - A bake onto a new NLA strip needs two frames or more, since a strip needs a length. In
   NLA tweak mode, Bake keys the tweaked action, and one frame is enough.
+- A bake onto a strip is refused while the robot's NLA is off or one of its tracks is
+  soloed: the strip wouldn't play, and a soloed track would hide what is baked.
 
 ## Checking motion limits
 

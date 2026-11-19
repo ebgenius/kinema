@@ -811,12 +811,9 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         # solves and writes the pose -- and then this loop solves the same frame
         # again. With a keyed tip the two can disagree, and whichever ran last
         # wins.
-        if self.frame_end == self.frame_start and strips.bakes_to_strip(rig):
-            self.report(
-                {"ERROR"},
-                f"A job on the NLA bakes onto a strip, which needs two frames or more: "
-                f"bake {self.frame_start}-{self.frame_start + 1}",
-            )
+        refused = strips.bake_refusal(rig, self.frame_start, self.frame_end)
+        if refused:
+            self.report({"ERROR"}, refused)
             return {"CANCELLED"}
         # With the job on the NLA, into a copy of its action shown on a track
         # above it over the baked range: see ops/strips.py. Refused inside it,
