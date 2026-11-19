@@ -22,8 +22,9 @@ the same: :func:`editing`. Hand keys made in the active action since the last
 Generate are moved into the job's action then, so nothing plays on top of it.
 Bake IK writes into a copy, shown as a strip on a track above over the baked
 range: :func:`baking`. It bakes what plays, the user's own tracks included, and
-muting its track goes back to the live job. Regenerating mutes the bakes over
-the job's frames, which no longer show it.
+muting its track goes back to the live job. A bake over an earlier one goes
+above it, and regenerating mutes the bakes over the job's frames, which no
+longer show it.
 
 The tracks are known by what their strips show -- the job's action, or a bake --
 not by their names, so a track of the user's with the same name is left alone.
@@ -74,8 +75,16 @@ def _job_track(rig):
     return _owned(rig.animation_data, lambda action: action == job)
 
 
-def _baked_track(rig):
-    return _owned(rig.animation_data, lambda action: PROP_BAKED in action)
+def _baked_tracks(rig) -> list:
+    """Every track of bakes, bottom to top: a bake over another goes on a track of
+    its own above it."""
+    anim = rig.animation_data
+    if anim is None:
+        return []
+    return [
+        t for t in anim.nla_tracks
+        if len(t.strips) and all(s.action is not None and PROP_BAKED in s.action for s in t.strips)
+    ]
 
 
 def _new_track(anim, name):
@@ -182,17 +191,20 @@ def _merge(source, source_slot, target, slot) -> None:
                 kept = []
                 if into is not None:
                     group = into.group.name if into.group is not None else group
-                    frames = {float(p.co[0]) for p in curve.keyframe_points}
-                    kept = [
-                        _key(p) for p in into.keyframe_points
-                        if all(abs(p.co[0] - f) >= 1e-4 for f in frames)
-                    ]
+                    kept = [_key(p) for p in into.keyframe_points]
                     destinations.remove(into)
                 into = destinations.new_from_fcurve(curve)
                 _group(bag, into, group)
+                if kept and not len(into.keyframe_points) and len(into.sampled_points):
+                    # Samples and keys don't mix on one curve: the samples become
+                    # keys, one a frame, so the target's keys can join them.
+                    frames = [p.co[0] for p in into.sampled_points]
+                    into.convert_to_keyframes(int(min(frames)), int(max(frames)) + 1)
                 if len(into.keyframe_points):
+                    taken = [float(p.co[0]) for p in into.keyframe_points]
                     for key in kept:
-                        _put(into, key)
+                        if all(abs(key[0] - f) >= 1e-4 for f in taken):
+                            _put(into, key)
             else:
                 if into is None:
                     into = destinations.new(
@@ -272,6 +284,46 @@ def editing(rig, context=None):
         anim.use_nla = True if laid_out(rig) else was_nla
 
 
+def _new_strip(track, name, a: float, b: float, action, slot, action_start=None):
+    """A strip on ``track`` over frames ``a``-``b``, showing ``action`` from
+    ``action_start`` (``a`` unless given), at full strength.
+
+    Blender gives a new strip its action's frame range and refuses it where that
+    would overlap a neighbour, so the action's range is set to the strip's for
+    the moment it goes in, and put back after.
+    """
+    lo = a if action_start is None else action_start
+    hi = lo + (b - a)
+    saved = (action.use_frame_range, action.frame_start, action.frame_end)
+    action.use_frame_range = True
+    # End, start, end: either one alone could be refused for passing the other.
+    action.frame_end, action.frame_start, action.frame_end = hi, lo, hi
+    try:
+        strip = track.strips.new(name, int(a), action)
+    finally:
+        action.frame_end, action.frame_start, action.frame_end = saved[2], saved[1], saved[2]
+        action.use_frame_range = saved[0]
+    if slot is not None and hasattr(strip, "action_slot"):
+        strip.action_slot = slot
+    strip.use_sync_length = False
+    strip.action_frame_start, strip.action_frame_end = lo, hi
+    strip.frame_start_ui = a
+    strip.scale = 1.0
+    strip.blend_type = "REPLACE"
+    return strip
+
+
+def _reach(job) -> tuple[float, float]:
+    """The frames the job's strips cover: what its action holds, and out to the
+    scene's ends too -- a curve can play on past its keys, cycled or extrapolated
+    in a line, and past a strip's frames it would hold."""
+    start, end = (float(v) for v in job.frame_range)
+    scene = bpy.context.scene
+    if scene is not None:
+        start, end = min(start, float(scene.frame_start)), max(end, float(scene.frame_end))
+    return start, end
+
+
 def _tile(rig, spans, slot) -> None:
     """The job's track, its strips replaced by one per ``(name, start, end)`` of
     ``spans`` -- in frame order, with Before and After added for what the job's
@@ -282,12 +334,7 @@ def _tile(rig, spans, slot) -> None:
     track = _job_track(rig) or _new_track(anim, JOB_TRACK)
     for strip in list(track.strips):
         track.strips.remove(strip)
-    start, end = (float(v) for v in job.frame_range)
-    # Out to the scene's ends too: a curve can play on past its keys -- cycled,
-    # or extrapolated in a line -- and past a strip's frames it would hold.
-    scene = bpy.context.scene
-    if scene is not None:
-        start, end = min(start, float(scene.frame_start)), max(end, float(scene.frame_end))
+    start, end = _reach(job)
     tiles = []
     if start < spans[0][1]:
         tiles.append((BEFORE, start, spans[0][1]))
@@ -295,18 +342,8 @@ def _tile(rig, spans, slot) -> None:
     if end > spans[-1][2]:
         tiles.append((AFTER, spans[-1][2], end))
     anim.action = None
-    # In frame order: a strip comes in at its action's whole length, and is cut
-    # to its frames after. Only the empty track after the last one has room.
     for index, (name, a, b) in enumerate(tiles):
-        strip = track.strips.new(name, int(a), job)
-        if slot is not None and hasattr(strip, "action_slot"):
-            strip.action_slot = slot
-        strip.use_sync_length = False
-        strip.action_frame_start = a
-        strip.action_frame_end = b
-        strip.frame_start_ui = a
-        strip.scale = 1.0
-        strip.blend_type = "REPLACE"
+        strip = _new_strip(track, name, a, b, job, slot)
         strip.extrapolation = "HOLD" if index == 0 else "HOLD_FORWARD"
     anim.use_nla = True
 
@@ -333,8 +370,7 @@ def lay_out(rig, plan) -> int:
     _tile(rig, spans, slot)
     first, last = spans[0][1], spans[-1][2]
     muted = 0
-    baked = _baked_track(rig)
-    for strip in baked.strips if baked is not None else ():
+    for strip in (s for t in _baked_tracks(rig) for s in t.strips):
         if not strip.mute and strip.frame_start <= last and strip.frame_end >= first:
             strip.mute = True
             muted += 1
@@ -345,21 +381,36 @@ def muted_text(count: int) -> str:
     """What a report says about the bakes :func:`lay_out` muted."""
     several = count != 1
     return (
-        f"Muted {count} baked strip{'s' if several else ''} on '{BAKED_TRACK}' that "
-        f"no longer show{'' if several else 's'} the job; unmute to play the old bake"
+        f"Muted {count} baked strip{'s' if several else ''} that no longer "
+        f"show{'' if several else 's'} the job; unmute {'them' if several else 'it'} "
+        f"in the NLA editor to play the old bake"
     )
 
 
 def _cover(rig, slot) -> None:
-    """Before and After stretched to what the job's action holds now: hand keys
-    moved into it can reach past them."""
+    """Strips added at either end, where what the job's action holds now reaches
+    past its strips: hand keys moved into it can. The strips there are left as
+    they are, however the user has set them."""
     track = _job_track(rig)
-    spans = [
-        (s.name, float(s.action_frame_start), float(s.action_frame_end))
-        for s in track.strips if s.name not in (BEFORE, AFTER)
-    ]
-    if spans:
-        _tile(rig, spans, slot)
+    job = rig.kinema_job_action
+    start, end = _reach(job)
+    laid = sorted(track.strips, key=lambda s: s.frame_start)
+    first, last = laid[0], laid[-1]
+    if end > last.frame_end:
+        strip = _new_strip(track, AFTER, float(last.frame_end), end, job, slot)
+        strip.extrapolation = "HOLD_FORWARD"
+    if start < first.frame_start:
+        strip = _new_strip(track, BEFORE, start, float(first.frame_start), job, slot)
+        strip.extrapolation = "HOLD"
+        first.extrapolation = "HOLD_FORWARD"
+
+
+def bakes_to_strip(rig) -> bool:
+    """Whether Bake IK goes into a strip: with the job laid out as strips, out of
+    tweak mode. Whatever the preference: it says how the next Generate lays the
+    job out, and until then the job is where it is."""
+    anim = rig.animation_data
+    return anim is not None and not anim.use_tweak_mode and laid_out(rig)
 
 
 class Bake:
@@ -377,28 +428,29 @@ def baking(rig, first: int, last: int, context=None):
     track above the job. With no job laid out as strips, Bake keys the active
     action as it always has: ``into_strip`` is False.
 
-    Whatever the preference: it says how the next Generate lays the job out, and
-    until then the job is where it is. Hand keys are moved into the job first,
-    as Generate would, so the copy holds them: call this once the bake is sure
-    to go ahead.
+    Hand keys go into the copy, which then plays as the job and the hand keys
+    did, and the bake's checks and solves see what is baked. Only a bake that
+    finishes moves them into the job too, as Generate would: one refused or
+    failed leaves the hand action active and the job as it was.
     """
-    anim = rig.animation_data
-    if anim is None or anim.use_tweak_mode or not laid_out(rig):
+    if not bakes_to_strip(rig):
         yield Bake(False)
         return
+    anim = rig.animation_data
     job = rig.kinema_job_action
     slot = _slot(rig)
     hand, hand_slot = anim.action, getattr(anim, "action_slot", None)
-    if hand is not None and hand != job:
-        _merge(hand, hand_slot, job, slot)
-        _cover(rig, slot)
+    if hand == job:
+        hand = None
     baked = job.copy()
     baked.name = f"{rig.name} Baked"
     if PROP_JOB in baked:
         del baked[PROP_JOB]
     baked[PROP_BAKED] = rig.name
     # A copy has slots of its own: the one standing for the same rig.
-    slot = _same_slot(baked, slot)
+    baked_slot = _same_slot(baked, slot)
+    if hand is not None:
+        _merge(hand, hand_slot, baked, baked_slot)
     # The copy plays in the job's place: the job's track muted, the copy active
     # on top, at full strength. The NLA stays on, so any track of the user's
     # still plays under it, and what is baked is what plays.
@@ -407,7 +459,7 @@ def baking(rig, first: int, last: int, context=None):
     job_track.mute = True
     blend, influence = anim.action_blend_type, anim.action_influence
     anim.action_blend_type, anim.action_influence = "REPLACE", 1.0
-    _activate(rig, baked, slot)
+    _activate(rig, baked, baked_slot)
     state = Bake(True)
     try:
         yield state
@@ -417,43 +469,38 @@ def baking(rig, first: int, last: int, context=None):
         job_track.mute = was_muted
         if not state.keep:
             bpy.data.actions.remove(baked)
+            if hand is not None:
+                _activate(rig, hand, hand_slot)
     if state.keep:
-        _place_bake(rig, baked, slot, float(first), float(last))
+        if hand is not None:
+            _merge(hand, hand_slot, job, slot)
+            _cover(rig, slot)
+        _place_bake(rig, baked, baked_slot, float(first), float(last))
 
 
 def _place_bake(rig, baked, slot, first: float, last: float) -> None:
-    """Show ``baked`` over ``first``-``last`` on the bakes' track. An earlier bake
-    under those frames gives them up and keeps the rest, on either side."""
+    """Show ``baked`` over ``first``-``last``, above any earlier bake under those
+    frames: on the top track of bakes where it has room, or on a new one above.
+
+    An earlier bake is left as it is, settings and all, and plays wherever the
+    new one doesn't reach. One wholly under it can never play again, so it goes,
+    with its action, and so does a track of bakes left empty.
+    """
     anim = rig.animation_data
-    track = _baked_track(rig) or _new_track(anim, BAKED_TRACK)
-    pieces = []
-    for strip in track.strips:
-        a, b = float(strip.frame_start), float(strip.frame_end)
-        offset = float(strip.action_frame_start) - a
-        kept = [(a, b)] if b <= first or a >= last else [
-            (x, y) for x, y in ((a, min(b, first)), (max(a, last), b)) if y > x
-        ]
-        for x, y in kept:
-            pieces.append((x, y, strip.action, strip.action_slot, offset, strip.mute))
-    pieces.append((first, last, baked, slot, 0.0, False))
-    shown = {piece[2] for piece in pieces}
-    gone = {strip.action for strip in track.strips} - shown
-    for strip in list(track.strips):
-        track.strips.remove(strip)
-    # In frame order, as _tile lays the job out, and for the same reason.
-    for a, b, action, action_slot, offset, mute in sorted(pieces, key=lambda p: p[0]):
-        strip = track.strips.new(f"Baked {a:g}-{b:g}", int(a), action)
-        if action_slot is not None and hasattr(strip, "action_slot"):
-            strip.action_slot = action_slot
-        strip.use_sync_length = False
-        strip.action_frame_start = a + offset
-        strip.action_frame_end = b + offset
-        strip.frame_start_ui = a
-        strip.scale = 1.0
-        strip.blend_type = "REPLACE"
-        strip.extrapolation = "NOTHING"
-        strip.mute = mute
+    gone = []
+    for track in _baked_tracks(rig):
+        for strip in list(track.strips):
+            if strip.frame_start >= first and strip.frame_end <= last:
+                gone.append(strip.action)
+                track.strips.remove(strip)
+        if not len(track.strips):
+            anim.nla_tracks.remove(track)
+    tracks = _baked_tracks(rig)
+    top = tracks[-1] if tracks else None
+    if top is None or any(s.frame_start < last and s.frame_end > first for s in top.strips):
+        top = _new_track(anim, BAKED_TRACK)
+    strip = _new_strip(top, f"Baked {first:g}-{last:g}", first, last, baked, slot)
+    strip.extrapolation = "NOTHING"
     for action in gone:
-        # A bake nothing shows any more.
         if action is not None and PROP_BAKED in action and action.users == 0:
             bpy.data.actions.remove(action)

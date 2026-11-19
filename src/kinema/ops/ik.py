@@ -811,26 +811,32 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         # solves and writes the pose -- and then this loop solves the same frame
         # again. With a keyed tip the two can disagree, and whichever ran last
         # wins.
-        # Refused before anything changes: a cancelled operator leaves no undo
-        # step to take back what it did.
-        with handlers.suspended():
-            bones = self._bones_over_range(rig, scene, frames, ik_name)
-            if not bones:
-                self.report({"ERROR"}, "No joints to bake on this rig")
-                return {"CANCELLED"}
-            unplayable = self._unplayable(rig, bones)
-            if unplayable:
-                self.report(
-                    {"ERROR"},
-                    f"Not baked: the curves of {', '.join(unplayable)} wouldn't take or "
-                    f"play the solved poses. Unlock or unmute them, remove their "
-                    f"modifiers or convert their samples to keyframes, or clear them first",
-                )
-                return {"CANCELLED"}
+        if self.frame_end == self.frame_start and strips.bakes_to_strip(rig):
+            self.report(
+                {"ERROR"},
+                f"A job on the NLA bakes onto a strip, which needs two frames or more: "
+                f"bake {self.frame_start}-{self.frame_start + 1}",
+            )
+            return {"CANCELLED"}
         # With the job on the NLA, into a copy of its action shown on a track
-        # above it over the baked range: see ops/strips.py.
+        # above it over the baked range: see ops/strips.py. Refused inside it,
+        # where the copy plays as what is baked, and a refusal there changes
+        # nothing.
         with strips.baking(rig, self.frame_start, self.frame_end, context) as bake:
             with handlers.suspended():
+                bones = self._bones_over_range(rig, scene, frames, ik_name)
+                if not bones:
+                    self.report({"ERROR"}, "No joints to bake on this rig")
+                    return {"CANCELLED"}
+                unplayable = self._unplayable(rig, bones)
+                if unplayable:
+                    self.report(
+                        {"ERROR"},
+                        f"Not baked: the curves of {', '.join(unplayable)} wouldn't take or "
+                        f"play the solved poses. Unlock or unmute them, remove their "
+                        f"modifiers or convert their samples to keyframes, or clear them first",
+                    )
+                    return {"CANCELLED"}
                 # Read before the curves are cleared, and only where live IK is
                 # itself keyed -- a job from Generate Motion. There the joint curves
                 # carry the joint moves, and they seed IK's solves where it is on.
