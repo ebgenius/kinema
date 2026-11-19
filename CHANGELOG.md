@@ -169,6 +169,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An axis on the tool measures its offset from the current TCP, as the dialog says**
+  (#77). The TCP was placed at the offset from the axis's own frame, which the base moves,
+  so a 50 mm base moved the TCP 50 mm, and a turned one turned it, with the offset at zero.
+  Now the TCP stays put unless the offset moves it.
 - **COLLADA (`.dae`) meshes import as the file describes them.** Four bugs in the importer,
   found by kinema_catalog's mesh converter, which converts through it and measures the
   result:
