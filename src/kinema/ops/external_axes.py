@@ -599,7 +599,12 @@ def add_axis(rig, spec: ext.AxisSpec) -> str:
         if spec.mount == "AFTER":
             pose_bone.bone[builder.PROP_EXTERNAL_TCP_PARENT] = previous_tcp[0]
             pose_bone.bone[builder.PROP_EXTERNAL_TCP_OFFSET] = previous_tcp[1]
-            _place_tcp(rig, name, spec.offset_location, spec.offset_rotation)
+            # The offset is from the current TCP, as the dialog says. Set TCP
+            # measures it from the axis's own frame, which is the tool frame
+            # times the base, so it is given base^-1 . offset: the TCP stays put
+            # unless the offset moves it, however the base moves the axis.
+            on_axis = _matrix(np.linalg.inv(spec.base) @ spec.offset)
+            _place_tcp(rig, name, on_axis.translation, on_axis.to_euler("XYZ"))
             pose.snap_goal_to_tcp(rig)
 
     if previous_active is not None:

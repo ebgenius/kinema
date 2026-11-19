@@ -545,6 +545,43 @@ class TestSpindleOnTheTool:
         assert tuple(arm6.kinema_tcp_offset) == pytest.approx(offset[0], abs=1e-6)
         assert tuple(arm6.kinema_tcp_rpy) == pytest.approx(offset[1], abs=1e-6)
 
+    @pytest.mark.parametrize(
+        "base_location, base_rotation, offset_location",
+        [
+            ((0.0, 0.0, 0.05), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.0, 0.0), (math.pi / 2, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.03, 0.05), (0.0, 0.4, 0.0), (0.0, 0.0, 0.05)),
+        ],
+        ids=["moved base", "turned base", "base and offset"],
+    )
+    def test_the_offset_is_measured_from_the_current_tcp_whatever_the_base(
+        self, arm6, builder, ops, ext, base_location, base_rotation, offset_location
+    ):
+        """#77: "calculated from the current TCP", as the dialog says. The TCP ends
+        up at the offset from where it was, however the axis's base moves or turns
+        the axis: with no offset, it stays put. It was placed at the offset from
+        the axis instead, so a 50 mm base moved it 50 mm, and a 90 degree one
+        turned it."""
+        before = _tcp_rest(builder, arm6)
+        tool = _np4(builder.BONE_TO_TOOL)
+        _add(ops, ext, arm6, **{
+            **SPINDLE, "base_location": base_location, "base_rotation": base_rotation,
+            "offset_location": offset_location,
+        })
+        offset = np.eye(4)
+        offset[:3, 3] = offset_location
+        expected = before @ tool @ offset @ np.linalg.inv(tool)
+        np.testing.assert_allclose(_tcp_rest(builder, arm6), expected, atol=1e-6)
+        # And the base still places the axis: the spindle turns about its own Z,
+        # on the tool frame times the base.
+        base = ext.AxisSpec(**{
+            **SPINDLE, "base_location": base_location, "base_rotation": base_rotation,
+        }).base
+        axis_frame = before @ tool @ base
+        spindle = _np4(arm6.data.bones["spindle"].matrix_local)
+        np.testing.assert_allclose(spindle[:3, 3], axis_frame[:3, 3], atol=1e-6)
+        np.testing.assert_allclose(spindle[:3, 1], axis_frame[:3, 2], atol=1e-6)
+
     def test_it_needs_a_tcp(self, fixture_dir, clean_scene, builder, ops, ext):
         import bpy
 
