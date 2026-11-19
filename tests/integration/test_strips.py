@@ -2,9 +2,12 @@
 
 The claims:
 
-* Generate Motion lays the job out on a "Kinema Job" track, one strip per motion
-  -- holds and bridging joint moves included -- tiling its frames, with Before
-  and After strips for what the action holds outside the job;
+* Generate Motion lays the job out as one strip per motion, on two tracks of
+  their own taking turns, over a "Kinema Job" track holding the pauses, the
+  bridging joint moves, and Before and After strips for what the action holds
+  outside the job -- together tiling its frames;
+* a motion's strip moved or scaled in the NLA editor retimes the motion, on the
+  next operator that reads the job;
 * it plays exactly as the job in one active action did: every joint, every
   frame, hand keys before and after the job, and a channel only hand keys
   animate, which a strip per motion would drop to its default;
@@ -119,6 +122,18 @@ def _track(rig, name):
     return [t for t in rig.animation_data.nla_tracks if t.name == name]
 
 
+def _job_strips(strips, rig) -> list:
+    """Every strip of the job, on all its tracks, in frame order."""
+    return sorted(
+        (s for t in strips._job_tracks(rig) for s in t.strips), key=lambda s: s.frame_start
+    )
+
+
+def _mute_job(strips, rig, mute=True) -> None:
+    for track in strips._job_tracks(rig):
+        track.mute = mute
+
+
 class TestLayout:
     def test_one_strip_per_motion_tiling_the_job(self, arm6, builder, strips, prefs):
         import bpy
@@ -131,18 +146,24 @@ class TestLayout:
         assert anim.action is None, "nothing left to play on top of the job"
         job = arm6.kinema_job_action
         assert job is not None and job[strips.PROP_JOB] == arm6.name
-        track = next(t for t in anim.nla_tracks if t.name == strips.JOB_TRACK)
-        laid = [(s.name, s.frame_start, s.frame_end) for s in track.strips]
+        tracks = strips._job_tracks(arm6)
+        assert [t.name for t in tracks] == [
+            strips.JOB_TRACK, strips.MOTIONS_TRACK, strips.MOTIONS_TRACK
+        ]
+        assert list(anim.nla_tracks).index(tracks[0]) < list(anim.nla_tracks).index(tracks[1])
+        base, first, second = ([s.name for s in t.strips] for t in tracks)
+        # The pause at b the plan adds is the job's track's; the motions take turns.
+        assert base == [strips.BEFORE, "hold at b", strips.AFTER], base
+        assert (first, second) == (["a", "back"], ["b"]), (first, second)
+        laid = [(s.name, s.frame_start, s.frame_end) for s in _job_strips(strips, arm6)]
         names = [name for name, _, _ in laid]
-        assert names[0] == strips.BEFORE and names[-1] == strips.AFTER, names
-        # Each motion by its name, and the pause at b the plan adds, by its own.
-        assert names[1:-1] == ["a", "b", "hold at b", "back"], names
-        assert all(s.action == job for s in track.strips)
+        assert names == [strips.BEFORE, "a", "b", "hold at b", "back", strips.AFTER], names
         for (_, _, end), (_, start, _) in zip(laid, laid[1:], strict=False):
             assert end == start, f"a gap or overlap at {end} / {start}: {laid}"
         assert (laid[1][1], laid[-2][2]) == (1.0, 81.0)
-        assert track.strips[0].extrapolation == "HOLD"
-        assert track.strips[-1].extrapolation == "HOLD_FORWARD"
+        held = [s.extrapolation for s in tracks[0].strips]
+        assert held == ["HOLD", "HOLD_FORWARD", "HOLD_FORWARD"], held
+        assert {s.extrapolation for t in tracks[1:] for s in t.strips} == {"NOTHING"}
 
     def test_regenerating_replaces_the_strips(self, arm6, builder, strips, prefs):
         import bpy
@@ -150,11 +171,11 @@ class TestLayout:
         prefs.job_as_strips = True
         _job(builder, arm6)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
-        count = len(next(t for t in arm6.animation_data.nla_tracks
-                         if t.name == strips.JOB_TRACK).strips)
+        before = [(t.name, [s.name for s in t.strips]) for t in strips._job_tracks(arm6)]
+        count = len(arm6.animation_data.nla_tracks)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
-        tracks = [t for t in arm6.animation_data.nla_tracks if t.name == strips.JOB_TRACK]
-        assert len(tracks) == 1 and len(tracks[0].strips) == count
+        after = [(t.name, [s.name for s in t.strips]) for t in strips._job_tracks(arm6)]
+        assert after == before and len(arm6.animation_data.nla_tracks) == count
 
 
     def test_put_back_leaves_the_nla_switch(self, arm6, builder, prefs):
@@ -180,7 +201,7 @@ class TestLayout:
         _job(builder, arm6)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert list(ik.own_fcurve_containers(arm6)), "precondition: the job's curves"
-        for strip in _track(arm6, strips.JOB_TRACK)[0].strips:
+        for strip in _job_strips(strips, arm6):
             strip.action_slot = None
         assert list(ik.own_fcurve_containers(arm6)) == []
 
@@ -281,7 +302,8 @@ class TestPlayback:
         anim.use_nla = False
         assert ik.joint_curves(arm6)[first.name].id_data == hand
         anim.use_nla = True
-        next(t for t in anim.nla_tracks if t.name == "Kinema Job").mute = True
+        for track in [t for t in anim.nla_tracks if t.name.startswith("Kinema")]:
+            track.mute = True
         assert ik.joint_curves(arm6)[first.name].id_data == hand
 
     def test_a_muted_job_keys_nothing_in_a_fingerprint(
@@ -300,7 +322,7 @@ class TestPlayback:
         channel = (first.path_from_id("rotation_euler"), 1)
         _, keyed = refs._animation(arm6, {channel[0]})
         assert channel in keyed, "precondition: the job's strips key the joint"
-        _track(arm6, strips.JOB_TRACK)[0].mute = True
+        _mute_job(strips, arm6)
         _, keyed = refs._animation(arm6, {channel[0]})
         assert channel not in keyed
 
@@ -362,6 +384,147 @@ class TestPlayback:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert arm6.animation_data.action is None
         assert np.max(np.abs(scales() - on_top)) < 1e-5
+
+
+def _motion(rig, name):
+    return next(m for m in rig.kinema_motions if m.name == name)
+
+
+def _strip(strips, rig, name):
+    return next(s for s in _job_strips(strips, rig) if s.name == name)
+
+
+class TestRetime:
+    def test_a_moved_strip_retimes_its_motion(self, arm6, builder, strips, prefs):
+        """A motion's strip moved later in the NLA editor plays the motion there at
+        once; the next Generate takes the frames into the Motions list and lays the
+        job out at them, playing the same."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        old = {}
+        for frame in range(61, 82):
+            bpy.context.scene.frame_set(frame)
+            old[frame] = _q(builder, arm6)
+
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        for frame in range(61, 82):
+            bpy.context.scene.frame_set(frame + 10)
+            assert np.max(np.abs(_q(builder, arm6) - old[frame])) < 1e-4, f"moved, at {frame}"
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        back = _motion(arm6, "back")
+        assert (back.frame_start, back.frame_end) == (71, 91)
+        assert tuple(back.laid_frames) == (71, 91)
+        strip = _strip(strips, arm6, "back")
+        assert (strip.frame_start, strip.frame_end) == (71.0, 91.0)
+        assert (strip.action_frame_start, strip.action_frame_end) == (71.0, 91.0)
+        # Regenerated, the move's keys on joint 1 sit nearer its hand key at 120,
+        # and a Bezier key's handles follow its neighbours, so in between joint 1
+        # bends a little differently. It is where it was at the move's ends, and
+        # every other joint plays as it did throughout.
+        for frame in range(61, 82):
+            bpy.context.scene.frame_set(frame + 10)
+            q = _q(builder, arm6)
+            assert np.max(np.abs(q[1:] - old[frame][1:])) < 1e-4, f"regenerated, at {frame}"
+            if frame in (61, 81):
+                assert q[0] == pytest.approx(old[frame][0], abs=1e-4), frame
+
+    def test_any_operator_reading_the_job_catches_up(self, arm6, builder, strips, prefs):
+        """Scaled in the NLA editor, a motion's strip retimes it as soon as an
+        operator reads the job -- the Motion Check here -- before any Generate."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        strip = _strip(strips, arm6, "back")
+        strip.scale = 2.0
+        assert (strip.frame_start, strip.frame_end) == (61.0, 101.0), "precondition: scaled"
+        bpy.ops.kinema.check_motion()
+        back = _motion(arm6, "back")
+        assert (back.frame_start, back.frame_end) == (61, 101)
+
+    def test_retimed_in_both_places_the_motions_list_wins(self, arm6, builder, strips, prefs):
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        back = _motion(arm6, "back")
+        back.frame_start, back.frame_end = 65, 85
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert (back.frame_start, back.frame_end) == (65, 85)
+        strip = _strip(strips, arm6, "back")
+        assert (strip.frame_start, strip.frame_end) == (65.0, 85.0)
+
+    def test_a_moved_pause_is_put_back(self, arm6, builder, strips, prefs):
+        """A pause takes its frames from the motions around it, so its strip moved
+        retimes nothing, and the next Generate puts it back."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        frames = {m.name: (m.frame_start, m.frame_end) for m in arm6.kinema_motions}
+        _strip(strips, arm6, "hold at b").frame_start_ui = 46
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert {m.name: (m.frame_start, m.frame_end) for m in arm6.kinema_motions} == frames
+        strip = _strip(strips, arm6, "hold at b")
+        assert (strip.frame_start, strip.frame_end) == (41.0, 61.0)
+
+    def test_a_renamed_strip_still_retimes_its_motion(self, arm6, builder, strips, prefs):
+        """A motion's strip is known by the frames it shows, not its name."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        strip = _strip(strips, arm6, "back")
+        strip.name = "something else"
+        strip.frame_start_ui = 71
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        back = _motion(arm6, "back")
+        assert (back.frame_start, back.frame_end) == (71, 91)
+
+
+    def test_the_job_holds_past_both_its_ends(self, arm6, builder, strips, prefs):
+        """With nothing animated outside the job, the job's track still has a strip
+        past each end, holding: a motion's strip holds nothing."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, REACH_A, "JOINT", "a")
+        scene = bpy.context.scene
+        assert scene.frame_start == 1, "precondition: the job starts with the scene"
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        for inside, outside in ((1, -20), (21, scene.frame_end + 40)):
+            scene.frame_set(inside)
+            q = _q(builder, arm6)
+            scene.frame_set(outside)
+            assert np.max(np.abs(_q(builder, arm6) - q)) < 1e-5, outside
+
+    def test_motion_tracks_go_under_the_bakes(self, arm6, builder, strips, prefs):
+        """A job laid out on its one track, as before the motions had their own,
+        gets theirs straight above it, under the bakes."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=81)
+        anim = arm6.animation_data
+        for track in strips._job_tracks(arm6)[1:]:
+            anim.nla_tracks.remove(track)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        names = [t.name for t in anim.nla_tracks]
+        assert names == [
+            strips.JOB_TRACK, strips.MOTIONS_TRACK, strips.MOTIONS_TRACK, strips.BAKED_TRACK
+        ], names
 
 
 class TestTweakMode:
@@ -469,26 +632,25 @@ class TestBake:
         wrist.scale[0] = 1.2
         wrist.keyframe_insert("scale", index=0, frame=scene.frame_end + 0.5)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
-        track = _track(arm6, strips.JOB_TRACK)[0]
-        motion = next(s for s in track.strips if s.name == "b")
+        laid = _job_strips(strips, arm6)
+        motion = next(s for s in laid if s.name == "b")
         motion.name, motion.mute = strips.BEFORE + " b", True
-        named = next(s for s in track.strips if s.name == "a")
+        named = next(s for s in laid if s.name == "a")
         named.name = strips.AFTER
-        track.strips[0].extrapolation = "NOTHING"
-        laid = [
-            (s.name, s.frame_start, s.frame_end, s.mute, s.extrapolation) for s in track.strips
-        ]
+        laid[0].extrapolation = "NOTHING"
+        laid = [(s.name, s.frame_start, s.frame_end, s.mute, s.extrapolation) for s in laid]
         # Past both of the scene's ends, where the job's strips stop.
         late, early = scene.frame_end + 50, scene.frame_start - 100
         for frame, value in ((late, 3.0), (early, 0.25)):
             wrist.scale[0] = value
             wrist.keyframe_insert("scale", index=0, frame=frame)
-        assert track.strips[-1].frame_end < late, "precondition: past the strips"
-        assert track.strips[0].frame_start > early, "precondition: before the strips"
+        assert laid[-1][2] < late, "precondition: past the strips"
+        assert laid[0][1] > early, "precondition: before the strips"
         assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=81)
         assert arm6.animation_data.action is None
         now = [
-            (s.name, s.frame_start, s.frame_end, s.mute, s.extrapolation) for s in track.strips
+            (s.name, s.frame_start, s.frame_end, s.mute, s.extrapolation)
+            for s in _job_strips(strips, arm6)
         ]
         assert now[1:-1] == laid and len(now) == len(laid) + 2, now
         for frame, value in ((late, 3.0), (early, 0.25)):
@@ -544,10 +706,10 @@ class TestBake:
         prefs.job_as_strips = True
         _job(builder, arm6)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
-        track = _track(arm6, strips.JOB_TRACK)[0]
-        track.mute = True
+        tracks = strips._job_tracks(arm6)
+        tracks[1].mute = True
         assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=81)
-        assert track.mute is True
+        assert [t.mute for t in tracks] == [False, True, False]
 
     def test_rebaking_part_of_a_bake_keeps_the_rest(self, arm6, builder, strips, prefs):
         """A bake over part of another goes above it, and the other plays on either

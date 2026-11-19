@@ -1240,9 +1240,8 @@ def _job_plays_first(rig, anim) -> bool:
     """Whether the job's strips, rather than the active action, play its channels."""
     from . import strips
 
-    track = strips._job_track(rig)
     soloed = any(t.is_solo for t in anim.nla_tracks)
-    plays = anim.use_nla and track is not None and (track.is_solo if soloed else not track.mute)
+    plays = strips.job_plays(rig)
     over = (
         not soloed and anim.action_blend_type == "REPLACE" and anim.action_influence >= 1.0
     )

@@ -160,23 +160,30 @@ retimes the animation, as it would for anything else, but the next regeneration 
 motion's own frames again, so the Motions list is where a retime belongs if you want it to
 stick.)
 
-**The job on the NLA.** Generate Motion lays the job out on the robot's NLA, on a track named
-*Kinema Job*: one strip per motion, named after it, covering its frames. A pause and a
-joint move bridging a gap get strips of their own, and *Before* and *After* strips hold
-whatever is animated outside the job, hand keys included. All the strips show the one
-action that holds the job's keys, each its own frames, so the robot plays exactly as it
-would from that action alone.
+**The job on the NLA.** Generate Motion lays the job out on the robot's NLA: one strip per
+motion, named after it and covering its frames, on two *Kinema Motions* tracks that take
+turns. Under them, the *Kinema Job* track has a strip for each pause and each joint move
+bridging a gap, and *Before* and *After* strips holding whatever is animated outside the
+job, hand keys included. All the strips show the one action that holds the job's keys, each
+its own frames, so the robot plays exactly as it would from that action alone.
+- **Retime a motion in the NLA editor** by moving or scaling its strip. With the motions on
+  tracks of their own, a strip has room to move. Its new frames reach the Motions list the
+  next time Generate, Check or Optimize reads the job, and that operator's report says so.
+  The next Generate lays the job out at them. Until then the stretch a strip left holds the
+  pose before it.
+- Changing a motion's frames in the Motions list moves its strip on the next Generate. If a
+  motion was retimed in both places, the Motions list's frames win, and the report says so.
+- A strip for a pause or a bridging joint move follows the motions around it, so moving it
+  retimes nothing, and the next Generate puts it back.
 - Nothing is left in the robot's active action. Keys you set by hand afterwards land in a
   new active action, on top of the job, and the next Generate moves them into the job's
   action.
-- Regenerating replaces the job's strips. For now a strip moved by hand in the NLA editor is
-  put back by the next Generate; retiming from the NLA editor comes next. In NLA tweak mode,
-  Generate writes into the strip being tweaked, as it always has, and leaves the job's strips
-  as they are.
+- Regenerating replaces the job's strips. In NLA tweak mode, Generate writes into the strip
+  being tweaked, as it always has, and leaves the job's strips as they are.
 - The strips replace what is under them at full strength, whatever the blend and influence
   set for the active action.
-- A track of your own named *Kinema Job* is left alone: Kinema knows its tracks by what their
-  strips show.
+- A track of your own named like Kinema's is left alone: Kinema knows its tracks by what
+  their strips show, and a motion's strip by the frames it shows, so renaming one is fine.
 - To keep the job in the active action instead, turn off **Job as NLA Strips** in the
   add-on's preferences. The next Generate puts a job already on the NLA back there.
 

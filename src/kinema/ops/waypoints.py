@@ -338,6 +338,10 @@ class KinemaMotion(PropertyGroup):
     duration: IntProperty(
         name="Frames", description="How many frames the move takes", get=_duration
     )
+    #: The frames this motion's NLA strip was laid out at, which are the frames
+    #: of the job's action it shows: how a strip moved in the NLA editor is told
+    #: from the others. See ops/strips.py.
+    laid_frames: IntVectorProperty(size=2, default=(0, 0), options={"HIDDEN"})
 
 
 def waypoint_by_uid(rig, uid: str):
@@ -439,6 +443,9 @@ def job_plan(rig):
             f"This job, saved before motions, couldn't be made into motions: "
             f"{rig.kinema_unconverted}. Add its motions in the Motions list"
         )
+    if rig.library is None:
+        # A motion's strip moved or scaled in the NLA editor retimes it.
+        notes += strips.catch_up(rig)
     job = plan_motions(rig.kinema_motions, rig.kinema_waypoints)
     job.notes[:0] = notes
     return job
