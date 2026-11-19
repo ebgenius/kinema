@@ -470,6 +470,25 @@ class TestBake:
         assert not curve.mute
         assert sorted(round(p.co[0]) for p in curve.keyframe_points) == list(range(11, 20))
 
+    def test_a_joint_with_no_curve_yet_in_a_locked_group_is_refused(self, rig, builder):
+        """joint6's channel has no curve yet, but its location does, in the group
+        named after the bone, locked. The bake's first key on the channel would go
+        into that group, and be refused there without a word."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        wrist = builder.joint_bones(rig)[-1]
+        wrist.keyframe_insert("location", index=0, frame=1)
+        sibling = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == wrist.path_from_id("location")
+        )
+        assert sibling.group is not None and sibling.group.name == wrist.name
+        sibling.group.lock = True
+
+        with pytest.raises(RuntimeError, match="'joint6' \\(in a locked group\\)"):
+            bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1)
+
     def test_a_locked_curve_the_clear_removes_whole_is_baked(self, rig, builder):
         import bpy
 
@@ -490,9 +509,14 @@ class TestBake:
 
         bpy.ops.kinema.add_ik()
         self._key_wrist(builder, rig, ((16, 0.7), (116, 0.5)))
+        # Live IK keyed on across the action, as a generated job keys it.
+        rig.kinema_ik_enabled = True
+        for frame in (1, 150):
+            rig.keyframe_insert("kinema_ik_enabled", frame=frame)
         anim = rig.animation_data
         track = anim.nla_tracks.new()
-        strip = track.strips.new("job", 116, anim.action)
+        # The action starts at frame 1, the switch's first key: 100 frames on.
+        strip = track.strips.new("job", 101, anim.action)
         anim.action = None
         anim.nla_tracks.active = track
         track.select = strip.select = True
@@ -505,6 +529,16 @@ class TestBake:
         keys = {round(p.co[0]): p.co[1] for p in self._wrist_curve(builder, rig).keyframe_points}
         assert sorted(keys) == [11, 13, 15, 17, 19, 116]
         assert keys[116] == pytest.approx(0.5)
+        # Live IK keyed off over the baked frames and back on after, in the
+        # strip's time too: action frames 11 and 20, not 111 and 120.
+        switch = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == "kinema_ik_enabled"
+        )
+        keyed = {round(p.co[0]): p.co[1] for p in switch.keyframe_points}
+        assert keyed.get(11) == pytest.approx(0.0), keyed
+        assert keyed.get(20) == pytest.approx(1.0), keyed
+        assert 111 not in keyed and 120 not in keyed
 
         # A range given end first bakes nothing, and clears nothing either.
         before = sorted(keys)

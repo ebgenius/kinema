@@ -967,11 +967,19 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         """
         first, last = _in_action_time(rig, self.frame_start, self.frame_end)
         channels = {joint_channel(rig.pose.bones[name]): name for name in bone_names}
-        found = []
+        # A pose bone's first key on a channel goes into the group named after
+        # the bone, so a locked one stops it there before any curve exists.
+        locked = {
+            curve.group.name
+            for curves in own_fcurve_containers(rig)
+            for curve in curves
+            if curve.group is not None and curve.group.lock
+        }
+        found = [f"'{name}' (in a locked group)" for name in bone_names if name in locked]
         for curves in own_fcurve_containers(rig):
             for curve in curves:
                 name = channels.get((curve.data_path, int(curve.array_index)))
-                if name is None:
+                if name is None or name in locked:
                     continue
                 if curve.group is not None and curve.group.lock:
                     found.append(f"'{name}' (in a locked group)")
@@ -994,6 +1002,14 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         return found
 
 
+def _action_frame(rig, frame: float) -> float:
+    """Scene ``frame`` in the time of the keys being edited: see :func:`_in_action_time`."""
+    anim = rig.animation_data
+    if anim is None or not anim.use_tweak_mode:
+        return float(frame)
+    return anim.nla_tweak_strip_time_to_scene(float(frame), invert=True)
+
+
 def _in_action_time(rig, first: int, last: int) -> tuple[float, float]:
     """Scene frames ``first`` to ``last`` in the time of the keys being edited.
 
@@ -1006,7 +1022,7 @@ def _in_action_time(rig, first: int, last: int) -> tuple[float, float]:
     if anim is None or not anim.use_tweak_mode or first > last:
         # An empty range stays empty: sorted, a reversed one would not be.
         return first, last
-    ends = sorted(anim.nla_tweak_strip_time_to_scene(float(f), invert=True) for f in (first, last))
+    ends = sorted(_action_frame(rig, f) for f in (first, last))
     return ends[0], ends[1]
 
 
@@ -1125,18 +1141,21 @@ def _key_switch_off(rig, first: int, last: int) -> None:
     Setting the property is not enough where the switch is keyed: its curve
     puts its own value back on the next frame change, and live IK would run
     over the baked joints wherever the job had it on. Only the baked range is
-    touched -- a job reaching past it keeps its switch there.
+    touched -- a job reaching past it keeps its switch there. In NLA tweak
+    mode that range is in the strip's time, as the baked keys are.
     """
+    off, back = _action_frame(rig, first), _action_frame(rig, last + 1)
+    low, high = sorted((off, back))
     for container in own_fcurve_containers(rig):
         for curve in container:
             if curve.data_path != builder.PROP_IK_ENABLED or curve.mute:
                 continue
-            after = float(curve.evaluate(last + 1))
+            after = float(curve.evaluate(back))
             for point in reversed(list(curve.keyframe_points)):
-                if first <= point.co[0] <= last + 1:
+                if low <= point.co[0] <= high:
                     curve.keyframe_points.remove(point)
-            curve.keyframe_points.insert(first, 0.0)
-            curve.keyframe_points.insert(last + 1, after)
+            curve.keyframe_points.insert(off, 0.0)
+            curve.keyframe_points.insert(back, after)
             curve.update()
 
 
