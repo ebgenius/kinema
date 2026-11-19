@@ -169,6 +169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The IK readout shows how many iterations PyRoki took** (#57). It always said `0 it`,
+  which read as though the solver had done nothing; the count now comes from the solve.
 - **Bake IK's Clear Existing Keys clears only the baked range** (#74). It removed the baked
   joints' whole curves, so a bake over part of a shot deleted every key those joints had
   outside it: an FK section after an IK one, or the rest of a job baked in part. Keys
