@@ -603,6 +603,25 @@ class TestTheSwivel:
         error = _tool_error(builder, arm7)
         assert error < 5e-5, f"one update left the tool {error * 1000:.4f} mm off"
 
+    @pytest.mark.parametrize("bend", [0.0, 0.02])
+    def test_a_stretched_arm_with_its_goal_in_reach_keeps_its_tool(
+        self, arm7, builder, handlers, bend
+    ):
+        """#50: arm7 straight, its wrist at full reach, or bent a hair short of it.
+        The goal is reachable, so adding the swivel must not cost the tool. The
+        side floor put the elbow's goal off its circle there, and its pull moved
+        the tool 0.31 mm and 0.29 mm."""
+        import bpy
+
+        _start_at(builder, handlers, arm7, [0.0, 0.0, 0.0, bend, 0.0, 0.0, 0.0])
+        before = _tool_error(builder, arm7)
+        assert "FINISHED" in bpy.ops.kinema.add_swivel()
+        _settle(handlers, arm7)
+        after = _tool_error(builder, arm7)
+        assert after <= before + 1e-5, (
+            f"the swivel cost the tool {(after - before) * 1000:.4f} mm"
+        )
+
     def test_dragging_the_target_out_of_reach_does_not_flip_the_elbow(
         self, arm7, builder, handlers, swivel
     ):
