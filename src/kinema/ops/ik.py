@@ -21,6 +21,7 @@ from .. import handlers
 from ..rig import builder, widgets
 from ..solver import chain, manager
 from ..ui.panel import active_rig
+from . import strips
 
 
 def _np4(matrix) -> np.ndarray:
@@ -810,66 +811,70 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         # solves and writes the pose -- and then this loop solves the same frame
         # again. With a keyed tip the two can disagree, and whichever ran last
         # wins.
-        with handlers.suspended():
-            bones = self._bones_over_range(rig, scene, frames, ik_name)
-            if not bones:
-                self.report({"ERROR"}, "No joints to bake on this rig")
-                return {"CANCELLED"}
-            unplayable = self._unplayable(rig, bones)
-            if unplayable:
-                self.report(
-                    {"ERROR"},
-                    f"Not baked: the curves of {', '.join(unplayable)} wouldn't take or "
-                    f"play the solved poses. Unlock or unmute them, remove their "
-                    f"modifiers or convert their samples to keyframes, or clear them first",
+        # With the job on the NLA, into a copy of its action shown on a track
+        # above it over the baked range: see ops/strips.py.
+        with strips.baking(rig, self.frame_start, self.frame_end, context) as bake:
+            with handlers.suspended():
+                bones = self._bones_over_range(rig, scene, frames, ik_name)
+                if not bones:
+                    self.report({"ERROR"}, "No joints to bake on this rig")
+                    return {"CANCELLED"}
+                unplayable = self._unplayable(rig, bones)
+                if unplayable:
+                    self.report(
+                        {"ERROR"},
+                        f"Not baked: the curves of {', '.join(unplayable)} wouldn't take or "
+                        f"play the solved poses. Unlock or unmute them, remove their "
+                        f"modifiers or convert their samples to keyframes, or clear them first",
+                    )
+                    return {"CANCELLED"}
+                # Read before the curves are cleared, and only where live IK is
+                # itself keyed -- a job from Generate Motion. There the joint curves
+                # carry the joint moves, and they seed IK's solves where it is on.
+                # Solving every frame regardless would replace each joint move
+                # with IK chasing a target that stood still. See _played_values.
+                played = (
+                    self._played_values(rig, scene, bones, frames)
+                    if ik_switch_is_animated(rig)
+                    else None
                 )
-                return {"CANCELLED"}
-            # Read before the curves are cleared, and only where live IK is
-            # itself keyed -- a job from Generate Motion. There the joint curves
-            # carry the joint moves, and they seed IK's solves where it is on.
-            # Solving every frame regardless would replace each joint move
-            # with IK chasing a target that stood still. See _played_values.
-            played = (
-                self._played_values(rig, scene, bones, frames)
-                if ik_switch_is_animated(rig)
-                else None
-            )
-            if self.clear_existing:
-                self._clear_keys(rig, bones, self.frame_start, self.frame_end)
+                if self.clear_existing:
+                    self._clear_keys(rig, bones, self.frame_start, self.frame_end)
 
-            window.progress_begin(0, len(frames))
-            try:
-                for index, frame in enumerate(frames):
-                    scene.frame_set(frame)
-                    if played is not None:
-                        for name, value in played[frame].items():
-                            set_joint_value(rig.pose.bones[name], value)
-                    # A frame with live IK keyed off plays its curves, and
-                    # those have just been put back. Anything else solves.
-                    if played is None or rig.kinema_ik_enabled:
-                        # Per frame, not once: the tip is keyframable, so the
-                        # chain can change mid-bake and a solver captured up
-                        # front would go on driving the joints of a chain that
-                        # is no longer live.
-                        solver = manager.get_solver(rig, ik_name)
-                        result = solver.solve(rig, mode) if solver is not None else None
-                        if result is None or not result.converged:
-                            failed += 1
-                    # Every joint active anywhere in the range gets a key on every
-                    # frame, not just the ones this frame's chain solved. A joint
-                    # that drops out of the chain still has a value, and a channel
-                    # that stopped being keyed half way through would hold its
-                    # last key instead -- a different pose than the one baked.
-                    for name in bones:
-                        key_joint_value(rig.pose.bones[name], frame)
-                    window.progress_update(index)
-            finally:
-                window.progress_end()
-                scene.frame_set(original_frame)
+                window.progress_begin(0, len(frames))
+                try:
+                    for index, frame in enumerate(frames):
+                        scene.frame_set(frame)
+                        if played is not None:
+                            for name, value in played[frame].items():
+                                set_joint_value(rig.pose.bones[name], value)
+                        # A frame with live IK keyed off plays its curves, and
+                        # those have just been put back. Anything else solves.
+                        if played is None or rig.kinema_ik_enabled:
+                            # Per frame, not once: the tip is keyframable, so the
+                            # chain can change mid-bake and a solver captured up
+                            # front would go on driving the joints of a chain that
+                            # is no longer live.
+                            solver = manager.get_solver(rig, ik_name)
+                            result = solver.solve(rig, mode) if solver is not None else None
+                            if result is None or not result.converged:
+                                failed += 1
+                        # Every joint active anywhere in the range gets a key on every
+                        # frame, not just the ones this frame's chain solved. A joint
+                        # that drops out of the chain still has a value, and a channel
+                        # that stopped being keyed half way through would hold its
+                        # last key instead -- a different pose than the one baked.
+                        for name in bones:
+                            key_joint_value(rig.pose.bones[name], frame)
+                        window.progress_update(index)
+                finally:
+                    window.progress_end()
+                    scene.frame_set(original_frame)
 
-        if self.disable_live_ik:
-            _key_switch_off(rig, self.frame_start, self.frame_end)
-            rig.kinema_ik_enabled = False
+            if self.disable_live_ik:
+                _key_switch_off(rig, self.frame_start, self.frame_end)
+                rig.kinema_ik_enabled = False
+            bake.keep = True
         handlers.reset(rig.name)
 
         message = f"Baked {len(frames)} frames"
@@ -1201,9 +1206,22 @@ def own_fcurve_containers(rig):
     rig's ``kinema_ik_tip`` -- enough to auto-key this rig off someone else's
     animation and rewrite the other slot's interpolation -- and, worse for
     baking, another rig's identically named pose bones.
+
+    A job laid out as NLA strips (ops/strips.py) is the rig's too: its action's
+    curves come first, for the slot its strips show -- but not while Bake IK has
+    a copy of it active, which is then the one being written.
     """
     anim = rig.animation_data
     action = anim.action if anim else None
+    job = getattr(rig, "kinema_job_action", None)
+    if job is not None and job != action:
+        from . import strips
+
+        baking = action is not None and strips.PROP_BAKED in action
+        if strips.laid_out(rig) and not baking:
+            yield from _iter_fcurve_containers(
+                job, getattr(strips._slot(rig), "handle", None)
+            ) if getattr(job, "layers", None) else _iter_fcurve_containers(job)
     if action is None:
         return
     if getattr(action, "layers", None):

@@ -160,6 +160,20 @@ retimes the animation, as it would for anything else, but the next regeneration 
 motion's own frames again, so the Motions list is where a retime belongs if you want it to
 stick.)
 
+**The job on the NLA.** Generate Motion lays the job out on the robot's NLA, on a track named
+*Kinema Job*: one strip per motion, named after it, covering its frames. A pause and a
+joint move bridging a gap get strips of their own, and *Before* and *After* strips hold
+whatever is animated outside the job, hand keys included. All the strips show the one
+action that holds the job's keys, each its own frames, so the robot plays exactly as it
+would from that action alone.
+- Nothing is left in the robot's active action. Keys you set by hand afterwards land in a
+  new active action, on top of the job, and the next Generate moves them into the job's
+  action.
+- Regenerating replaces the job's strips. For now a strip moved by hand in the NLA editor is
+  put back by the next Generate; retiming from the NLA editor comes next.
+- To keep the job in the active action instead, turn off **Job as NLA Strips** in the
+  add-on's preferences. The next Generate puts a job already on the NLA back there.
+
 Each motion says how the robot moves:
 
 - **Joint** interpolates the joints. Fast, always reachable, and the tool takes whatever
@@ -275,7 +289,9 @@ is never retimed.
 
 When the shot is right, **Bake IK to Keyframes** turns the whole thing into plain joint
 curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves
-bake as IK solves them.
+bake as IK solves them. A job on the NLA is baked into a copy of its action, shown as a
+strip on a *Kinema Baked* track above the job over the baked range, and the job's own keys
+are left as they were: mute that track to go back to the live job.
 
 ## Checking motion limits
 

@@ -87,6 +87,16 @@ WRIST = [0.0, -0.6, 1.0, 2.0, 0.4]
 FLIP = 1.075
 
 
+@pytest.fixture
+def no_strips(addon):
+    """The "Job as NLA Strips" preference off: the job stays in the active action."""
+    prefs = importlib.import_module(f"{addon.__name__}.prefs").get_prefs()
+    was = prefs.job_as_strips
+    prefs.job_as_strips = False
+    yield
+    prefs.job_as_strips = was
+
+
 def _set_q(builder, rig, q):
     import bpy
 
@@ -945,8 +955,9 @@ class TestBakingAJob:
         bpy.context.scene.frame_set(15)
         assert arm6.kinema_ik_enabled, "the bake switched live IK off past its range"
 
-    def test_a_layered_job_bakes_to_what_it_played(self, arm6, builder):
-        """An NLA strip underneath changes what plays.
+    def test_a_layered_job_bakes_to_what_it_played(self, arm6, builder, no_strips):
+        """An NLA strip underneath changes what plays. The job in the active action,
+        as it is with the "Job as NLA Strips" preference off.
 
         A base strip holds joint1 at 0.3 and the job's action is added on top.
         ``keyframe_insert`` maps a value back through that stack, so the bake
@@ -1543,9 +1554,10 @@ class TestMotions:
 
 
 def _curves(rig):
-    """Every F-curve on the rig's own action, whatever the action layout."""
+    """Every F-curve on the rig's own action, whatever the action layout: the job's,
+    where Generate Motion laid it out as NLA strips, else the active one."""
     anim = rig.animation_data
-    action = anim.action if anim else None
+    action = getattr(rig, "kinema_job_action", None) or (anim.action if anim else None)
     if action is None:
         return []
     layers = getattr(action, "layers", None)

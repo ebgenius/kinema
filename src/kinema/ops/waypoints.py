@@ -104,7 +104,7 @@ from ..solver import branches, manager, numpy_backend
 from ..solver.chain import chain_from_rig
 from ..ui.panel import active_rig
 from . import collision as collision_ops
-from . import references, velocity
+from . import references, strips, velocity
 from .ik import key_joint_value, own_fcurve_containers
 from .velocity import acceleration_limit_of, joint_value, limit_of
 
@@ -1024,8 +1024,9 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
         original = context.scene.frame_current
         # Suspended for the same reason baking suspends: writing keys walks the
         # frame, and the live handler would solve each one on the way past and
-        # fight the values being written.
-        with _handlers_suspended():
+        # fight the values being written. Written into the job's action, which
+        # is then laid out as one NLA strip per motion: see ops/strips.py.
+        with _handlers_suspended(), strips.editing(rig, context):
             _clear_generated(rig, ik_name, clear_from, clear_to)
             # The target's last keyed rotation, so the next is keyed in the same
             # hemisphere: see _key_linear_span.
@@ -1047,6 +1048,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 rig.kinema_ik_enabled = False
                 rig.keyframe_insert(data_path="kinema_ik_enabled", frame=owned[1])
             _set_linear_interpolation(rig, ik_name)
+            strips.lay_out(rig, plan)
         rig.kinema_generated_range = owned
         # What was generated, so Optimize Motion can tell when the keys no
         # longer follow the waypoints.
@@ -2101,6 +2103,13 @@ def register_props() -> None:
     )
     # What the last generation covered, so the next one can clear its own
     # leavings even where the new job no longer reaches. Empty when last < first.
+    # The action holding the job's keys, once laid out as NLA strips: see
+    # ops/strips.py. None while the job is in the active action.
+    bpy.types.Object.kinema_job_action = PointerProperty(
+        name="Job Action",
+        type=bpy.types.Action,
+        description="The action Kinema's job strips show",
+    )
     bpy.types.Object.kinema_generated_range = IntVectorProperty(
         name="Generated Range",
         description="First and last frame the last Generate Motion wrote",
@@ -2140,5 +2149,6 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_motion_check_job
     del bpy.types.Object.kinema_generated_range
     del bpy.types.Object.kinema_generated_job
+    del bpy.types.Object.kinema_job_action
     del bpy.types.Object.kinema_optimized_job
     del bpy.types.Object.kinema_active_waypoint

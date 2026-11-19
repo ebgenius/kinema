@@ -578,7 +578,7 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
     seconds = time.perf_counter() - job.solve_started
     frames = range(job.first, job.last + 1)
     job.writing = True
-    write_keys(context, rig, frames, q, job.free)
+    write_keys(context, rig, frames, q, job.free, wp.job_plan(rig).spans)
 
     rig.kinema_optimized_job = job.signature
 
@@ -629,12 +629,15 @@ def _closest(checks, keep_clear: float) -> str:
     return f"{closest.clearance * 1000:.0f} mm clear at the closest, {where}"
 
 
-def write_keys(context, rig, frames, q, free) -> None:
+def write_keys(context, rig, frames, q, free, plan=None) -> None:
     """Key the free joints on every frame of the job, and live IK off over it.
 
     Their keys in the range go first, so nothing of the job before is left
-    between them. Held joints and joints off the chain keep their keys.
+    between them. Held joints and joints off the chain keep their keys. Written
+    into the job's action and laid out again as ``plan``'s strips, where the
+    job is on the NLA: see ops/strips.py.
     """
+    from . import strips
     first, last = frames[0], frames[-1]
     bones = [(rig.pose.bones[name], index) for name, index in free]
     paths = {
@@ -643,7 +646,7 @@ def write_keys(context, rig, frames, q, free) -> None:
     from .. import handlers
 
     original = context.scene.frame_current
-    with handlers.suspended():
+    with handlers.suspended(), strips.editing(rig, context):
         for container in own_fcurve_containers(rig):
             for curve in list(container):
                 if (curve.data_path, curve.array_index) not in paths:
@@ -659,6 +662,8 @@ def write_keys(context, rig, frames, q, free) -> None:
         if not ik_switch_is_animated(rig):
             # Nothing keys the switch, so it stays as set: off.
             rig.kinema_ik_enabled = False
+        if plan:
+            strips.lay_out(rig, plan)
     context.scene.frame_set(original)
 
 

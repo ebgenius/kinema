@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The job on the NLA, one strip per motion** (#96). Generate Motion lays the job out on a
+  *Kinema Job* track: a strip per motion, pause and bridging joint move, named after it,
+  and *Before* and *After* strips for what is animated outside the job. They all show one
+  action, so the robot plays exactly as before, hand keys included; keys set by hand since
+  are moved into it on the next Generate. Bake IK writes a *Kinema Baked* strip above the
+  job over the baked range and leaves the job's keys as they were. The **Job as NLA
+  Strips** preference keeps the job in the active action instead.
 - **Add External Axis previews where the TCP will be** (#149). For an axis on the tool, the
   dialog draws the TCP where OK will put it, as a bright triad, and where it is now, as a
   faint one. They follow the offset fields as you edit them, slider drags included, and
