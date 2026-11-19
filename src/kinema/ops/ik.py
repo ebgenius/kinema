@@ -1144,32 +1144,30 @@ def ik_switch_is_animated(rig) -> bool:
 
 
 def _key_switch_off(rig, first: int, last: int) -> None:
-    """Key live IK off from ``first`` to ``last``, and back as it was after.
+    """Key live IK off from ``first`` to ``last``, and as it was either side.
 
     Setting the property is not enough where the switch is keyed: its curve
     puts its own value back on the next frame change, and live IK would run
     over the baked joints wherever the job had it on. Only the baked range is
-    touched -- a job reaching past it keeps its switch there. In NLA tweak
-    mode that range is in the strip's time, as the baked keys are. A reversed
-    strip plays its action backwards, so there the range starts at its last
-    frame, and the value after it is the one before its first.
+    touched -- a job reaching past it keeps its switch there, on both sides:
+    the switch steps from key to key, so an off key that ends up first or last
+    on the curve would otherwise hold beyond the range. In NLA tweak mode the
+    range is in the strip's time, as the baked keys are; a reversed strip plays
+    its action backwards, so there it runs the other way.
     """
-    start, end = _action_frame(rig, first), _action_frame(rig, last)
-    if start <= end:
-        off, back = start, _action_frame(rig, last + 1)
-    else:
-        off, back = end, _action_frame(rig, first - 1)
-    low, high = sorted((off, back))
+    low, high = sorted((_action_frame(rig, first), _action_frame(rig, last)))
+    before, after = sorted((_action_frame(rig, first - 1), _action_frame(rig, last + 1)))
     for container in own_fcurve_containers(rig):
         for curve in container:
             if curve.data_path != builder.PROP_IK_ENABLED or curve.mute:
                 continue
-            after = float(curve.evaluate(back))
+            kept = float(curve.evaluate(before)), float(curve.evaluate(after))
             for point in reversed(list(curve.keyframe_points)):
-                if low <= point.co[0] <= high:
+                if before < point.co[0] < after:
                     curve.keyframe_points.remove(point)
-            curve.keyframe_points.insert(off, 0.0)
-            curve.keyframe_points.insert(back, after)
+            curve.keyframe_points.insert(before, kept[0])
+            curve.keyframe_points.insert(low, 0.0)
+            curve.keyframe_points.insert(after, kept[1])
             curve.update()
 
 

@@ -489,26 +489,35 @@ class TestBake:
         with pytest.raises(RuntimeError, match="'joint6' \\(in a locked group\\)"):
             bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1)
 
-    def test_on_a_reversed_strip_live_ik_is_off_over_the_baked_frames(self, rig, builder):
-        """The tweaked strip plays its action backwards. Live IK keyed on across
-        the action is off on every baked scene frame, 111 to 119, and as it was
-        either side, on 110 and 120."""
+    @pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reversed"])
+    @pytest.mark.parametrize("keyed", ["either side", "inside only"])
+    def test_live_ik_is_off_over_the_baked_frames_and_as_it_was_around_them(
+        self, rig, builder, reverse, keyed
+    ):
+        """A tweaked strip, played forwards or backwards, with live IK keyed on
+        either side of the bake, or only by a key inside it. Off on every baked
+        scene frame, 111 to 119, and on at 110 and 120 as before: the switch
+        steps from key to key, so an off key left first or last on its curve held
+        beyond the range."""
         import bpy
 
         bpy.ops.kinema.add_ik()
-        rig.kinema_ik_enabled = True
-        for frame in (1, 150):
-            rig.keyframe_insert("kinema_ik_enabled", frame=frame)
+        # The action spans frames 1-150 whatever the switch's keys.
+        self._key_wrist(builder, rig, ((1, 0.0), (150, 0.0)))
         anim = rig.animation_data
         track = anim.nla_tracks.new()
         strip = track.strips.new("job", 101, anim.action)
-        strip.use_reverse = True
+        strip.use_reverse = reverse
         anim.action = None
         anim.nla_tracks.active = track
         track.select = strip.select = True
         anim.use_tweak_mode = True
+        rig.kinema_ik_enabled = True
+        # Keyed in tweak mode, at scene frames: Blender maps them into the strip.
+        for frame in ((105, 125) if keyed == "either side" else (115,)):
+            rig.keyframe_insert("kinema_ik_enabled", frame=frame)
         to_action = lambda f: anim.nla_tweak_strip_time_to_scene(float(f), invert=True)  # noqa: E731
-        assert to_action(111) > to_action(119), "precondition: the strip runs backwards"
+        assert (to_action(111) > to_action(119)) == reverse, "precondition: its direction"
 
         assert bpy.ops.kinema.bake_ik(frame_start=111, frame_end=119, step=1) == {"FINISHED"}
         switch = next(
