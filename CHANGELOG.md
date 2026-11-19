@@ -169,6 +169,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Apply Solution leaves held joints as they are** (#50). Find Solutions stores each
+  configuration as the rig shows it, so a rail held and dragged past its limit was stored
+  at the limit, and applying a solution wrote that over its channel. Held joints are now
+  skipped, as a live solve skips them.
 - **The IK readout shows how many iterations PyRoki took** (#57). It always said `0 it`,
   which read as though the solver had done nothing; the count now comes from the solve.
 - **Bake IK's Clear Existing Keys clears only the baked range** (#74). It removed the baked

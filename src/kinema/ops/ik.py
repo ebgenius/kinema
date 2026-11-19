@@ -391,7 +391,13 @@ class KINEMA_OT_apply_solution(KinemaRigOperator):
             return {"CANCELLED"}
 
         rig.kinema_active_solution = index
-        chain.write_configuration(rig, solver.chain, np.array(stored[index]))
+        # Held joints left as they are, as a live solve leaves them. The search
+        # stored them as the rig shows them, a rail dragged past its limit at
+        # the limit; writing that over the channel would lose the drag.
+        chain.write_configuration(
+            rig, solver.chain, np.array(stored[index]),
+            skip=manager.held_mask(rig, solver.chain),
+        )
         # The goal has not moved, and PyRoki's rest cost biases toward the seed,
         # so the next live solve stays on the configuration just chosen rather
         # than sliding back to the one it came from.
