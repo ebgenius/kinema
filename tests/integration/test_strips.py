@@ -271,6 +271,33 @@ class TestPlayback:
             first.keyframe_insert("rotation_euler", index=1, frame=frame)
         hand = arm6.animation_data.action
         assert ik.joint_curves(arm6)[first.name].id_data == hand
+        # Over strips that animate the channel, the active action's influence
+        # applies: at none, the job plays.
+        arm6.animation_data.action_influence = 0.0
+        assert ik.joint_curves(arm6)[first.name].id_data == arm6.kinema_job_action
+
+    def test_hand_keys_onto_a_sampled_job_curve_play(self, arm6, builder, prefs):
+        """Keys on a curve of samples never play, so a job curve baked to samples
+        becomes keys before hand keys join it, and both play."""
+        import bpy
+
+        prefs.job_as_strips = True
+        wrist = _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        curve = next(
+            c for bag in arm6.kinema_job_action.layers[0].strips[0].channelbags
+            for c in bag.fcurves if c.data_path.endswith("scale") and c.array_index == 0
+        )
+        bpy.context.scene.frame_set(20)
+        sampled = wrist.scale[0]
+        curve.convert_to_samples(-10, 131)
+        wrist.scale[0] = 2.5
+        wrist.keyframe_insert("scale", index=0, frame=50)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        bpy.context.scene.frame_set(50)
+        assert wrist.scale[0] == pytest.approx(2.5)
+        bpy.context.scene.frame_set(20)
+        assert wrist.scale[0] == pytest.approx(sampled, abs=1e-4)
 
     def test_hand_curves_move_with_modifiers_and_samples(self, arm6, builder, prefs):
         """A hand curve that plays as more than its keys -- cycled by a modifier,

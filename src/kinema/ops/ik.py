@@ -1213,29 +1213,43 @@ def own_fcurve_containers(rig):
     animation and rewrite the other slot's interpolation -- and, worse for
     baking, another rig's identically named pose bones.
 
-    A job laid out as NLA strips (ops/strips.py) is the rig's too: its action's
-    curves come after the active action's, for the slot its strips show. After,
-    because the active action plays on top of the strips, so a lookup that takes
-    the first curve on a channel finds the one that plays. Not while Bake IK has
-    a copy of it active, which is then the one being written, nor in NLA tweak
-    mode, where the strip being tweaked is, and nor without a slot to tell this
-    rig's curves from another's.
+    A job laid out as NLA strips (ops/strips.py) is the rig's too, for the slot
+    its strips show -- but not while Bake IK has a copy of it active, which is
+    then the one being written, nor in NLA tweak mode, where the strip being
+    tweaked is, and nor without a slot to tell this rig's curves from another's.
+
+    Whichever plays a channel comes first, for a lookup that takes the first
+    curve on it: the active action where it replaces the strips under it at
+    full strength, as it does unless set otherwise, and the job's strips where
+    it doesn't. Blended in part, neither curve alone is what plays; the job's
+    then comes first, as the motion the active action is laid over.
     """
     anim = rig.animation_data
     action = anim.action if anim else None
+    job = _laid_out_job(rig, anim, action)
+    over = anim is not None and anim.action_blend_type == "REPLACE" and anim.action_influence >= 1.0
+    if job is not None and not over:
+        yield from job
+        job = None
     yield from _active_containers(anim, action)
-    job = getattr(rig, "kinema_job_action", None)
-    if job is not None and job != action and anim is not None and not anim.use_tweak_mode:
-        from . import strips
+    if job is not None:
+        yield from job
 
-        baking = action is not None and strips.PROP_BAKED in action
-        if strips.laid_out(rig) and not baking:
-            if getattr(job, "layers", None):
-                handle = getattr(strips._slot(rig), "handle", None)
-                if handle is not None:
-                    yield from _iter_fcurve_containers(job, handle)
-            else:
-                yield from _iter_fcurve_containers(job)
+
+def _laid_out_job(rig, anim, action):
+    """The job's F-curve collections, where its strips are this rig's own
+    animation besides the active action, as a list; None where they aren't."""
+    job = getattr(rig, "kinema_job_action", None)
+    if job is None or job == action or anim is None or anim.use_tweak_mode:
+        return None
+    from . import strips
+
+    if (action is not None and strips.PROP_BAKED in action) or not strips.laid_out(rig):
+        return None
+    if getattr(job, "layers", None):
+        handle = getattr(strips._slot(rig), "handle", None)
+        return list(_iter_fcurve_containers(job, handle)) if handle is not None else []
+    return list(_iter_fcurve_containers(job))
 
 
 def _active_containers(anim, action):

@@ -186,6 +186,11 @@ def _merge(source, source_slot, target, slot) -> None:
     for container in _curves(source, source_slot):
         for curve in list(container):
             into = destinations.find(curve.data_path, index=curve.array_index)
+            if into is not None and not len(into.keyframe_points) and len(into.sampled_points):
+                # Keys on a curve of samples never play, so the target's samples
+                # become keys, one a frame, before any join them.
+                frames = [p.co[0] for p in into.sampled_points]
+                into.convert_to_keyframes(int(min(frames)), int(max(frames)) + 1)
             group = curve.group.name if curve.group is not None else ""
             whole = into is None or len(curve.modifiers) or not len(curve.keyframe_points)
             if whole and hasattr(destinations, "new_from_fcurve"):
