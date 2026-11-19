@@ -478,6 +478,26 @@ def placement(rig, spec: ext.AxisSpec) -> tuple[str, np.ndarray, np.ndarray]:
     return parent_name, ext.base_frame(spec, reference), shift
 
 
+def as_posed(rig, placed):
+    """A :func:`placement` as the rig stands: where the axis will be seen, for the
+    preview. None stays None.
+
+    The frame is built at rest, which is what Edit mode needs, and the new bone
+    rides its parent's pose. Carried by how far that parent is posed from its
+    rest -- the tool's joint for an axis on the tool, Root for the others -- it
+    is where the axis shows once added. So is the robot's shift, which moves the
+    robot as it stands.
+    """
+    if placed is None:
+        return None
+    parent_name, frame, shift = placed
+    parent = rig.pose.bones.get(parent_name)
+    if parent is None:
+        return placed
+    posed = _np4(parent.matrix) @ np.linalg.inv(_np4(parent.bone.matrix_local))
+    return parent_name, posed @ frame, posed @ shift @ np.linalg.inv(posed)
+
+
 def add_axis(rig, spec: ext.AxisSpec) -> str:
     """Add ``spec`` to ``rig``. Returns the new bone's name; raises ValueError."""
     problems = spec.problems()
@@ -845,7 +865,7 @@ def _refresh_preview(operator, context) -> None:
         placed = placement(rig, spec) if rig is not None and not spec.problems() else None
     except ValueError:
         placed = None
-    axis_preview.show(dialog, spec, placed)
+    axis_preview.show(dialog, spec, as_posed(rig, placed))
 
 
 class KINEMA_OT_add_external_axis(Operator):
@@ -1020,7 +1040,7 @@ class KINEMA_OT_add_external_axis(Operator):
             placed = placement(rig, spec) if rig is not None and not spec.problems() else None
         except ValueError:
             placed = None
-        axis_preview.show(self, spec, placed)
+        axis_preview.show(self, spec, as_posed(rig, placed))
         if self.mount == "BEFORE" and placed is not None:
             moved = placed[2]
             if not _is_identity(moved, 1e-6):

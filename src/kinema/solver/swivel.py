@@ -34,6 +34,11 @@ DEGENERATE = 1e-9
 #: stretched the arm is, as a fraction of the upper arm. See elbow_circle.
 STRETCHED_SIDE = 0.05
 
+#: How far a wrist must be past a limit of the arm's reach to count as past it,
+#: in metres. Posed matrices are float32: arm7 held straight, its wrist exactly
+#: at full reach, reads 0.06 to 0.08 microns beyond it.
+PAST_REACH = 1e-6
+
 
 def elbow_circle(
     shoulder: np.ndarray, wrist: np.ndarray, upper: float, fore: float
@@ -44,11 +49,13 @@ def elbow_circle(
     length, both taken from the rest pose because they do not change.
 
     A wrist past the arm's reach is clamped to it. The true circle there is a
-    point on the straight line, but the radius never drops below
+    point on the straight line, but the radius is held at
     :data:`STRETCHED_SIDE` of the upper arm -- see the comment below for why a
     goal on the line is worse than one just off it. A wrist closer than the arm
-    can fold is clamped to that inner limit in the same way. The axis is None
-    only when shoulder and wrist coincide, which no real arm does.
+    can fold is clamped to that inner limit in the same way. Within reach, at
+    its very edge too, the circle is the true one, so its goal is a place the
+    elbow can be. The axis is None only when shoulder and wrist coincide, which
+    no real arm does.
     """
     shoulder = np.asarray(shoulder, dtype=float)
     span = np.asarray(wrist, dtype=float) - shoulder
@@ -61,19 +68,21 @@ def elbow_circle(
     # inner one it is folded flat, and the formula below would otherwise divide
     # by a distance that can be millimetres and throw the goal metres away --
     # a pull the tool would pay for.
-    reach = float(np.clip(distance, abs(upper - fore), upper + fore))
+    inner, outer = abs(upper - fore), upper + fore
+    reach = float(np.clip(distance, inner, outer))
     # How far along S-W the circle's plane sits: the law of cosines, rearranged
     # for the foot of the elbow's perpendicular onto the axis.
     along = (upper * upper - fore * fore + reach * reach) / (2.0 * reach)
     radius = float(np.sqrt(max(upper * upper - along * along, 0.0)))
-    # Never quite on the line. A goal on the line has no side, and a stretched
-    # arm solved toward one can straighten through it and come out with the
-    # elbow on the far side: dragging arm7's target just past reach flipped its
-    # elbow 162 degrees. Held a hair off, on the knob's side, the elbow stays
-    # where the animator put it. The price is a goal fractionally off the circle
-    # when the arm is within a whisker of fully stretched -- which is where the
-    # tool is at the edge of its reach anyway.
-    radius = max(radius, STRETCHED_SIDE * upper)
+    # Past reach, never quite on the line. A goal on the line has no side, and a
+    # stretched arm solved toward one can straighten through it and come out
+    # with the elbow on the far side: dragging arm7's target just past reach
+    # flipped its elbow 162 degrees. Held a hair off, on the knob's side, the
+    # elbow stays where the animator put it. Only past reach, where the tool
+    # misses anyway: within it the floor put the goal off the circle, and its
+    # pull cost a stretched arm7 0.31 mm of tool it could have reached.
+    if distance > outer + PAST_REACH or distance < inner - PAST_REACH:
+        radius = max(radius, STRETCHED_SIDE * upper)
     return shoulder + along * axis, axis, radius
 
 
