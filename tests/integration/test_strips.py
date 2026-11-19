@@ -276,6 +276,26 @@ class TestPlayback:
         arm6.animation_data.action_influence = 0.0
         assert ik.joint_curves(arm6)[first.name].id_data == arm6.kinema_job_action
 
+    def test_a_muted_job_keys_nothing_in_a_fingerprint(
+        self, addon, arm6, builder, strips, prefs
+    ):
+        """What hangs from the robot's bone is fingerprinted by what keys that bone's
+        chain. The job's strips do, until their track is muted: then the joints'
+        values as they stand place it, and posing one has to show."""
+        import bpy
+
+        refs = importlib.import_module(f"{addon.__name__}.ops.references")
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        first = builder.joint_bones(arm6)[0]
+        channel = (first.path_from_id("rotation_euler"), 1)
+        _, keyed = refs._animation(arm6, {channel[0]})
+        assert channel in keyed, "precondition: the job's strips key the joint"
+        _track(arm6, strips.JOB_TRACK)[0].mute = True
+        _, keyed = refs._animation(arm6, {channel[0]})
+        assert channel not in keyed
+
     def test_hand_keys_onto_a_sampled_job_curve_play(self, arm6, builder, prefs):
         """Keys on a curve of samples never play, so a job curve baked to samples
         becomes keys before hand keys join it, and both play."""

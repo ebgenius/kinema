@@ -491,7 +491,7 @@ def _animation(obj, paths=TRANSFORM) -> tuple[tuple, set]:
     it stands. A muted strip still keys its channels: they go to their
     defaults on its track.
     """
-    from .ik import own_fcurve_containers
+    from .ik import _active_containers
 
     anim = obj.animation_data
     if anim is None:
@@ -508,7 +508,9 @@ def _animation(obj, paths=TRANSFORM) -> tuple[tuple, set]:
                     out.append(_curve(curve))
         return tuple(sorted(out, key=lambda c: (c[0], c[1])))
 
-    active = transform_curves(own_fcurve_containers(obj) or ())
+    # The active action alone: a job laid out as strips (ops/strips.py) is
+    # among the tracks below, which say whether it plays.
+    active = transform_curves(_active_containers(anim, anim.action))
     soloed = any(track.is_solo for track in anim.nla_tracks)
     tracks = []
     for track in anim.nla_tracks:
