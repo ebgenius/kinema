@@ -1048,7 +1048,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
                 rig.kinema_ik_enabled = False
                 rig.keyframe_insert(data_path="kinema_ik_enabled", frame=owned[1])
             _set_linear_interpolation(rig, ik_name)
-            strips.lay_out(rig, plan)
+            muted = strips.lay_out(rig, plan)
         rig.kinema_generated_range = owned
         # What was generated, so Optimize Motion can tell when the keys no
         # longer follow the waypoints.
@@ -1084,6 +1084,8 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             message += f"; {_flagged_text(flagged)} in the motion check"
         for note in job.notes:
             message += f". {note}"
+        if muted:
+            message += f". {strips.muted_text(muted)}"
         for waypoint, _, description, _ in turned:
             message += (
                 f". '{waypoint.name}' was taught a whole turn from where the line "

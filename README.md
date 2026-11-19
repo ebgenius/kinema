@@ -170,7 +170,13 @@ would from that action alone.
   new active action, on top of the job, and the next Generate moves them into the job's
   action.
 - Regenerating replaces the job's strips. For now a strip moved by hand in the NLA editor is
-  put back by the next Generate; retiming from the NLA editor comes next.
+  put back by the next Generate; retiming from the NLA editor comes next. In NLA tweak mode,
+  Generate writes into the strip being tweaked, as it always has, and leaves the job's strips
+  as they are.
+- The strips replace what is under them at full strength, whatever the blend and influence
+  set for the active action.
+- A track of your own named *Kinema Job* is left alone: Kinema knows its tracks by what their
+  strips show.
 - To keep the job in the active action instead, turn off **Job as NLA Strips** in the
   add-on's preferences. The next Generate puts a job already on the NLA back there.
 
@@ -291,7 +297,9 @@ When the shot is right, **Bake IK to Keyframes** turns the whole thing into plai
 curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves
 bake as IK solves them. A job on the NLA is baked into a copy of its action, shown as a
 strip on a *Kinema Baked* track above the job over the baked range, and the job's own keys
-are left as they were: mute that track to go back to the live job.
+are left as they were: mute that track to go back to the live job. Baking part of an earlier
+bake again replaces just those frames, and the next Generate mutes the bakes over the job's
+frames, since they show the job as it was, and says so.
 
 ## Checking motion limits
 

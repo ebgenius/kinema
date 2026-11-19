@@ -811,23 +811,26 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         # solves and writes the pose -- and then this loop solves the same frame
         # again. With a keyed tip the two can disagree, and whichever ran last
         # wins.
+        # Refused before anything changes: a cancelled operator leaves no undo
+        # step to take back what it did.
+        with handlers.suspended():
+            bones = self._bones_over_range(rig, scene, frames, ik_name)
+            if not bones:
+                self.report({"ERROR"}, "No joints to bake on this rig")
+                return {"CANCELLED"}
+            unplayable = self._unplayable(rig, bones)
+            if unplayable:
+                self.report(
+                    {"ERROR"},
+                    f"Not baked: the curves of {', '.join(unplayable)} wouldn't take or "
+                    f"play the solved poses. Unlock or unmute them, remove their "
+                    f"modifiers or convert their samples to keyframes, or clear them first",
+                )
+                return {"CANCELLED"}
         # With the job on the NLA, into a copy of its action shown on a track
         # above it over the baked range: see ops/strips.py.
         with strips.baking(rig, self.frame_start, self.frame_end, context) as bake:
             with handlers.suspended():
-                bones = self._bones_over_range(rig, scene, frames, ik_name)
-                if not bones:
-                    self.report({"ERROR"}, "No joints to bake on this rig")
-                    return {"CANCELLED"}
-                unplayable = self._unplayable(rig, bones)
-                if unplayable:
-                    self.report(
-                        {"ERROR"},
-                        f"Not baked: the curves of {', '.join(unplayable)} wouldn't take or "
-                        f"play the solved poses. Unlock or unmute them, remove their "
-                        f"modifiers or convert their samples to keyframes, or clear them first",
-                    )
-                    return {"CANCELLED"}
                 # Read before the curves are cleared, and only where live IK is
                 # itself keyed -- a job from Generate Motion. There the joint curves
                 # carry the joint moves, and they seed IK's solves where it is on.
@@ -1209,19 +1212,24 @@ def own_fcurve_containers(rig):
 
     A job laid out as NLA strips (ops/strips.py) is the rig's too: its action's
     curves come first, for the slot its strips show -- but not while Bake IK has
-    a copy of it active, which is then the one being written.
+    a copy of it active, which is then the one being written, nor in NLA tweak
+    mode, where the strip being tweaked is, and nor without a slot to tell this
+    rig's curves from another's.
     """
     anim = rig.animation_data
     action = anim.action if anim else None
     job = getattr(rig, "kinema_job_action", None)
-    if job is not None and job != action:
+    if job is not None and job != action and anim is not None and not anim.use_tweak_mode:
         from . import strips
 
         baking = action is not None and strips.PROP_BAKED in action
         if strips.laid_out(rig) and not baking:
-            yield from _iter_fcurve_containers(
-                job, getattr(strips._slot(rig), "handle", None)
-            ) if getattr(job, "layers", None) else _iter_fcurve_containers(job)
+            if getattr(job, "layers", None):
+                handle = getattr(strips._slot(rig), "handle", None)
+                if handle is not None:
+                    yield from _iter_fcurve_containers(job, handle)
+            else:
+                yield from _iter_fcurve_containers(job)
     if action is None:
         return
     if getattr(action, "layers", None):
