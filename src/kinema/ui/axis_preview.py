@@ -100,29 +100,36 @@ def shapes(spec: ext.AxisSpec, placed, length: float = TRIAD_LENGTH) -> dict:
     ``length`` long). None and empty for any other axis.
 
     An axis on the tool sits at the tool frame times its base, so the tool frame
-    is its frame times base⁻¹; the TCP then goes to the offset from there.
+    is its frame times base⁻¹; the TCP then goes to the offset from there. What the
+    joint carries -- the TCP, the robot, the placeholder's moving part -- is drawn
+    where the joint starts, which a limit that leaves out zero moves off zero.
     """
     from . import tcp_preview
 
     _, frame, shift = placed
+    started = ext.at_start(spec, frame)
     tcp = tcp_now = None
     triads = (np.empty((0, 3)), np.empty((0, 4)))
     if spec.mount == "AFTER":
         tcp_now = np.asarray(frame, dtype=float) @ np.linalg.inv(spec.base)
-        tcp = tcp_now @ spec.offset
+        tcp = started @ tcp_now @ spec.offset
         triads = tcp_preview.shapes(tcp, tcp_now, None, length)
     bone = ext.bone_matrix(frame, spec.axis)
     fill = np.empty((0, 3))
     if spec.placeholder:
         static, moving = ext.placeholder(spec)
-        fill = _apply(bone, np.concatenate([ext.triangles(static), ext.triangles(moving)]))
+        fill = np.concatenate([
+            _apply(bone, ext.triangles(static)),
+            _apply(started @ bone, ext.triangles(moving)),
+        ])
     lines, labels = ext.travel(spec)
-    moves = spec.mount == "BEFORE" and not np.allclose(shift, np.eye(4), atol=1e-6)
+    carried = started @ np.asarray(shift, dtype=float)
+    moves = spec.mount == "BEFORE" and not np.allclose(carried, np.eye(4), atol=1e-6)
     return {
         "fill": fill,
         "lines": _apply(bone, lines),
         "labels": [(_apply(bone, point)[0], text) for point, text in labels],
-        "shift": np.asarray(shift, dtype=float) if moves else None,
+        "shift": carried if moves else None,
         "tcp": tcp,
         "tcp_now": tcp_now,
         "triads": triads,

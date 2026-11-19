@@ -978,12 +978,95 @@ class TestThePreview:
 
     def test_editing_the_offset_moves_the_previewed_tcp(self, arm6, builder, ops, preview):
         """The TCP follows the offset fields as they are edited, a slider drag
-        included: the same refresh as the rest of the preview."""
-        zero = {**self._ON_THE_TOOL, "offset_location": (0.0, 0.0, 0.0),
-                "offset_rotation": (0.0, 0.0, 0.0)}
-        still = self._shown(ops, preview, arm6, **zero)["tcp"]
-        out = self._shown(ops, preview, arm6, **{**zero, "offset_location": (0.0, 0.0, 0.1)})["tcp"]
+        included: the same refresh as the rest of the preview, on the one dialog."""
+        import bpy
+
+        dialog_class = ops.KINEMA_OT_add_external_axis
+        for field in ("offset_location", "offset_rotation"):
+            declared = dialog_class.__annotations__[field]
+            assert "update=_refresh_preview" in str(declared), f"{field} doesn't refresh"
+        dialog = _Dialog(dialog_class)
+        dialog_class.invoke(dialog, _NoDialogContext(bpy.context), None)
+        for name, value in {**self._ON_THE_TOOL, "offset_location": (0.0, 0.0, 0.0),
+                            "offset_rotation": (0.0, 0.0, 0.0)}.items():
+            setattr(dialog, name, value)
+        ops._refresh_preview(dialog, bpy.context)
+        still = preview._state["shapes"]["tcp"]
+        dialog.offset_location = (0.0, 0.0, 0.1)
+        ops._refresh_preview(dialog, bpy.context)
+        out = preview._state["shapes"]["tcp"]
         np.testing.assert_allclose(out[:3, 3] - still[:3, 3], 0.1 * still[:3, 2], atol=1e-6)
+
+    @staticmethod
+    def _box_centre(points) -> np.ndarray:
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        return (points.min(axis=0) + points.max(axis=0)) / 2
+
+    def test_a_slide_whose_range_leaves_out_zero_is_previewed_at_its_stop(
+        self, arm6, builder, ops, ext, preview
+    ):
+        """A slide on the tool limited to 0.1-0.2 m starts at 0.1 m, held there by
+        its limit: the TCP and the carriage are previewed there, as OK puts them."""
+        import bpy
+
+        fields = dict(axis_name="slide", mount="AFTER", kind="LINEAR", direction="Z",
+                      lower_distance=0.1, upper_distance=0.2, placeholder=True)
+        dialog_class = ops.KINEMA_OT_add_external_axis
+        dialog = _Dialog(dialog_class)
+        dialog_class.invoke(dialog, _NoDialogContext(bpy.context), None)
+        for name, value in fields.items():
+            setattr(dialog, name, value)
+        preview._state.update(key=None, shapes=None)
+        ops._refresh_preview(dialog, bpy.context)
+        shown = preview._state["shapes"]
+        static, _ = ext.placeholder(dialog.spec())
+        fields["size"] = dialog.size
+        # Flattened to points in the preview, static part first.
+        corners = len(np.asarray(ext.triangles(static)).reshape(-1, 3))
+        previewed_carriage = self._box_centre(shown["fill"][corners:])
+        before = _tcp(builder, arm6) @ _np4(builder.BONE_TO_TOOL)
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(**fields)
+        bpy.context.view_layer.update()
+        after = _tcp(builder, arm6) @ _np4(builder.BONE_TO_TOOL)
+
+        assert np.linalg.norm(after[:3, 3] - before[:3, 3]) > 0.09, "precondition: it moved"
+        np.testing.assert_allclose(shown["tcp"], after, atol=1e-5)
+        carriage = next(
+            o for o in ops.placeholders(arm6, "slide") if o.parent_bone == "slide"
+        )
+        world = np.array(carriage.matrix_world)
+        placed = np.array([v.co for v in carriage.data.vertices]) @ world[:3, :3].T + world[:3, 3]
+        to_rig = np.linalg.inv(np.array(arm6.matrix_world))
+        placed = placed @ to_rig[:3, :3].T + to_rig[:3, 3]
+        np.testing.assert_allclose(previewed_carriage, self._box_centre(placed), atol=1e-5)
+
+    def test_a_track_whose_range_leaves_out_zero_previews_the_robot_on_its_stop(
+        self, arm6, builder, ops, preview
+    ):
+        """A track under the robot limited to 0.1-0.2 m: the robot stands on its
+        carriage at 0.1 m once added. The ghost and the dialog's line say so."""
+        import bpy
+
+        fields = dict(axis_name="track", mount="BEFORE", kind="LINEAR", direction="X",
+                      lower_distance=0.1, upper_distance=0.2)
+        shown = self._shown(ops, preview, arm6, **fields)
+        said = []
+        dialog_class = ops.KINEMA_OT_add_external_axis
+        dialog = _Dialog(dialog_class)
+        for name, value in fields.items():
+            setattr(dialog, name, value)
+        dialog.layout = _Recording(said)
+        dialog_class.draw(dialog, bpy.context)
+        shoulder = _np4(arm6.pose.bones["joint1"].matrix)
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(**fields)
+        bpy.context.view_layer.update()
+        moved = _np4(arm6.pose.bones["joint1"].matrix)
+
+        assert np.linalg.norm(moved[:3, 3] - shoulder[:3, 3]) > 0.09, "precondition"
+        np.testing.assert_allclose(shown["shift"] @ shoulder, moved, atol=1e-5)
+        # Rounded as the dialog rounds, and a -0.000 made 0.000.
+        x, y, z = (round(float(v), 3) + 0.0 for v in (moved @ np.linalg.inv(shoulder))[:3, 3])
+        assert f"The robot moves onto it by {x:+.3f}, {y:+.3f}, {z:+.3f} m" in said
 
     def test_an_axis_under_the_robot_draws_no_tcp(self, arm6, ops, preview):
         """The robot's ghost already shows the TCP moving with it."""
@@ -1079,6 +1162,22 @@ def _Dialog(dialog_class):
     dialog = types.SimpleNamespace(**values)
     dialog.spec = types.MethodType(dialog_class.spec, dialog)
     return dialog
+
+
+class _Recording:
+    """A layout that records the text of every label drawn, at any depth."""
+
+    def __init__(self, said):
+        self.said = said
+
+    def label(self, text="", **_):
+        self.said.append(text)
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: _Recording(self.said)
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
 
 
 class _AnyLayout:

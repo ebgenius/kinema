@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Add External Axis previews where the TCP will be** (#149). For an axis on the tool, the
   dialog draws the TCP where OK will put it, as a bright triad, and where it is now, as a
   faint one. They follow the offset fields as you edit them, slider drags included, and
-  are drawn as the arm stands.
+  are drawn as the arm stands. An axis whose limits leave out zero starts at its nearer
+  stop once added, and the preview now shows what it carries there too: the TCP, the
+  carriage, the robot's ghost and the "robot moves onto it" line, which assumed zero.
 - **Waypoints relative to an object.** A waypoint's **Relative To** field makes it relative to
   a workpiece or a fixture, and its marker is parented to that object without an inverse,
   as Blender's Shift+Ctrl+P does; that operator works on a marker too. The job follows

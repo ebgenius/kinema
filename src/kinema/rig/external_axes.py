@@ -351,6 +351,26 @@ def _moved(spec: AxisSpec, value: float) -> np.ndarray:
     return make_transform((0.0, 0.0, 0.0), (0.0, value, 0.0))
 
 
+def start_value(spec: AxisSpec) -> float:
+    """Where the new joint stands once added: zero, held inside its limits.
+
+    Its channel is zero, but the limit constraint every axis gets clamps what is
+    shown, so a slide limited to 0.1-0.2 m starts at 0.1 m and carries what rides
+    it there.
+    """
+    limits = spec.limits
+    if limits is None:
+        return 0.0
+    return float(min(max(0.0, limits[0]), limits[1]))
+
+
+def at_start(spec: AxisSpec, frame: np.ndarray) -> np.ndarray:
+    """How far the joint at :func:`start_value` moves what it carries, in the space
+    ``frame`` -- the axis's joint frame -- is in. Identity when it starts at zero."""
+    bone = bone_matrix(frame, spec.axis)
+    return bone @ _moved(spec, start_value(spec)) @ np.linalg.inv(bone)
+
+
 def _apply(matrix: np.ndarray, points: np.ndarray) -> np.ndarray:
     points = np.asarray(points, dtype=float)
     return points @ matrix[:3, :3].T + matrix[:3, 3]
