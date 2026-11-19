@@ -591,7 +591,9 @@ rides, a turntable under it, a positioner holding the part, a spindle on its fla
   from the current tool frame for an axis on the tool. Location, plus roll, pitch and yaw
   about fixed X, Y and Z, as in URDF.
 - **External axis offset:** where what the axis carries sits on its moving part. That is the
-  current robot base for an axis under the robot, and the TCP for one on the tool.
+  current robot base for an axis under the robot. For an axis on the tool it is the TCP,
+  measured from the current TCP: with no offset the TCP stays where it is, however the base
+  moves or turns the axis.
 
 **The current robot base** includes any axes already under the robot. A new axis under the
 robot goes in at the bottom of that stack, and its base is measured from just under the
@@ -633,7 +635,7 @@ robot moves with it by one rigid transform, so the pose you had is still the pos
 - the waypoints.
 
 **Remove** undoes all of it, stacked axes in any order included. Something you parented to
-the axis bone by hand stays where it stands. An axis on the tool moves the TCP to its offset,
+the axis bone by hand stays where it stands. An axis on the tool moves the TCP by its offset,
 and removing the axis puts the TCP back with the offset it had.
 
 **Joint indices follow names.** Blender orders bones by hierarchy, so an axis under the robot

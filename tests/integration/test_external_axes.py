@@ -545,6 +545,43 @@ class TestSpindleOnTheTool:
         assert tuple(arm6.kinema_tcp_offset) == pytest.approx(offset[0], abs=1e-6)
         assert tuple(arm6.kinema_tcp_rpy) == pytest.approx(offset[1], abs=1e-6)
 
+    @pytest.mark.parametrize(
+        "base_location, base_rotation, offset_location",
+        [
+            ((0.0, 0.0, 0.05), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.0, 0.0), (math.pi / 2, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.03, 0.05), (0.0, 0.4, 0.0), (0.0, 0.0, 0.05)),
+        ],
+        ids=["moved base", "turned base", "base and offset"],
+    )
+    def test_the_offset_is_measured_from_the_current_tcp_whatever_the_base(
+        self, arm6, builder, ops, ext, base_location, base_rotation, offset_location
+    ):
+        """#77: "calculated from the current TCP", as the dialog says. The TCP ends
+        up at the offset from where it was, however the axis's base moves or turns
+        the axis: with no offset, it stays put. It was placed at the offset from
+        the axis instead, so a 50 mm base moved it 50 mm, and a 90 degree one
+        turned it."""
+        before = _tcp_rest(builder, arm6)
+        tool = _np4(builder.BONE_TO_TOOL)
+        _add(ops, ext, arm6, **{
+            **SPINDLE, "base_location": base_location, "base_rotation": base_rotation,
+            "offset_location": offset_location,
+        })
+        offset = np.eye(4)
+        offset[:3, 3] = offset_location
+        expected = before @ tool @ offset @ np.linalg.inv(tool)
+        np.testing.assert_allclose(_tcp_rest(builder, arm6), expected, atol=1e-6)
+        # And the base still places the axis: the spindle turns about its own Z,
+        # on the tool frame times the base.
+        base = ext.AxisSpec(**{
+            **SPINDLE, "base_location": base_location, "base_rotation": base_rotation,
+        }).base
+        axis_frame = before @ tool @ base
+        spindle = _np4(arm6.data.bones["spindle"].matrix_local)
+        np.testing.assert_allclose(spindle[:3, 3], axis_frame[:3, 3], atol=1e-6)
+        np.testing.assert_allclose(spindle[:3, 1], axis_frame[:3, 2], atol=1e-6)
+
     def test_it_needs_a_tcp(self, fixture_dir, clean_scene, builder, ops, ext):
         import bpy
 
@@ -863,6 +900,77 @@ class TestThePreview:
 
         preview.stop()
         assert not preview.active() and not preview._state
+
+    def _shown(self, ops, preview, rig, drawn=False, **fields):
+        """What the dialog previews with ``fields`` set: through the refresh a field's
+        edit runs, or with ``drawn``, through the dialog's own draw."""
+        import bpy
+
+        dialog_class = ops.KINEMA_OT_add_external_axis
+        dialog = _Dialog(dialog_class)
+        dialog_class.invoke(dialog, _NoDialogContext(bpy.context), None)
+        for name, value in fields.items():
+            setattr(dialog, name, value)
+        preview._state.update(key=None, shapes=None)
+        if drawn:
+            dialog.layout = _AnyLayout()
+            dialog_class.draw(dialog, bpy.context)
+        else:
+            ops._refresh_preview(dialog, bpy.context)
+        return preview._state["shapes"]
+
+    @pytest.mark.parametrize("drawn", [False, True], ids=["refreshed", "drawn"])
+    def test_an_axis_on_the_tool_is_previewed_on_the_tool_as_the_arm_stands(
+        self, arm6, builder, ops, preview, drawn
+    ):
+        """#77: arm6 posed off its rest, a spindle on the tool. Its travel ring is
+        drawn round the axis, so its centre is where the axis goes: on the tool,
+        not 412.7 mm away where the tool would be at rest."""
+        import bpy
+
+        posed = (0.4, -0.6, 1.0, 0.5, 0.4, 0.3)
+        for bone, value in zip(builder.joint_bones(arm6), posed, strict=True):
+            bone.rotation_euler[1] = value
+        bpy.context.view_layer.update()
+        tcp = arm6.pose.bones[arm6.get(builder.PROP_TCP_BONE) or builder.TCP_BONE]
+
+        shown = self._shown(
+            ops, preview, arm6, drawn, axis_name="spindle", mount="AFTER", kind="ROTARY",
+            direction="Z", continuous=True, placeholder=True,
+        )
+        centre = shown["lines"].mean(axis=0)
+        off = float(np.linalg.norm(centre - np.array(tcp.matrix.translation)))
+        assert off < 1e-5, f"the preview is {off * 1000:.1f} mm from the tool"
+
+    def test_an_axis_under_a_turned_root_is_previewed_turned_with_it(
+        self, arm6, builder, ops, preview
+    ):
+        """A track under the robot, with Root turned 90 degrees about Z: its travel
+        and the robot's ghost turn with Root, as the axis and the robot will."""
+        import math
+
+        import bpy
+        from mathutils import Matrix
+
+        flat = self._shown(
+            ops, preview, arm6, axis_name="track", mount="BEFORE", kind="LINEAR",
+            direction="X", offset_location=(0.2, 0.0, 0.0),
+        )
+        preview.stop()
+        root = arm6.pose.bones[builder.ROOT_BONE]
+        root.matrix = Matrix.Rotation(math.pi / 2, 4, "Z") @ root.matrix
+        bpy.context.view_layer.update()
+        turn = np.array(Matrix.Rotation(math.pi / 2, 4, "Z"))
+        turned = self._shown(
+            ops, preview, arm6, axis_name="track", mount="BEFORE", kind="LINEAR",
+            direction="X", offset_location=(0.2, 0.0, 0.0),
+        )
+        np.testing.assert_allclose(
+            turned["lines"], flat["lines"] @ turn[:3, :3].T + turn[:3, 3], atol=1e-6
+        )
+        np.testing.assert_allclose(
+            turned["shift"][:3, 3], turn[:3, :3] @ flat["shift"][:3, 3], atol=1e-6
+        )
 
     def test_the_ghost_includes_the_axes_already_under_the_robot(self, arm6, ops, ext):
         _add(ops, ext, arm6, **TRACK)

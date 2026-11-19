@@ -364,6 +364,267 @@ class TestBake:
         assert any("joint1" in p for p in paths)
         assert not rig.kinema_ik_enabled, "live IK should be off after baking"
 
+    def test_clearing_keeps_the_keys_outside_the_baked_range(self, rig, builder):
+        """#74: joint6 keyed by hand at 1, 16, 30 and 40, then IK baked over
+        frames 11-19 at Step 2. The keys at 1, 30 and 40 are someone else's
+        animation and stay; the one at 16, between two baked frames, is in the
+        range and goes."""
+        import bpy
+        from mathutils import Vector
+
+        bpy.ops.kinema.add_ik()
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        wrist = builder.joint_bones(rig)[-1]
+        for frame, value in ((1, 0.2), (16, 0.7), (30, 0.5), (40, 1.0)):
+            wrist.rotation_euler[1] = value
+            wrist.keyframe_insert("rotation_euler", index=1, frame=frame)
+        scene = bpy.context.scene
+        goal = rig.pose.bones[ik_name]
+        base = goal.matrix.copy()
+        for frame, offset in ((11, (0, 0, 0)), (19, (0.0, 0.0, -0.08))):
+            scene.frame_set(frame)
+            matrix = base.copy()
+            matrix.translation += Vector(offset)
+            goal.matrix = matrix
+            goal.keyframe_insert("location", frame=frame)
+
+        assert bpy.ops.kinema.bake_ik(
+            frame_start=11, frame_end=19, step=2, clear_existing=True
+        ) == {"FINISHED"}
+
+        path = wrist.path_from_id("rotation_euler")
+        curve = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == path and c.array_index == 1
+        )
+        keys = {round(p.co[0]): p.co[1] for p in curve.keyframe_points}
+        assert sorted(keys) == [1, 11, 13, 15, 17, 19, 30, 40]
+        for frame, value in ((1, 0.2), (30, 0.5), (40, 1.0)):
+            assert keys[frame] == pytest.approx(value), f"frame {frame}"
+
+    def _wrist_curve(self, builder, rig):
+        wrist = builder.joint_bones(rig)[-1]
+        path = wrist.path_from_id("rotation_euler")
+        return next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == path and c.array_index == 1
+        )
+
+    def _key_wrist(self, builder, rig, keys):
+        wrist = builder.joint_bones(rig)[-1]
+        for frame, value in keys:
+            wrist.rotation_euler[1] = value
+            wrist.keyframe_insert("rotation_euler", index=1, frame=frame)
+
+    @staticmethod
+    def _state(curve) -> tuple:
+        """Everything the refusal promises not to change about ``curve``."""
+        return (
+            [tuple(p.co) for p in curve.keyframe_points],
+            [tuple(p.co) for p in curve.sampled_points],
+            curve.mute, curve.lock, len(curve.modifiers),
+        )
+
+    @pytest.mark.parametrize(
+        "spoil", ["muted", "with modifiers", "baked to samples", "locked", "in a locked group"]
+    )
+    def test_a_curve_the_bake_keeps_that_would_not_play_is_refused(
+        self, rig, builder, spoil
+    ):
+        """joint6 keyed at 1 and 40, outside a bake of 11-19, so its curve is kept,
+        and its settings with it. Muted, modified or sampled, the baked keys would
+        not play as solved; locked, they wouldn't even be written, with nothing
+        said. Refused, with nothing changed."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        self._key_wrist(builder, rig, ((1, 0.2), (40, 1.0)))
+        curve = self._wrist_curve(builder, rig)
+        if spoil == "muted":
+            curve.mute = True
+        elif spoil == "with modifiers":
+            curve.modifiers.new("NOISE")
+        elif spoil == "baked to samples":
+            curve.convert_to_samples(1, 40)
+        elif spoil == "locked":
+            curve.lock = True
+        else:
+            curve.group.lock = True
+        before = self._state(curve)
+
+        with pytest.raises(RuntimeError, match=f"'joint6' \\({spoil}\\)"):
+            bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1)
+        assert self._state(self._wrist_curve(builder, rig)) == before
+
+    def test_a_muted_curve_the_clear_removes_whole_is_baked(self, rig, builder):
+        """Every key inside the range: the curve goes, settings and all, and the
+        bake writes a fresh one."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        self._key_wrist(builder, rig, ((12, 0.2), (18, 1.0)))
+        self._wrist_curve(builder, rig).mute = True
+
+        assert bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1) == {"FINISHED"}
+        curve = self._wrist_curve(builder, rig)
+        assert not curve.mute
+        assert sorted(round(p.co[0]) for p in curve.keyframe_points) == list(range(11, 20))
+
+    def test_a_joint_with_no_curve_yet_in_a_locked_group_is_refused(self, rig, builder):
+        """joint6's channel has no curve yet, but its location does, in the group
+        named after the bone, locked. The bake's first key on the channel would go
+        into that group, and be refused there without a word."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        wrist = builder.joint_bones(rig)[-1]
+        wrist.keyframe_insert("location", index=0, frame=1)
+        sibling = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == wrist.path_from_id("location")
+        )
+        assert sibling.group is not None and sibling.group.name == wrist.name
+        sibling.group.lock = True
+
+        with pytest.raises(RuntimeError, match="'joint6' \\(in a locked group\\)"):
+            bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1)
+
+    @pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reversed"])
+    @pytest.mark.parametrize("keyed", ["either side", "inside only"])
+    def test_live_ik_is_off_over_the_baked_frames_and_as_it_was_around_them(
+        self, rig, builder, reverse, keyed
+    ):
+        """A tweaked strip, played forwards or backwards, with live IK keyed on
+        either side of the bake, or only by a key inside it. Off on every baked
+        scene frame, 111 to 119, and on at 110 and 120 as before: the switch
+        steps from key to key, so an off key left first or last on its curve held
+        beyond the range."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        # The action spans frames 1-150 whatever the switch's keys.
+        self._key_wrist(builder, rig, ((1, 0.0), (150, 0.0)))
+        anim = rig.animation_data
+        track = anim.nla_tracks.new()
+        strip = track.strips.new("job", 101, anim.action)
+        strip.use_reverse = reverse
+        anim.action = None
+        anim.nla_tracks.active = track
+        track.select = strip.select = True
+        anim.use_tweak_mode = True
+        rig.kinema_ik_enabled = True
+        # Keyed in tweak mode, at scene frames: Blender maps them into the strip.
+        for frame in ((105, 125) if keyed == "either side" else (115,)):
+            rig.keyframe_insert("kinema_ik_enabled", frame=frame)
+        to_action = lambda f: anim.nla_tweak_strip_time_to_scene(float(f), invert=True)  # noqa: E731
+        assert (to_action(111) > to_action(119)) == reverse, "precondition: its direction"
+
+        assert bpy.ops.kinema.bake_ik(frame_start=111, frame_end=119, step=1) == {"FINISHED"}
+        switch = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == "kinema_ik_enabled"
+        )
+        played = {f: switch.evaluate(to_action(f)) for f in range(110, 121)}
+        assert all(played[f] == pytest.approx(0.0) for f in range(111, 120)), played
+        assert played[110] == pytest.approx(1.0) and played[120] == pytest.approx(1.0), played
+
+    def test_switch_keys_on_subframes_outside_the_range_stay(self, rig, builder):
+        """Live IK keyed on subframes 110.5 and 119.5, just outside a bake of
+        111-119: they are the job's, not the bake's, and stay."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        rig.kinema_ik_enabled = True
+        for frame in (1, 110.5, 119.5, 150):
+            rig.keyframe_insert("kinema_ik_enabled", frame=frame)
+
+        assert bpy.ops.kinema.bake_ik(frame_start=111, frame_end=119, step=1) == {"FINISHED"}
+        switch = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == "kinema_ik_enabled"
+        )
+        frames = [p.co[0] for p in switch.keyframe_points]
+        assert 110.5 in frames and 119.5 in frames, frames
+        assert all(switch.evaluate(f) == pytest.approx(0.0) for f in range(111, 120))
+        assert switch.evaluate(110) == pytest.approx(1.0)
+        assert switch.evaluate(120) == pytest.approx(1.0)
+
+    def test_a_joint_locked_on_the_bone_is_baked(self, rig, builder):
+        """A pose bone's own channel lock stops the transform tools, not a key:
+        keyframe_insert still writes, so the bake goes through."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        wrist = builder.joint_bones(rig)[-1]
+        wrist.lock_rotation[1] = True
+
+        assert bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1) == {"FINISHED"}
+        curve = self._wrist_curve(builder, rig)
+        assert sorted(round(p.co[0]) for p in curve.keyframe_points) == list(range(11, 20))
+
+    def test_a_locked_curve_the_clear_removes_whole_is_baked(self, rig, builder):
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        self._key_wrist(builder, rig, ((12, 0.2), (18, 1.0)))
+        self._wrist_curve(builder, rig).lock = True
+
+        assert bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1) == {"FINISHED"}
+        curve = self._wrist_curve(builder, rig)
+        assert sorted(round(p.co[0]) for p in curve.keyframe_points) == list(range(11, 20))
+
+    def test_in_tweak_mode_the_range_is_cleared_in_the_strips_time(self, rig, builder):
+        """The action in an NLA strip 100 frames on, tweaked: its keys at action
+        frames 16 and 116 play at scene frames 116 and 216. Baking scene frames
+        111-119 at Step 2 clears the one at 116 and keeps the one at 216, as the
+        keys it writes land at action frames 11-19."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        self._key_wrist(builder, rig, ((16, 0.7), (116, 0.5)))
+        # Live IK keyed on across the action, as a generated job keys it.
+        rig.kinema_ik_enabled = True
+        for frame in (1, 150):
+            rig.keyframe_insert("kinema_ik_enabled", frame=frame)
+        anim = rig.animation_data
+        track = anim.nla_tracks.new()
+        # The action starts at frame 1, the switch's first key: 100 frames on.
+        strip = track.strips.new("job", 101, anim.action)
+        anim.action = None
+        anim.nla_tracks.active = track
+        track.select = strip.select = True
+        anim.use_tweak_mode = True
+        assert anim.use_tweak_mode and anim.nla_tweak_strip_time_to_scene(16) == 116
+
+        assert bpy.ops.kinema.bake_ik(
+            frame_start=111, frame_end=119, step=2, clear_existing=True
+        ) == {"FINISHED"}
+        keys = {round(p.co[0]): p.co[1] for p in self._wrist_curve(builder, rig).keyframe_points}
+        assert sorted(keys) == [11, 13, 15, 17, 19, 116]
+        assert keys[116] == pytest.approx(0.5)
+        # Live IK keyed off over the baked frames and back on after, in the
+        # strip's time too: action frames 11 and 20, not 111 and 120.
+        switch = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == "kinema_ik_enabled"
+        )
+        keyed = {round(p.co[0]): p.co[1] for p in switch.keyframe_points}
+        assert keyed.get(11) == pytest.approx(0.0), keyed
+        assert keyed.get(20) == pytest.approx(1.0), keyed
+        assert 111 not in keyed and 120 not in keyed
+
+        # A range given end first is refused before anything changes: the
+        # switch included, which keying off over it would rewrite.
+        wrist_before = sorted(keys)
+        switch_before = sorted(keyed.items())
+        with pytest.raises(RuntimeError, match="End frame 111 is before start frame 119"):
+            bpy.ops.kinema.bake_ik(frame_start=119, frame_end=111, step=1, clear_existing=True)
+        after = sorted(round(p.co[0]) for p in self._wrist_curve(builder, rig).keyframe_points)
+        assert after == wrist_before
+        assert sorted((round(p.co[0]), p.co[1]) for p in switch.keyframe_points) == [
+            (frame, pytest.approx(value)) for frame, value in switch_before
+        ]
+
     def test_baked_animation_plays_without_the_solver(self, rig, builder):
         """The whole point: a delivered .blend must not need Kinema to animate."""
         import bpy

@@ -72,6 +72,23 @@ class TestDegenerateArms:
         assert np.dot(goal - centre, knob) > 0.0, "the goal is not on the knob's side"
         assert float(np.linalg.norm(goal - centre)) == pytest.approx(radius)
 
+    @pytest.mark.parametrize("fraction", [1.0, 0.9999, 0.999])
+    def test_within_reach_near_full_stretch_the_goal_is_still_reachable(self, fraction):
+        """#50: at full reach, or a hair inside it, the true circle is smaller than
+        the side floor. Floored, the goal missed both lengths, and the elbow's pull
+        cost a stretched arm7 0.31 mm of tool. The floor is for a wrist past reach."""
+        wrist = SHOULDER + np.array([1.0, 0.0, 0.0]) * (UPPER + FORE) * fraction
+        goal = swivel.elbow_goal(SHOULDER, wrist, UPPER, FORE, np.array([0.0, 1.0, 0.0]), wrist)
+        assert np.linalg.norm(goal - SHOULDER) == pytest.approx(UPPER, abs=1e-9)
+        assert np.linalg.norm(wrist - goal) == pytest.approx(FORE, abs=1e-9)
+
+    def test_at_the_inner_limit_the_goal_is_still_reachable(self):
+        """Folded flat, but not past it: the same, at the inner limit."""
+        wrist = SHOULDER + np.array([1.0, 0.0, 0.0]) * abs(UPPER - FORE) * 1.0001
+        goal = swivel.elbow_goal(SHOULDER, wrist, UPPER, FORE, np.array([0.0, 1.0, 0.0]), wrist)
+        assert np.linalg.norm(goal - SHOULDER) == pytest.approx(UPPER, abs=1e-9)
+        assert np.linalg.norm(wrist - goal) == pytest.approx(FORE, abs=1e-9)
+
     def test_the_side_floor_leaves_an_ordinary_goal_alone(self):
         """Away from full stretch the real circle is far wider than the floor."""
         _, _, radius = swivel.elbow_circle(SHOULDER, WRIST, UPPER, FORE)
