@@ -67,7 +67,8 @@ def _current_tool(rig) -> np.ndarray | None:
     return _np4(tcp.matrix @ builder.BONE_TO_TOOL)
 
 
-def _length(rig) -> float:
+def triad_length(rig) -> float:
+    """How long a triad's arms are drawn on ``rig``: a fraction of its extent."""
     heads = np.array([b.head_local for b in rig.data.bones], dtype=float)
     extent = float(np.linalg.norm(heads.max(axis=0) - heads.min(axis=0))) if len(heads) else 1.0
     return max(extent, 0.1) * TRIAD_SCALE
@@ -81,7 +82,7 @@ def start(operator, rig) -> None:
     stop()
     if rig is None:
         return
-    _state.update(operator=operator, rig=rig.name, length=_length(rig), key=None, drawn=None)
+    _state.update(operator=operator, rig=rig.name, length=triad_length(rig), key=None, drawn=None)
     space = bpy.types.SpaceView3D
     _handles.append(space.draw_handler_add(_draw, (), "WINDOW", "POST_VIEW"))
 

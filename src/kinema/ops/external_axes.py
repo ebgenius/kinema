@@ -1042,7 +1042,8 @@ class KINEMA_OT_add_external_axis(Operator):
             placed = None
         axis_preview.show(self, spec, as_posed(rig, placed))
         if self.mount == "BEFORE" and placed is not None:
-            moved = placed[2]
+            # Where the robot stands once added: on the carriage at its start.
+            moved = ext.at_start(spec, placed[1]) @ placed[2]
             if not _is_identity(moved, 1e-6):
                 x, y, z = moved[:3, 3]
                 layout.label(

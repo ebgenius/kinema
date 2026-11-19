@@ -612,7 +612,11 @@ follows every field you change:
 - the travel: the carriage outlined at both end stops, or an arc from stop to stop, with the
   limits written beside them;
 - for an axis under the robot that moves it, a ghost of the robot and the axes it already
-  rides, where they will stand.
+  rides, where they will stand;
+- for an axis on the tool, the TCP where it will be, as a bright X/Y/Z triad, and where it
+  is now, as a faint one. They part as you edit the offset.
+
+All of it is drawn as the arm stands, so an axis on a posed tool shows on the tool.
 
 The ghost is a coarse copy of the meshes, moved as one block. Nothing is solved, and nothing
 is added to the scene until you press OK. Cancel leaves no trace. Clicking in the viewport
