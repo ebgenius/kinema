@@ -801,6 +801,15 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
             if not bones:
                 self.report({"ERROR"}, "No joints to bake on this rig")
                 return {"CANCELLED"}
+            unplayable = self._unplayable(rig, bones)
+            if unplayable:
+                self.report(
+                    {"ERROR"},
+                    f"Not baked: the curves of {', '.join(unplayable)} would not play "
+                    f"the solved poses. Unmute them, remove their modifiers or convert "
+                    f"their samples to keyframes, or clear them first",
+                )
+                return {"CANCELLED"}
             # Read before the curves are cleared, and only where live IK is
             # itself keyed -- a job from Generate Motion. There the joint curves
             # carry the joint moves, and they seed IK's solves where it is on.
@@ -927,6 +936,7 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         the range and go. A curve is removed only once nothing is left on it.
         """
         wanted = {f'pose.bones["{name}"]' for name in bone_names}
+        first, last = _in_action_time(rig, first, last)
         # Blender 4.4+ stores curves in slotted layers/strips rather than
         # directly on the action, and only this rig's slot is ours to clear --
         # a rig sharing the action almost certainly has bones by the same names.
@@ -941,6 +951,55 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
                     curves.remove(curve)
                 else:
                     curve.update()
+
+
+    def _unplayable(self, rig, bone_names: list[str]) -> list[str]:
+        """The baked joints whose channel would not play what is keyed into it.
+
+        A curve the bake keeps -- one with keys outside the range, or with Clear
+        Existing Keys off -- keeps its own settings too. Muted, it plays nothing;
+        a modifier reshapes the solved values; samples outlast any key written
+        over them. Found before anything is cleared or keyed, so a refusal
+        changes nothing. A curve the clear removes whole is replaced, settings
+        and all, and is no trouble.
+        """
+        first, last = _in_action_time(rig, self.frame_start, self.frame_end)
+        channels = {joint_channel(rig.pose.bones[name]): name for name in bone_names}
+        found = []
+        for curves in own_fcurve_containers(rig):
+            for curve in curves:
+                name = channels.get((curve.data_path, int(curve.array_index)))
+                if name is None:
+                    continue
+                kept = (
+                    not self.clear_existing
+                    or len(curve.sampled_points)
+                    or any(not first <= p.co[0] <= last for p in curve.keyframe_points)
+                )
+                if not kept:
+                    continue
+                if curve.mute:
+                    found.append(f"'{name}' (muted)")
+                elif len(curve.sampled_points):
+                    found.append(f"'{name}' (baked to samples)")
+                elif len(curve.modifiers):
+                    found.append(f"'{name}' (with modifiers)")
+        return found
+
+
+def _in_action_time(rig, first: int, last: int) -> tuple[float, float]:
+    """Scene frames ``first`` to ``last`` in the time of the keys being edited.
+
+    The same, unless the rig is in NLA tweak mode: there the action's keys sit
+    in the tweaked strip's own time, which an offset or scaled strip moves.
+    ``keyframe_insert`` maps a scene frame through that already; clearing has
+    to as well, or it clears another part of the action than the bake keys.
+    """
+    anim = rig.animation_data
+    if anim is None or not anim.use_tweak_mode:
+        return first, last
+    ends = sorted(anim.nla_tweak_strip_time_to_scene(float(f), invert=True) for f in (first, last))
+    return ends[0], ends[1]
 
 
 #: Data path of the keyframable IK tip, on the rig object.
@@ -962,6 +1021,15 @@ def key_joint_value(pose_bone, frame: int) -> None:
     )
     path, channel = ("location", 1) if is_prismatic else ("rotation_euler", 1)
     pose_bone.keyframe_insert(data_path=path, index=channel, frame=frame)
+
+
+def joint_channel(pose_bone) -> tuple[str, int]:
+    """``(data path, index)`` of the one curve :func:`key_joint_value` keys."""
+    is_prismatic = (
+        pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
+    )
+    name = "location" if is_prismatic else "rotation_euler"
+    return pose_bone.path_from_id(name), 1
 
 
 def set_joint_value(pose_bone, value: float) -> None:

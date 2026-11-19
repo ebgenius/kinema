@@ -402,6 +402,83 @@ class TestBake:
         for frame, value in ((1, 0.2), (30, 0.5), (40, 1.0)):
             assert keys[frame] == pytest.approx(value), f"frame {frame}"
 
+    def _wrist_curve(self, builder, rig):
+        wrist = builder.joint_bones(rig)[-1]
+        path = wrist.path_from_id("rotation_euler")
+        return next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == path and c.array_index == 1
+        )
+
+    def _key_wrist(self, builder, rig, keys):
+        wrist = builder.joint_bones(rig)[-1]
+        for frame, value in keys:
+            wrist.rotation_euler[1] = value
+            wrist.keyframe_insert("rotation_euler", index=1, frame=frame)
+
+    @pytest.mark.parametrize("spoil", ["muted", "with modifiers", "baked to samples"])
+    def test_a_curve_the_bake_keeps_that_would_not_play_is_refused(
+        self, rig, builder, spoil
+    ):
+        """joint6 keyed at 1 and 40, outside a bake of 11-19, so its curve is kept,
+        and its settings with it. Muted, modified or sampled, the baked keys would
+        not play as solved: refused, with nothing changed."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        self._key_wrist(builder, rig, ((1, 0.2), (40, 1.0)))
+        curve = self._wrist_curve(builder, rig)
+        if spoil == "muted":
+            curve.mute = True
+        elif spoil == "with modifiers":
+            curve.modifiers.new("NOISE")
+        else:
+            curve.convert_to_samples(1, 40)
+        before = [tuple(p.co) for p in curve.keyframe_points]
+
+        with pytest.raises(RuntimeError, match=f"'joint6' \\({spoil}\\)"):
+            bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1)
+        assert [tuple(p.co) for p in self._wrist_curve(builder, rig).keyframe_points] == before
+
+    def test_a_muted_curve_the_clear_removes_whole_is_baked(self, rig, builder):
+        """Every key inside the range: the curve goes, settings and all, and the
+        bake writes a fresh one."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        self._key_wrist(builder, rig, ((12, 0.2), (18, 1.0)))
+        self._wrist_curve(builder, rig).mute = True
+
+        assert bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1) == {"FINISHED"}
+        curve = self._wrist_curve(builder, rig)
+        assert not curve.mute
+        assert sorted(round(p.co[0]) for p in curve.keyframe_points) == list(range(11, 20))
+
+    def test_in_tweak_mode_the_range_is_cleared_in_the_strips_time(self, rig, builder):
+        """The action in an NLA strip 100 frames on, tweaked: its keys at action
+        frames 16 and 116 play at scene frames 116 and 216. Baking scene frames
+        111-119 at Step 2 clears the one at 116 and keeps the one at 216, as the
+        keys it writes land at action frames 11-19."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        self._key_wrist(builder, rig, ((16, 0.7), (116, 0.5)))
+        anim = rig.animation_data
+        track = anim.nla_tracks.new()
+        strip = track.strips.new("job", 116, anim.action)
+        anim.action = None
+        anim.nla_tracks.active = track
+        track.select = strip.select = True
+        anim.use_tweak_mode = True
+        assert anim.use_tweak_mode and anim.nla_tweak_strip_time_to_scene(16) == 116
+
+        assert bpy.ops.kinema.bake_ik(
+            frame_start=111, frame_end=119, step=2, clear_existing=True
+        ) == {"FINISHED"}
+        keys = {round(p.co[0]): p.co[1] for p in self._wrist_curve(builder, rig).keyframe_points}
+        assert sorted(keys) == [11, 13, 15, 17, 19, 116]
+        assert keys[116] == pytest.approx(0.5)
+
     def test_baked_animation_plays_without_the_solver(self, rig, builder):
         """The whole point: a delivered .blend must not need Kinema to animate."""
         import bpy
