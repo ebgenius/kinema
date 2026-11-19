@@ -292,7 +292,7 @@ class RigSolver:
             full_seed = np.zeros(solver.dof)
             full_seed[self._chain_to_full] = seed
             full_held = _full_mask(held, self._chain_to_full, solver.dof)
-            full = solver.solve(
+            full, iterations = solver.solve(
                 full_seed, link_goal, elbow=elbow,
                 held=(full_held, full_seed) if full_held is not None else None,
             )
@@ -302,7 +302,7 @@ class RigSolver:
                 # would let a rail drift a hair per solve until it visibly had.
                 full[full_held] = full_seed[full_held]
 
-            result = pyroki_backend.measure(solver, full, link_goal)
+            result = pyroki_backend.measure(solver, full, link_goal, iterations)
             # Write back only the joints on our chain; anything else PyRoki
             # moved (a gripper finger, say) does not affect the tool.
             result.q = full[self._chain_to_full]
@@ -688,7 +688,7 @@ def find_solutions(rig, solver: RigSolver, seeds: int = 0, seed_value: int = 0):
             full[solver._chain_to_full] = q_seed
             mask = _full_mask(held, solver._chain_to_full, pyroki.dof)
             try:
-                solved = pyroki.solve(
+                solved, _ = pyroki.solve(
                     full, link_goal, elbow=elbow,
                     held=(mask, full) if mask is not None else None,
                 )

@@ -174,6 +174,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where the tool would be at rest: 412.7 mm off on arm6. An axis under the robot was off
   the same way under a posed Root, and so was the robot's ghost. Now each goes where it
   will be seen once added.
+- **A swivel no longer pulls a stretched arm's tool off a goal it can reach** (#50). Near
+  full stretch the elbow's circle is smaller than the floor that keeps its goal off the
+  shoulder-to-wrist line, and the floor applied there too, putting the goal where the
+  elbow can't be. A straight arm7 lost 0.31 mm of tool to it. The floor now applies only
+  to a wrist past the arm's reach, where it keeps the elbow from flipping.
+- **Apply Solution leaves held joints as they are** (#50). Find Solutions stores each
+  configuration as the rig shows it, so a rail held and dragged past its limit was stored
+  at the limit, and applying a solution wrote that over its channel. Held joints are now
+  skipped, as a live solve skips them.
+- **The IK readout shows how many iterations PyRoki took** (#57). It always said `0 it`,
+  which read as though the solver had done nothing; the count now comes from the solve.
+- **Bake IK's Clear Existing Keys clears only the baked range** (#74). It removed the baked
+  joints' whole curves, so a bake over part of a shot deleted every key those joints had
+  outside it: an FK section after an IK one, or the rest of a job baked in part. Keys
+  inside the range go, those between baked frames included when Step is above 1, and a
+  curve is removed only once it's empty. A curve that is kept and muted, modified or
+  baked to samples, which wouldn't play the solved poses, is refused, naming the joints,
+  and the range is cleared in an NLA strip's own time in tweak mode.
 - **COLLADA (`.dae`) meshes import as the file describes them.** Four bugs in the importer,
   found by kinema_catalog's mesh converter, which converts through it and measures the
   result:
