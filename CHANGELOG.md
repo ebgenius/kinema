@@ -169,6 +169,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Add External Axis previews the axis where it will go, as the rig stands** (#77). The
+  preview drew the axis's rest-pose frame, so on a posed arm an axis on the tool showed
+  where the tool would be at rest: 412.7 mm off on arm6. An axis under the robot was off
+  the same way under a posed Root, and so was the robot's ghost. Now each goes where it
+  will be seen once added.
 - **COLLADA (`.dae`) meshes import as the file describes them.** Four bugs in the importer,
   found by kinema_catalog's mesh converter, which converts through it and measures the
   result:
