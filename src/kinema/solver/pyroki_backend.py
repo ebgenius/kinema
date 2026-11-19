@@ -169,13 +169,16 @@ class PyrokiSolver:
                 )
 
             problem = jaxls.LeastSquaresProblem(costs=costs, variables=[joint_var])
-            solution = problem.analyze().solve(
+            solution, summary = problem.analyze().solve(
                 initial_vals=jaxls.VarValues.make([joint_var.with_value(seed)]),
                 verbose=False,
                 linear_solver="dense_cholesky",
                 trust_region=jaxls.TrustRegionConfig(lambda_initial=1.0),
+                return_summary=True,
             )
-            return solution[joint_var]
+            # How many steps it took, for the readout: part of the kernel's
+            # result, so it costs nothing a solve doesn't already compute.
+            return solution[joint_var], summary.iterations
 
         self._compiled[key] = (_solve, jnp)
         return self._compiled[key]
@@ -188,8 +191,10 @@ class PyrokiSolver:
         avoid_singularities: bool = True,
         elbow: tuple[int, np.ndarray, float] | None = None,
         held: tuple[np.ndarray, np.ndarray] | None = None,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, int]:
         """Solve for the full actuated vector. ``target`` is a 4x4 in base frame.
+
+        Returns the vector and how many iterations the solve took.
 
         ``held`` is an optional ``(mask, values)`` over the full actuated vector:
         joints to keep at those values, weighted by :data:`HOLD_WEIGHT`.
@@ -215,7 +220,7 @@ class PyrokiSolver:
             mask, held_values = held
             held_weights = np.asarray(mask, dtype=float) * HOLD_WEIGHT
 
-        result = solve_fn(
+        result, iterations = solve_fn(
             self.robot,
             jnp.array(quaternion, dtype=jnp.float32),
             jnp.array(target[:3, 3], dtype=jnp.float32),
@@ -227,7 +232,7 @@ class PyrokiSolver:
             jnp.array(held_values, dtype=jnp.float32),
             jnp.array(held_weights, dtype=jnp.float32),
         )
-        return np.asarray(result, dtype=np.float64)
+        return np.asarray(result, dtype=np.float64), int(iterations)
 
     def link_index(self, name: str) -> int | None:
         """Index of a URDF link by name, for an elbow goal. None if absent."""
@@ -362,8 +367,11 @@ def build(urdf, target_link_name: str) -> PyrokiSolver:
     )
 
 
-def measure(solver: PyrokiSolver, q: np.ndarray, target: np.ndarray) -> SolveResult:
-    """Wrap a solved configuration in a :class:`SolveResult` with real errors."""
+def measure(
+    solver: PyrokiSolver, q: np.ndarray, target: np.ndarray, iterations: int
+) -> SolveResult:
+    """Wrap a solved configuration in a :class:`SolveResult` with real errors, and the
+    iterations :meth:`PyrokiSolver.solve` took."""
     error = pose_error(solver.forward_kinematics(q), target)
     position_error = float(np.linalg.norm(error[:3]))
     rotation_error = float(np.linalg.norm(error[3:]))
@@ -375,6 +383,6 @@ def measure(solver: PyrokiSolver, q: np.ndarray, target: np.ndarray) -> SolveRes
         ),
         position_error=position_error,
         rotation_error=rotation_error,
-        iterations=0,  # jaxls runs a fixed internal schedule
+        iterations=int(iterations),
         backend=NAME,
     )
