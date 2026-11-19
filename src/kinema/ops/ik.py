@@ -1219,21 +1219,34 @@ def own_fcurve_containers(rig):
     tweaked is, and nor without a slot to tell this rig's curves from another's.
 
     Whichever plays a channel comes first, for a lookup that takes the first
-    curve on it: the active action where it replaces the strips under it at
-    full strength, as it does unless set otherwise, and the job's strips where
-    it doesn't. Blended in part, neither curve alone is what plays; the job's
+    curve on it. The job's strips come first only where they play -- the NLA
+    on, their track not muted, and no other track soloed -- and the active
+    action doesn't replace them at full strength, as it does unless set
+    otherwise. Blended in part, neither curve alone is what plays; the job's
     then comes first, as the motion the active action is laid over.
     """
     anim = rig.animation_data
     action = anim.action if anim else None
     job = _laid_out_job(rig, anim, action)
-    over = anim is not None and anim.action_blend_type == "REPLACE" and anim.action_influence >= 1.0
-    if job is not None and not over:
+    if job is not None and _job_plays_first(rig, anim):
         yield from job
         job = None
     yield from _active_containers(anim, action)
     if job is not None:
         yield from job
+
+
+def _job_plays_first(rig, anim) -> bool:
+    """Whether the job's strips, rather than the active action, play its channels."""
+    from . import strips
+
+    track = strips._job_track(rig)
+    soloed = any(t.is_solo for t in anim.nla_tracks)
+    plays = anim.use_nla and track is not None and (track.is_solo if soloed else not track.mute)
+    over = (
+        not soloed and anim.action_blend_type == "REPLACE" and anim.action_influence >= 1.0
+    )
+    return plays and not over
 
 
 def _laid_out_job(rig, anim, action):

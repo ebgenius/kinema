@@ -273,8 +273,16 @@ class TestPlayback:
         assert ik.joint_curves(arm6)[first.name].id_data == hand
         # Over strips that animate the channel, the active action's influence
         # applies: at none, the job plays.
-        arm6.animation_data.action_influence = 0.0
+        anim = arm6.animation_data
+        anim.action_influence = 0.0
         assert ik.joint_curves(arm6)[first.name].id_data == arm6.kinema_job_action
+        # Where the job's strips don't play, the active action plays alone,
+        # whatever its influence.
+        anim.use_nla = False
+        assert ik.joint_curves(arm6)[first.name].id_data == hand
+        anim.use_nla = True
+        next(t for t in anim.nla_tracks if t.name == "Kinema Job").mute = True
+        assert ik.joint_curves(arm6)[first.name].id_data == hand
 
     def test_a_muted_job_keys_nothing_in_a_fingerprint(
         self, addon, arm6, builder, strips, prefs
