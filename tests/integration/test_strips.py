@@ -382,31 +382,43 @@ class TestBake:
         self, arm6, builder, strips, prefs
     ):
         """Bake moves hand keys into the job, as Generate does, so the job's strips
-        reach as far as they do -- by a strip added at the end. The strips there
-        stay as the user left them: one muted, and one renamed as Kinema names
-        its own outside the job."""
+        reach as far as they do -- by strips added at either end. The strips there
+        stay as the user left them: one muted, one renamed as Kinema names its own
+        outside the job, and the first set not to hold. The job's own last key on
+        a subframe still leaves room after it."""
         import bpy
 
         prefs.job_as_strips = True
         wrist = _job(builder, arm6)
+        scene = bpy.context.scene
+        wrist.scale[0] = 1.2
+        wrist.keyframe_insert("scale", index=0, frame=scene.frame_end + 0.5)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         track = _track(arm6, strips.JOB_TRACK)[0]
         motion = next(s for s in track.strips if s.name == "b")
         motion.name, motion.mute = strips.BEFORE + " b", True
         named = next(s for s in track.strips if s.name == "a")
         named.name = strips.AFTER
-        laid = [(s.name, s.frame_start, s.frame_end, s.mute) for s in track.strips]
-        # Past the scene's end, where the job's strips stop.
-        frame = bpy.context.scene.frame_end + 50
-        wrist.scale[0] = 3.0
-        wrist.keyframe_insert("scale", index=0, frame=frame)
-        assert track.strips[-1].frame_end < frame, "precondition: past the strips"
+        track.strips[0].extrapolation = "NOTHING"
+        laid = [
+            (s.name, s.frame_start, s.frame_end, s.mute, s.extrapolation) for s in track.strips
+        ]
+        # Past both of the scene's ends, where the job's strips stop.
+        late, early = scene.frame_end + 50, scene.frame_start - 100
+        for frame, value in ((late, 3.0), (early, 0.25)):
+            wrist.scale[0] = value
+            wrist.keyframe_insert("scale", index=0, frame=frame)
+        assert track.strips[-1].frame_end < late, "precondition: past the strips"
+        assert track.strips[0].frame_start > early, "precondition: before the strips"
         assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=81)
         assert arm6.animation_data.action is None
-        now = [(s.name, s.frame_start, s.frame_end, s.mute) for s in track.strips]
-        assert now[: len(laid)] == laid and len(now) == len(laid) + 1, now
-        bpy.context.scene.frame_set(frame)
-        assert wrist.scale[0] == pytest.approx(3.0)
+        now = [
+            (s.name, s.frame_start, s.frame_end, s.mute, s.extrapolation) for s in track.strips
+        ]
+        assert now[1:-1] == laid and len(now) == len(laid) + 2, now
+        for frame, value in ((late, 3.0), (early, 0.25)):
+            scene.frame_set(frame)
+            assert wrist.scale[0] == pytest.approx(value)
 
     def test_a_sampled_hand_curve_keeps_the_jobs_keys(self, arm6, builder, strips, prefs):
         """Samples and keys don't mix on one curve. A sampled hand curve on a channel
@@ -551,3 +563,39 @@ class TestBake:
         assert not baked.strips[0].mute
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert baked.strips[0].mute
+
+    def test_a_bake_never_goes_onto_a_muted_track(self, arm6, builder, strips, prefs):
+        """Muted, a track of bakes plays the live job; a new bake beside the muted
+        one goes on a track that plays, and the muted one stays as it was."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=30)
+        _track(arm6, strips.BAKED_TRACK)[0].mute = True
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=60, frame_end=80)
+        laid = [
+            (t.mute, [(s.frame_start, s.frame_end) for s in t.strips])
+            for t in _track(arm6, strips.BAKED_TRACK)
+        ]
+        assert laid == [(True, [(1.0, 30.0)]), (False, [(60.0, 80.0)])], laid
+
+    def test_strips_sharing_a_bake_are_cleared_once(self, arm6, builder, strips, prefs):
+        """A baked strip duplicated in the NLA editor shares its action. Both under a
+        new bake, they go, and the action with them, once."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=30)
+        track = _track(arm6, strips.BAKED_TRACK)[0]
+        shared = track.strips[0].action
+        name = shared.name
+        strips._new_strip(track, "copy", 40.0, 50.0, shared, track.strips[0].action_slot)
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=60)
+        laid = [[(s.frame_start, s.frame_end) for s in t.strips]
+                for t in _track(arm6, strips.BAKED_TRACK)]
+        assert laid == [[(1.0, 60.0)]], laid
+        assert name not in bpy.data.actions

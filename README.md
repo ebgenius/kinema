@@ -297,12 +297,14 @@ When the shot is right, **Bake IK to Keyframes** turns the whole thing into plai
 curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves
 bake as IK solves them. A job on the NLA is baked into a copy of its action, shown as a
 strip on a *Kinema Baked* track above the job over the baked range, and the job's own keys
-are left as they were: mute that track to go back to the live job. A bake over part of an
-earlier one goes on a track above it, so the earlier bake still plays outside the new one's
-frames. With the job on the NLA, the next Generate mutes the bakes over the job's frames,
-since they show the job as it was, and says so; with **Job as NLA Strips** off, the job in
-the active action plays over them. A job on the NLA needs two frames or more to bake, since
-a strip needs a length.
+are left as they were: mute the *Kinema Baked* tracks to go back to the live job.
+- A bake over part of an earlier one goes on a track of its own above it, so the earlier
+  bake still plays outside the new one's frames. A bake never goes onto a muted track.
+- With the job on the NLA, the next Generate mutes the bakes over the job's frames, since
+  they show the job as it was, and says so. With **Job as NLA Strips** off, the job in the
+  active action plays over them.
+- A bake onto a new NLA strip needs two frames or more, since a strip needs a length. In
+  NLA tweak mode, Bake keys the tweaked action, and one frame is enough.
 
 ## Checking motion limits
 

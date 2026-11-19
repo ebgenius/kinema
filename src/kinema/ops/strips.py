@@ -35,6 +35,7 @@ as strips is then put back in its active action on the next Generate.
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 
 import bpy
@@ -316,12 +317,17 @@ def _new_strip(track, name, a: float, b: float, action, slot, action_start=None)
 def _reach(job) -> tuple[float, float]:
     """The frames the job's strips cover: what its action holds, and out to the
     scene's ends too -- a curve can play on past its keys, cycled or extrapolated
-    in a line, and past a strip's frames it would hold."""
+    in a line, and past a strip's frames it would hold.
+
+    Out to whole frames: a strip goes in at a whole frame before it is moved to
+    its own, so one that starts where another ends on a subframe would first
+    land inside it, and be refused.
+    """
     start, end = (float(v) for v in job.frame_range)
     scene = bpy.context.scene
     if scene is not None:
         start, end = min(start, float(scene.frame_start)), max(end, float(scene.frame_end))
-    return start, end
+    return float(math.floor(start)), float(math.ceil(end))
 
 
 def _tile(rig, spans, slot) -> None:
@@ -402,7 +408,10 @@ def _cover(rig, slot) -> None:
     if start < first.frame_start:
         strip = _new_strip(track, BEFORE, start, float(first.frame_start), job, slot)
         strip.extrapolation = "HOLD"
-        first.extrapolation = "HOLD_FORWARD"
+        if first.extrapolation == "HOLD":
+            # Only the first strip holds backwards, which it no longer is. Any
+            # other setting the user gave it stays.
+            first.extrapolation = "HOLD_FORWARD"
 
 
 def bakes_to_strip(rig) -> bool:
@@ -480,7 +489,8 @@ def baking(rig, first: int, last: int, context=None):
 
 def _place_bake(rig, baked, slot, first: float, last: float) -> None:
     """Show ``baked`` over ``first``-``last``, above any earlier bake under those
-    frames: on the top track of bakes where it has room, or on a new one above.
+    frames: on the top track of bakes where it has room and plays, or on a new
+    one above.
 
     An earlier bake is left as it is, settings and all, and plays wherever the
     new one doesn't reach. One wholly under it can never play again, so it goes,
@@ -491,13 +501,19 @@ def _place_bake(rig, baked, slot, first: float, last: float) -> None:
     for track in _baked_tracks(rig):
         for strip in list(track.strips):
             if strip.frame_start >= first and strip.frame_end <= last:
-                gone.append(strip.action)
+                # Once each: strips duplicated in the NLA editor share one.
+                if all(strip.action != action for action in gone):
+                    gone.append(strip.action)
                 track.strips.remove(strip)
         if not len(track.strips):
             anim.nla_tracks.remove(track)
     tracks = _baked_tracks(rig)
     top = tracks[-1] if tracks else None
-    if top is None or any(s.frame_start < last and s.frame_end > first for s in top.strips):
+    # A muted track would hide the new bake, and unmuting it would bring back the
+    # bakes the user muted there.
+    if top is None or top.mute or any(
+        s.frame_start < last and s.frame_end > first for s in top.strips
+    ):
         top = _new_track(anim, BAKED_TRACK)
     strip = _new_strip(top, f"Baked {first:g}-{last:g}", first, last, baked, slot)
     strip.extrapolation = "NOTHING"
