@@ -805,9 +805,9 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
             if unplayable:
                 self.report(
                     {"ERROR"},
-                    f"Not baked: the curves of {', '.join(unplayable)} would not play "
-                    f"the solved poses. Unmute them, remove their modifiers or convert "
-                    f"their samples to keyframes, or clear them first",
+                    f"Not baked: the curves of {', '.join(unplayable)} wouldn't take or "
+                    f"play the solved poses. Unlock or unmute them, remove their "
+                    f"modifiers or convert their samples to keyframes, or clear them first",
                 )
                 return {"CANCELLED"}
             # Read before the curves are cleared, and only where live IK is
@@ -957,11 +957,13 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         """The baked joints whose channel would not play what is keyed into it.
 
         A curve the bake keeps -- one with keys outside the range, or with Clear
-        Existing Keys off -- keeps its own settings too. Muted, it plays nothing;
-        a modifier reshapes the solved values; samples outlast any key written
-        over them. Found before anything is cleared or keyed, so a refusal
-        changes nothing. A curve the clear removes whole is replaced, settings
-        and all, and is no trouble.
+        Existing Keys off -- keeps its own settings too. Locked, it takes no key,
+        and ``keyframe_insert`` says so only by returning False; muted, it plays
+        nothing; a modifier reshapes the solved values; samples outlast any key
+        written over them. Found before anything is cleared or keyed, so a
+        refusal changes nothing. A curve the clear removes whole is replaced,
+        settings and all, and is no trouble -- unless its group is locked: a
+        group the bone's other channels keep stays, and the new curve joins it.
         """
         first, last = _in_action_time(rig, self.frame_start, self.frame_end)
         channels = {joint_channel(rig.pose.bones[name]): name for name in bone_names}
@@ -971,6 +973,9 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
                 name = channels.get((curve.data_path, int(curve.array_index)))
                 if name is None:
                     continue
+                if curve.group is not None and curve.group.lock:
+                    found.append(f"'{name}' (in a locked group)")
+                    continue
                 kept = (
                     not self.clear_existing
                     or len(curve.sampled_points)
@@ -978,7 +983,9 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
                 )
                 if not kept:
                     continue
-                if curve.mute:
+                if curve.lock:
+                    found.append(f"'{name}' (locked)")
+                elif curve.mute:
                     found.append(f"'{name}' (muted)")
                 elif len(curve.sampled_points):
                     found.append(f"'{name}' (baked to samples)")
@@ -996,7 +1003,8 @@ def _in_action_time(rig, first: int, last: int) -> tuple[float, float]:
     to as well, or it clears another part of the action than the bake keys.
     """
     anim = rig.animation_data
-    if anim is None or not anim.use_tweak_mode:
+    if anim is None or not anim.use_tweak_mode or first > last:
+        # An empty range stays empty: sorted, a reversed one would not be.
         return first, last
     ends = sorted(anim.nla_tweak_strip_time_to_scene(float(f), invert=True) for f in (first, last))
     return ends[0], ends[1]

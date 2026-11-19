@@ -416,13 +416,25 @@ class TestBake:
             wrist.rotation_euler[1] = value
             wrist.keyframe_insert("rotation_euler", index=1, frame=frame)
 
-    @pytest.mark.parametrize("spoil", ["muted", "with modifiers", "baked to samples"])
+    @staticmethod
+    def _state(curve) -> tuple:
+        """Everything the refusal promises not to change about ``curve``."""
+        return (
+            [tuple(p.co) for p in curve.keyframe_points],
+            [tuple(p.co) for p in curve.sampled_points],
+            curve.mute, curve.lock, len(curve.modifiers),
+        )
+
+    @pytest.mark.parametrize(
+        "spoil", ["muted", "with modifiers", "baked to samples", "locked", "in a locked group"]
+    )
     def test_a_curve_the_bake_keeps_that_would_not_play_is_refused(
         self, rig, builder, spoil
     ):
         """joint6 keyed at 1 and 40, outside a bake of 11-19, so its curve is kept,
         and its settings with it. Muted, modified or sampled, the baked keys would
-        not play as solved: refused, with nothing changed."""
+        not play as solved; locked, they wouldn't even be written, with nothing
+        said. Refused, with nothing changed."""
         import bpy
 
         bpy.ops.kinema.add_ik()
@@ -432,13 +444,17 @@ class TestBake:
             curve.mute = True
         elif spoil == "with modifiers":
             curve.modifiers.new("NOISE")
-        else:
+        elif spoil == "baked to samples":
             curve.convert_to_samples(1, 40)
-        before = [tuple(p.co) for p in curve.keyframe_points]
+        elif spoil == "locked":
+            curve.lock = True
+        else:
+            curve.group.lock = True
+        before = self._state(curve)
 
         with pytest.raises(RuntimeError, match=f"'joint6' \\({spoil}\\)"):
             bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1)
-        assert [tuple(p.co) for p in self._wrist_curve(builder, rig).keyframe_points] == before
+        assert self._state(self._wrist_curve(builder, rig)) == before
 
     def test_a_muted_curve_the_clear_removes_whole_is_baked(self, rig, builder):
         """Every key inside the range: the curve goes, settings and all, and the
@@ -452,6 +468,17 @@ class TestBake:
         assert bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1) == {"FINISHED"}
         curve = self._wrist_curve(builder, rig)
         assert not curve.mute
+        assert sorted(round(p.co[0]) for p in curve.keyframe_points) == list(range(11, 20))
+
+    def test_a_locked_curve_the_clear_removes_whole_is_baked(self, rig, builder):
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        self._key_wrist(builder, rig, ((12, 0.2), (18, 1.0)))
+        self._wrist_curve(builder, rig).lock = True
+
+        assert bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1) == {"FINISHED"}
+        curve = self._wrist_curve(builder, rig)
         assert sorted(round(p.co[0]) for p in curve.keyframe_points) == list(range(11, 20))
 
     def test_in_tweak_mode_the_range_is_cleared_in_the_strips_time(self, rig, builder):
@@ -478,6 +505,12 @@ class TestBake:
         keys = {round(p.co[0]): p.co[1] for p in self._wrist_curve(builder, rig).keyframe_points}
         assert sorted(keys) == [11, 13, 15, 17, 19, 116]
         assert keys[116] == pytest.approx(0.5)
+
+        # A range given end first bakes nothing, and clears nothing either.
+        before = sorted(keys)
+        bpy.ops.kinema.bake_ik(frame_start=119, frame_end=111, step=1, clear_existing=True)
+        after = sorted(round(p.co[0]) for p in self._wrist_curve(builder, rig).keyframe_points)
+        assert after == before
 
     def test_baked_animation_plays_without_the_solver(self, rig, builder):
         """The whole point: a delivered .blend must not need Kinema to animate."""
