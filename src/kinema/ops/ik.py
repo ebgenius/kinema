@@ -1214,13 +1214,16 @@ def own_fcurve_containers(rig):
     baking, another rig's identically named pose bones.
 
     A job laid out as NLA strips (ops/strips.py) is the rig's too: its action's
-    curves come first, for the slot its strips show -- but not while Bake IK has
+    curves come after the active action's, for the slot its strips show. After,
+    because the active action plays on top of the strips, so a lookup that takes
+    the first curve on a channel finds the one that plays. Not while Bake IK has
     a copy of it active, which is then the one being written, nor in NLA tweak
     mode, where the strip being tweaked is, and nor without a slot to tell this
     rig's curves from another's.
     """
     anim = rig.animation_data
     action = anim.action if anim else None
+    yield from _active_containers(anim, action)
     job = getattr(rig, "kinema_job_action", None)
     if job is not None and job != action and anim is not None and not anim.use_tweak_mode:
         from . import strips
@@ -1233,6 +1236,10 @@ def own_fcurve_containers(rig):
                     yield from _iter_fcurve_containers(job, handle)
             else:
                 yield from _iter_fcurve_containers(job)
+
+
+def _active_containers(anim, action):
+    """The active action's F-curve collections for the slot ``anim`` plays."""
     if action is None:
         return
     if getattr(action, "layers", None):

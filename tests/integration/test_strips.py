@@ -252,6 +252,26 @@ class TestPlayback:
         assert wrist.scale[0] != pytest.approx(1.0)
 
 
+    def test_a_joint_keyed_by_hand_is_read_where_it_plays(
+        self, addon, arm6, builder, prefs
+    ):
+        """Hand keys on top of the strips play over the job's on the same channel,
+        so a lookup of a joint's curve -- the Motion Limits check's -- finds the
+        hand curve, not the one it hides."""
+        import bpy
+
+        ik = importlib.import_module(f"{addon.__name__}.ops.ik")
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        first = builder.joint_bones(arm6)[0]
+        assert ik.joint_curves(arm6)[first.name].id_data == arm6.kinema_job_action
+        for frame, value in ((100, 0.0), (101, 1.5)):
+            first.rotation_euler[1] = value
+            first.keyframe_insert("rotation_euler", index=1, frame=frame)
+        hand = arm6.animation_data.action
+        assert ik.joint_curves(arm6)[first.name].id_data == hand
+
     def test_hand_curves_move_with_modifiers_and_samples(self, arm6, builder, prefs):
         """A hand curve that plays as more than its keys -- cycled by a modifier,
         or baked to samples -- plays the same once moved into the job."""
