@@ -572,6 +572,15 @@ class TestSpindleOnTheTool:
         offset[:3, 3] = offset_location
         expected = before @ tool @ offset @ np.linalg.inv(tool)
         np.testing.assert_allclose(_tcp_rest(builder, arm6), expected, atol=1e-6)
+        # And the base still places the axis: the spindle turns about its own Z,
+        # on the tool frame times the base.
+        base = ext.AxisSpec(**{
+            **SPINDLE, "base_location": base_location, "base_rotation": base_rotation,
+        }).base
+        axis_frame = before @ tool @ base
+        spindle = _np4(arm6.data.bones["spindle"].matrix_local)
+        np.testing.assert_allclose(spindle[:3, 3], axis_frame[:3, 3], atol=1e-6)
+        np.testing.assert_allclose(spindle[:3, 1], axis_frame[:3, 2], atol=1e-6)
 
     def test_it_needs_a_tcp(self, fixture_dir, clean_scene, builder, ops, ext):
         import bpy
