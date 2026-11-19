@@ -1150,9 +1150,15 @@ def _key_switch_off(rig, first: int, last: int) -> None:
     puts its own value back on the next frame change, and live IK would run
     over the baked joints wherever the job had it on. Only the baked range is
     touched -- a job reaching past it keeps its switch there. In NLA tweak
-    mode that range is in the strip's time, as the baked keys are.
+    mode that range is in the strip's time, as the baked keys are. A reversed
+    strip plays its action backwards, so there the range starts at its last
+    frame, and the value after it is the one before its first.
     """
-    off, back = _action_frame(rig, first), _action_frame(rig, last + 1)
+    start, end = _action_frame(rig, first), _action_frame(rig, last)
+    if start <= end:
+        off, back = start, _action_frame(rig, last + 1)
+    else:
+        off, back = end, _action_frame(rig, first - 1)
     low, high = sorted((off, back))
     for container in own_fcurve_containers(rig):
         for curve in container:
