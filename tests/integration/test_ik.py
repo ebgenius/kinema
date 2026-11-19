@@ -528,6 +528,27 @@ class TestBake:
         assert all(played[f] == pytest.approx(0.0) for f in range(111, 120)), played
         assert played[110] == pytest.approx(1.0) and played[120] == pytest.approx(1.0), played
 
+    def test_switch_keys_on_subframes_outside_the_range_stay(self, rig, builder):
+        """Live IK keyed on subframes 110.5 and 119.5, just outside a bake of
+        111-119: they are the job's, not the bake's, and stay."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        rig.kinema_ik_enabled = True
+        for frame in (1, 110.5, 119.5, 150):
+            rig.keyframe_insert("kinema_ik_enabled", frame=frame)
+
+        assert bpy.ops.kinema.bake_ik(frame_start=111, frame_end=119, step=1) == {"FINISHED"}
+        switch = next(
+            c for c in _all_fcurves(rig.animation_data.action)
+            if c.data_path == "kinema_ik_enabled"
+        )
+        frames = [p.co[0] for p in switch.keyframe_points]
+        assert 110.5 in frames and 119.5 in frames, frames
+        assert all(switch.evaluate(f) == pytest.approx(0.0) for f in range(111, 120))
+        assert switch.evaluate(110) == pytest.approx(1.0)
+        assert switch.evaluate(120) == pytest.approx(1.0)
+
     def test_a_joint_locked_on_the_bone_is_baked(self, rig, builder):
         """A pose bone's own channel lock stops the transform tools, not a key:
         keyframe_insert still writes, so the bake goes through."""

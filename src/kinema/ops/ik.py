@@ -1162,8 +1162,10 @@ def _key_switch_off(rig, first: int, last: int) -> None:
             if curve.data_path != builder.PROP_IK_ENABLED or curve.mute:
                 continue
             kept = float(curve.evaluate(before)), float(curve.evaluate(after))
+            # The range only: a key on a subframe just outside it is the job's,
+            # and stays.
             for point in reversed(list(curve.keyframe_points)):
-                if before < point.co[0] < after:
+                if low <= point.co[0] <= high:
                     curve.keyframe_points.remove(point)
             curve.keyframe_points.insert(before, kept[0])
             curve.keyframe_points.insert(low, 0.0)
