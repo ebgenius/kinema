@@ -781,6 +781,14 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         if not ik_name or ik_name not in rig.pose.bones:
             self.report({"ERROR"}, "This rig has no IK target to bake")
             return {"CANCELLED"}
+        if self.frame_end < self.frame_start:
+            # Nothing to bake, and switching live IK off over it would still
+            # rewrite the switch's keys between the two.
+            self.report(
+                {"ERROR"},
+                f"End frame {self.frame_end} is before start frame {self.frame_start}",
+            )
+            return {"CANCELLED"}
 
         if manager.get_solver(rig, ik_name) is None:
             self.report({"ERROR"}, "Could not prepare a solver for this rig")
@@ -807,6 +815,15 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
             if not bones:
                 self.report({"ERROR"}, "No joints to bake on this rig")
                 return {"CANCELLED"}
+            unplayable = self._unplayable(rig, bones)
+            if unplayable:
+                self.report(
+                    {"ERROR"},
+                    f"Not baked: the curves of {', '.join(unplayable)} wouldn't take or "
+                    f"play the solved poses. Unlock or unmute them, remove their "
+                    f"modifiers or convert their samples to keyframes, or clear them first",
+                )
+                return {"CANCELLED"}
             # Read before the curves are cleared, and only where live IK is
             # itself keyed -- a job from Generate Motion. There the joint curves
             # carry the joint moves, and they seed IK's solves where it is on.
@@ -818,7 +835,7 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
                 else None
             )
             if self.clear_existing:
-                self._clear_keys(rig, bones)
+                self._clear_keys(rig, bones, self.frame_start, self.frame_end)
 
             window.progress_begin(0, len(frames))
             try:
@@ -924,15 +941,103 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         return played
 
     @staticmethod
-    def _clear_keys(rig, bone_names: list[str]) -> None:
+    def _clear_keys(rig, bone_names: list[str], first: int, last: int) -> None:
+        """Remove the baked joints' keys from ``first`` to ``last``, both inclusive.
+
+        The range, not the curves: keys either side are animation the bake was
+        never asked to touch -- an FK section after an IK one, the rest of a
+        job baked in part. Keys between baked frames, with Step above 1, are in
+        the range and go. A curve is removed only once nothing is left on it.
+        """
         wanted = {f'pose.bones["{name}"]' for name in bone_names}
+        first, last = _in_action_time(rig, first, last)
         # Blender 4.4+ stores curves in slotted layers/strips rather than
         # directly on the action, and only this rig's slot is ours to clear --
         # a rig sharing the action almost certainly has bones by the same names.
         for curves in own_fcurve_containers(rig):
             for curve in list(curves):
-                if any(curve.data_path.startswith(prefix) for prefix in wanted):
+                if not any(curve.data_path.startswith(prefix) for prefix in wanted):
+                    continue
+                for point in reversed(list(curve.keyframe_points)):
+                    if first <= point.co[0] <= last:
+                        curve.keyframe_points.remove(point)
+                if not len(curve.keyframe_points):
                     curves.remove(curve)
+                else:
+                    curve.update()
+
+
+    def _unplayable(self, rig, bone_names: list[str]) -> list[str]:
+        """The baked joints whose channel would not play what is keyed into it.
+
+        A curve the bake keeps -- one with keys outside the range, or with Clear
+        Existing Keys off -- keeps its own settings too. Locked, it takes no key,
+        and ``keyframe_insert`` says so only by returning False; muted, it plays
+        nothing; a modifier reshapes the solved values; samples outlast any key
+        written over them. Found before anything is cleared or keyed, so a
+        refusal changes nothing. A curve the clear removes whole is replaced,
+        settings and all, and is no trouble -- unless its group is locked: a
+        group the bone's other channels keep stays, and the new curve joins it.
+        """
+        first, last = _in_action_time(rig, self.frame_start, self.frame_end)
+        channels = {joint_channel(rig.pose.bones[name]): name for name in bone_names}
+        # A pose bone's first key on a channel goes into the group named after
+        # the bone, so a locked one stops it there before any curve exists.
+        locked = {
+            curve.group.name
+            for curves in own_fcurve_containers(rig)
+            for curve in curves
+            if curve.group is not None and curve.group.lock
+        }
+        found = [f"'{name}' (in a locked group)" for name in bone_names if name in locked]
+        for curves in own_fcurve_containers(rig):
+            for curve in curves:
+                name = channels.get((curve.data_path, int(curve.array_index)))
+                if name is None or name in locked:
+                    continue
+                if curve.group is not None and curve.group.lock:
+                    found.append(f"'{name}' (in a locked group)")
+                    continue
+                kept = (
+                    not self.clear_existing
+                    or len(curve.sampled_points)
+                    or any(not first <= p.co[0] <= last for p in curve.keyframe_points)
+                )
+                if not kept:
+                    continue
+                if curve.lock:
+                    found.append(f"'{name}' (locked)")
+                elif curve.mute:
+                    found.append(f"'{name}' (muted)")
+                elif len(curve.sampled_points):
+                    found.append(f"'{name}' (baked to samples)")
+                elif len(curve.modifiers):
+                    found.append(f"'{name}' (with modifiers)")
+        return found
+
+
+def _action_frame(rig, frame: float) -> float:
+    """Scene ``frame`` in the time of the keys being edited: see :func:`_in_action_time`."""
+    anim = rig.animation_data
+    if anim is None or not anim.use_tweak_mode:
+        return float(frame)
+    return anim.nla_tweak_strip_time_to_scene(float(frame), invert=True)
+
+
+def _in_action_time(rig, first: int, last: int) -> tuple[float, float]:
+    """Scene frames ``first`` to ``last`` in the time of the keys being edited.
+
+    The same, unless the rig is in NLA tweak mode: there the action's keys sit
+    in the tweaked strip's own time, which an offset or scaled strip moves.
+    ``keyframe_insert`` maps a scene frame through that already; clearing has
+    to as well, or it clears another part of the action than the bake keys.
+    """
+    anim = rig.animation_data
+    if anim is None or not anim.use_tweak_mode or first > last:
+        # An empty range stays empty: sorted, a reversed one would not be.
+        return first, last
+    ends = sorted(_action_frame(rig, f) for f in (first, last))
+    return ends[0], ends[1]
 
 
 #: Data path of the keyframable IK tip, on the rig object.
@@ -954,6 +1059,15 @@ def key_joint_value(pose_bone, frame: int) -> None:
     )
     path, channel = ("location", 1) if is_prismatic else ("rotation_euler", 1)
     pose_bone.keyframe_insert(data_path=path, index=channel, frame=frame)
+
+
+def joint_channel(pose_bone) -> tuple[str, int]:
+    """``(data path, index)`` of the one curve :func:`key_joint_value` keys."""
+    is_prismatic = (
+        pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
+    )
+    name = "location" if is_prismatic else "rotation_euler"
+    return pose_bone.path_from_id(name), 1
 
 
 def set_joint_value(pose_bone, value: float) -> None:
@@ -1036,23 +1150,32 @@ def ik_switch_is_animated(rig) -> bool:
 
 
 def _key_switch_off(rig, first: int, last: int) -> None:
-    """Key live IK off from ``first`` to ``last``, and back as it was after.
+    """Key live IK off from ``first`` to ``last``, and as it was either side.
 
     Setting the property is not enough where the switch is keyed: its curve
     puts its own value back on the next frame change, and live IK would run
     over the baked joints wherever the job had it on. Only the baked range is
-    touched -- a job reaching past it keeps its switch there.
+    touched -- a job reaching past it keeps its switch there, on both sides:
+    the switch steps from key to key, so an off key that ends up first or last
+    on the curve would otherwise hold beyond the range. In NLA tweak mode the
+    range is in the strip's time, as the baked keys are; a reversed strip plays
+    its action backwards, so there it runs the other way.
     """
+    low, high = sorted((_action_frame(rig, first), _action_frame(rig, last)))
+    before, after = sorted((_action_frame(rig, first - 1), _action_frame(rig, last + 1)))
     for container in own_fcurve_containers(rig):
         for curve in container:
             if curve.data_path != builder.PROP_IK_ENABLED or curve.mute:
                 continue
-            after = float(curve.evaluate(last + 1))
+            kept = float(curve.evaluate(before)), float(curve.evaluate(after))
+            # The range only: a key on a subframe just outside it is the job's,
+            # and stays.
             for point in reversed(list(curve.keyframe_points)):
-                if first <= point.co[0] <= last + 1:
+                if low <= point.co[0] <= high:
                     curve.keyframe_points.remove(point)
-            curve.keyframe_points.insert(first, 0.0)
-            curve.keyframe_points.insert(last + 1, after)
+            curve.keyframe_points.insert(before, kept[0])
+            curve.keyframe_points.insert(low, 0.0)
+            curve.keyframe_points.insert(after, kept[1])
             curve.update()
 
 

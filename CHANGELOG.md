@@ -173,6 +173,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration as the rig shows it, so a rail held and dragged past its limit was stored
   at the limit, and applying a solution wrote that over its channel. Held joints are now
   skipped, as a live solve skips them.
+- **The IK readout shows how many iterations PyRoki took** (#57). It always said `0 it`,
+  which read as though the solver had done nothing; the count now comes from the solve.
+- **Bake IK's Clear Existing Keys clears only the baked range** (#74). It removed the baked
+  joints' whole curves, so a bake over part of a shot deleted every key those joints had
+  outside it: an FK section after an IK one, or the rest of a job baked in part. Keys
+  inside the range go, those between baked frames included when Step is above 1, and a
+  curve is removed only once it's empty. A curve that is kept and muted, modified or
+  baked to samples, which wouldn't play the solved poses, is refused, naming the joints,
+  and the range is cleared in an NLA strip's own time in tweak mode.
 - **COLLADA (`.dae`) meshes import as the file describes them.** Four bugs in the importer,
   found by kinema_catalog's mesh converter, which converts through it and measures the
   result:
