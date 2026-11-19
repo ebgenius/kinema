@@ -12,6 +12,8 @@ takes it away.
 * The robot where it will stand, for an axis under it that moves it: a ghost of
   its meshes and the axes it already rides, coarsened when the dialog opens and
   moved as one rigid block. Nothing is solved.
+* The TCP, for an axis on the tool: where it will be, a bright triad as Edit TCP
+  draws one, and where it is now, a faint one. They part as the offset is edited.
 
 What to draw is plain matrix maths (:func:`shapes`, and ``rig/external_axes.py``);
 the tests check that. Draw handlers never run in ``--background``.
@@ -28,9 +30,12 @@ GHOST_COLOR = (0.35, 0.7, 1.0, 0.22)
 FILL_COLOR = (0.85, 0.45, 0.1, 0.4)
 TRAVEL_COLOR = (1.0, 0.62, 0.2, 0.95)
 LINE_WIDTH = 2.0
+TRIAD_WIDTH = 2.5
 LABEL_SIZE = 12
 #: The ghost's grid: this many cells across the robot's extent.
 GHOST_CELLS = 60
+#: The TCP triads' arms when no rig has set them, in metres.
+TRIAD_LENGTH = 0.05
 
 #: The open dialog's preview: its operator, rig, ghost, and what it last showed.
 _state: dict = {}
@@ -83,15 +88,29 @@ def ghost_mesh(rig, objects, depsgraph) -> tuple[np.ndarray, np.ndarray]:
     return ext.cluster_triangles(points, tris, extent / GHOST_CELLS)
 
 
-def shapes(spec: ext.AxisSpec, placed) -> dict:
+def shapes(spec: ext.AxisSpec, placed, length: float = TRIAD_LENGTH) -> dict:
     """What the preview draws for ``spec``, in armature space.
 
-    ``placed`` is ``(parent, frame, shift)`` from ``ops.external_axes.placement``.
-    Returns the placeholder's triangles (``fill``, empty when unticked), the travel
-    as line segments, the limit labels as ``(point, text)``, and the shift the ghost
-    moves by -- None when it does not move.
+    ``placed`` is ``(parent, frame, shift)`` from ``ops.external_axes.placement``,
+    as the rig stands. Returns the placeholder's triangles (``fill``, empty when
+    unticked), the travel as line segments, the limit labels as ``(point, text)``,
+    the shift the ghost moves by -- None when it does not move -- and, for an axis
+    on the tool, the TCP's tool frame where it will be (``tcp``) and where it is
+    now (``tcp_now``), with their triads (``triads``: points and colours, arms
+    ``length`` long). None and empty for any other axis.
+
+    An axis on the tool sits at the tool frame times its base, so the tool frame
+    is its frame times base⁻¹; the TCP then goes to the offset from there.
     """
+    from . import tcp_preview
+
     _, frame, shift = placed
+    tcp = tcp_now = None
+    triads = (np.empty((0, 3)), np.empty((0, 4)))
+    if spec.mount == "AFTER":
+        tcp_now = np.asarray(frame, dtype=float) @ np.linalg.inv(spec.base)
+        tcp = tcp_now @ spec.offset
+        triads = tcp_preview.shapes(tcp, tcp_now, None, length)
     bone = ext.bone_matrix(frame, spec.axis)
     fill = np.empty((0, 3))
     if spec.placeholder:
@@ -104,6 +123,9 @@ def shapes(spec: ext.AxisSpec, placed) -> dict:
         "lines": _apply(bone, lines),
         "labels": [(_apply(bone, point)[0], text) for point, text in labels],
         "shift": np.asarray(shift, dtype=float) if moves else None,
+        "tcp": tcp,
+        "tcp_now": tcp_now,
+        "triads": triads,
     }
 
 
@@ -115,8 +137,13 @@ def start(operator, context, rig, ghost_objects) -> None:
     stop()
     if rig is None:
         return
+    from . import tcp_preview
+
     points, tris = ghost_mesh(rig, ghost_objects, context.evaluated_depsgraph_get())
-    _state.update(operator=operator, rig=rig.name, ghost=(points, tris), shapes=None, key=None)
+    _state.update(
+        operator=operator, rig=rig.name, ghost=(points, tris), shapes=None, key=None,
+        length=tcp_preview.triad_length(rig),
+    )
     space = bpy.types.SpaceView3D
     _handles.append(space.draw_handler_add(_draw_shapes, (), "WINDOW", "POST_VIEW"))
     _handles.append(space.draw_handler_add(_draw_labels, (), "WINDOW", "POST_PIXEL"))
@@ -134,7 +161,10 @@ def show(operator, spec: ext.AxisSpec, placed) -> None:
     if key == _state.get("key"):
         return
     _state["key"] = key
-    _state["shapes"] = None if placed is None else shapes(spec, placed)
+    _state["shapes"] = (
+        None if placed is None
+        else shapes(spec, placed, _state.get("length", TRIAD_LENGTH))
+    )
     _redraw()
 
 
@@ -236,6 +266,19 @@ def _draw_shapes() -> None:
             )
             line_shader.uniform_float("color", TRAVEL_COLOR)
             batch.draw(line_shader)
+        points, colors = found["triads"]
+        if len(points):
+            triad_shader = gpu.shader.from_builtin("POLYLINE_SMOOTH_COLOR")
+            batch = batch_for_shader(
+                triad_shader, "LINES",
+                {"pos": _apply(world, points).astype(np.float32),
+                 "color": colors.astype(np.float32)},
+            )
+            triad_shader.uniform_float("viewportSize", (region.width, region.height))
+            triad_shader.uniform_float(
+                "lineWidth", TRIAD_WIDTH * context.preferences.system.ui_scale
+            )
+            batch.draw(triad_shader)
     finally:
         gpu.state.depth_test_set(depth)
         gpu.state.blend_set(blend)

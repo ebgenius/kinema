@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Add External Axis previews where the TCP will be** (#149). For an axis on the tool, the
+  dialog draws the TCP where OK will put it, as a bright triad, and where it is now, as a
+  faint one. They follow the offset fields as you edit them, slider drags included, and
+  are drawn as the arm stands.
 - **Waypoints relative to an object.** A waypoint's **Relative To** field makes it relative to
   a workpiece or a fixture, and its marker is parented to that object without an inverse,
   as Blender's Shift+Ctrl+P does; that operator works on a marker too. The job follows

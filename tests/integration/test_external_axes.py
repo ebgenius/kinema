@@ -942,6 +942,57 @@ class TestThePreview:
         off = float(np.linalg.norm(centre - np.array(tcp.matrix.translation)))
         assert off < 1e-5, f"the preview is {off * 1000:.1f} mm from the tool"
 
+    #: A spindle on the tool with a base and an offset that both move and turn.
+    _ON_THE_TOOL = dict(
+        axis_name="spindle", mount="AFTER", kind="ROTARY", direction="Z", continuous=True,
+        base_location=(0.0, 0.03, 0.05), base_rotation=(0.0, 0.4, 0.0),
+        offset_location=(0.02, 0.0, 0.06), offset_rotation=(0.3, 0.0, 0.0),
+    )
+
+    def test_an_axis_on_the_tool_previews_the_tcp_where_ok_puts_it(
+        self, arm6, builder, ops, preview
+    ):
+        """#149: arm6 posed off its rest, a spindle on the tool with a base and an
+        offset. The preview's TCP triad starts where the TCP is after OK, its arms
+        along the tool's X, Y and Z there; a faint one stays where it is now."""
+        import bpy
+
+        posed = (0.4, -0.6, 1.0, 0.5, 0.4, 0.3)
+        for bone, value in zip(builder.joint_bones(arm6), posed, strict=True):
+            bone.rotation_euler[1] = value
+        bpy.context.view_layer.update()
+        before = _tcp(builder, arm6) @ _np4(builder.BONE_TO_TOOL)
+
+        shown = self._shown(ops, preview, arm6, **self._ON_THE_TOOL)
+        assert "FINISHED" in bpy.ops.kinema.add_external_axis(**self._ON_THE_TOOL)
+        after = _tcp(builder, arm6) @ _np4(builder.BONE_TO_TOOL)
+
+        new, current = shown["tcp"], shown["tcp_now"]
+        np.testing.assert_allclose(new, after, atol=1e-5)
+        np.testing.assert_allclose(current, before, atol=1e-5)
+        moved = float(np.linalg.norm(new[:3, 3] - current[:3, 3]))
+        assert moved > 0.05, "precondition: the offset moves the TCP"
+        points, colors = shown["triads"]
+        assert len(points) == 12 and colors.shape == (12, 4), "two triads, three arms each"
+        np.testing.assert_allclose(points[6], after[:3, 3], atol=1e-5)
+
+    def test_editing_the_offset_moves_the_previewed_tcp(self, arm6, builder, ops, preview):
+        """The TCP follows the offset fields as they are edited, a slider drag
+        included: the same refresh as the rest of the preview."""
+        zero = {**self._ON_THE_TOOL, "offset_location": (0.0, 0.0, 0.0),
+                "offset_rotation": (0.0, 0.0, 0.0)}
+        still = self._shown(ops, preview, arm6, **zero)["tcp"]
+        out = self._shown(ops, preview, arm6, **{**zero, "offset_location": (0.0, 0.0, 0.1)})["tcp"]
+        np.testing.assert_allclose(out[:3, 3] - still[:3, 3], 0.1 * still[:3, 2], atol=1e-6)
+
+    def test_an_axis_under_the_robot_draws_no_tcp(self, arm6, ops, preview):
+        """The robot's ghost already shows the TCP moving with it."""
+        shown = self._shown(
+            ops, preview, arm6, axis_name="track", mount="BEFORE", kind="LINEAR",
+            direction="X", offset_location=(0.2, 0.0, 0.0),
+        )
+        assert shown["tcp"] is None and not len(shown["triads"][0])
+
     def test_an_axis_under_a_turned_root_is_previewed_turned_with_it(
         self, arm6, builder, ops, preview
     ):
