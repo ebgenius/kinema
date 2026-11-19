@@ -138,6 +138,15 @@ class KinemaPreferences(AddonPreferences):
         description="Print solver diagnostics to the system console",
         default=False,
     )
+    job_as_strips: BoolProperty(
+        name="Job as NLA Strips",
+        description=(
+            "Lay a generated job out on the robot's NLA, one strip per motion, so "
+            "motions can be retimed and reused there. Off, the job's keys stay in "
+            "the robot's active action"
+        ),
+        default=True,
+    )
     keep_compiled: BoolProperty(
         name="Keep Compiled Solvers",
         description=(
@@ -203,6 +212,7 @@ class KinemaPreferences(AddonPreferences):
         column.prop(self, "solver_backend")
         column.prop(self, "solve_timeout_ms")
         column.prop(self, "debug_logging")
+        column.prop(self, "job_as_strips")
         row = column.row(align=True)
         row.prop(self, "keep_compiled")
         entries, size = runtime.compile_cache_usage(runtime.compile_cache_folder())

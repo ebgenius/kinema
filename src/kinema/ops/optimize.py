@@ -55,7 +55,7 @@ from ..solver import manager, trajectory
 from ..solver.base import SolverError
 from ..ui.panel import active_rig
 from . import collision as collision_ops
-from . import references
+from . import references, strips
 from . import waypoints as wp
 from .ik import (
     _key_switch_off,
@@ -578,7 +578,7 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
     seconds = time.perf_counter() - job.solve_started
     frames = range(job.first, job.last + 1)
     job.writing = True
-    write_keys(context, rig, frames, q, job.free)
+    muted = write_keys(context, rig, frames, q, job.free, wp.job_plan(rig).spans)
 
     rig.kinema_optimized_job = job.signature
 
@@ -604,6 +604,8 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
         message += f" (was {job.flagged_before} flagged)"
     if job.problem.collision is not None:
         message += "; " + _closest(checks or (), job.problem.collision.keep_clear)
+    if muted:
+        message += f". {strips.muted_text(muted)}"
     return True, ("WARNING" if flagged else "INFO"), message
 
 
@@ -629,12 +631,16 @@ def _closest(checks, keep_clear: float) -> str:
     return f"{closest.clearance * 1000:.0f} mm clear at the closest, {where}"
 
 
-def write_keys(context, rig, frames, q, free) -> None:
+def write_keys(context, rig, frames, q, free, plan=None) -> int:
     """Key the free joints on every frame of the job, and live IK off over it.
 
     Their keys in the range go first, so nothing of the job before is left
-    between them. Held joints and joints off the chain keep their keys.
+    between them. Held joints and joints off the chain keep their keys. Written
+    into the job's action and laid out again as ``plan``'s strips, where the
+    job is on the NLA: see ops/strips.py. Returns the number of bakes that
+    laying out muted, as no longer showing the job.
     """
+    muted = 0
     first, last = frames[0], frames[-1]
     bones = [(rig.pose.bones[name], index) for name, index in free]
     paths = {
@@ -643,7 +649,7 @@ def write_keys(context, rig, frames, q, free) -> None:
     from .. import handlers
 
     original = context.scene.frame_current
-    with handlers.suspended():
+    with handlers.suspended(), strips.editing(rig, context):
         for container in own_fcurve_containers(rig):
             for curve in list(container):
                 if (curve.data_path, curve.array_index) not in paths:
@@ -659,7 +665,10 @@ def write_keys(context, rig, frames, q, free) -> None:
         if not ik_switch_is_animated(rig):
             # Nothing keys the switch, so it stays as set: off.
             rig.kinema_ik_enabled = False
+        if plan:
+            muted = strips.lay_out(rig, plan)
     context.scene.frame_set(original)
+    return muted
 
 
 def _channel(pose_bone) -> str:

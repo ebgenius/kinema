@@ -160,6 +160,26 @@ retimes the animation, as it would for anything else, but the next regeneration 
 motion's own frames again, so the Motions list is where a retime belongs if you want it to
 stick.)
 
+**The job on the NLA.** Generate Motion lays the job out on the robot's NLA, on a track named
+*Kinema Job*: one strip per motion, named after it, covering its frames. A pause and a
+joint move bridging a gap get strips of their own, and *Before* and *After* strips hold
+whatever is animated outside the job, hand keys included. All the strips show the one
+action that holds the job's keys, each its own frames, so the robot plays exactly as it
+would from that action alone.
+- Nothing is left in the robot's active action. Keys you set by hand afterwards land in a
+  new active action, on top of the job, and the next Generate moves them into the job's
+  action.
+- Regenerating replaces the job's strips. For now a strip moved by hand in the NLA editor is
+  put back by the next Generate; retiming from the NLA editor comes next. In NLA tweak mode,
+  Generate writes into the strip being tweaked, as it always has, and leaves the job's strips
+  as they are.
+- The strips replace what is under them at full strength, whatever the blend and influence
+  set for the active action.
+- A track of your own named *Kinema Job* is left alone: Kinema knows its tracks by what their
+  strips show.
+- To keep the job in the active action instead, turn off **Job as NLA Strips** in the
+  add-on's preferences. The next Generate puts a job already on the NLA back there.
+
 Each motion says how the robot moves:
 
 - **Joint** interpolates the joints. Fast, always reachable, and the tool takes whatever
@@ -275,7 +295,18 @@ is never retimed.
 
 When the shot is right, **Bake IK to Keyframes** turns the whole thing into plain joint
 curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves
-bake as IK solves them.
+bake as IK solves them. A job on the NLA is baked into a copy of its action, shown as a
+strip on a *Kinema Baked* track above the job over the baked range, and the job's own keys
+are left as they were: mute the *Kinema Baked* tracks to go back to the live job.
+- A bake over part of an earlier one goes on a track of its own above it, so the earlier
+  bake still plays outside the new one's frames. A bake never goes onto a muted track.
+- With the job on the NLA, the next Generate mutes the bakes over the job's frames, since
+  they show the job as it was, and says so. With **Job as NLA Strips** off, the job in the
+  active action plays over them.
+- A bake onto a new NLA strip needs two frames or more, since a strip needs a length. In
+  NLA tweak mode, Bake keys the tweaked action, and one frame is enough.
+- A bake onto a strip is refused while the robot's NLA is off or one of its tracks is
+  soloed: the strip wouldn't play, and a soloed track would hide what is baked.
 
 ## Checking motion limits
 
