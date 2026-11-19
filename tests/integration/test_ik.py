@@ -489,6 +489,19 @@ class TestBake:
         with pytest.raises(RuntimeError, match="'joint6' \\(in a locked group\\)"):
             bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1)
 
+    def test_a_joint_locked_on_the_bone_is_baked(self, rig, builder):
+        """A pose bone's own channel lock stops the transform tools, not a key:
+        keyframe_insert still writes, so the bake goes through."""
+        import bpy
+
+        bpy.ops.kinema.add_ik()
+        wrist = builder.joint_bones(rig)[-1]
+        wrist.lock_rotation[1] = True
+
+        assert bpy.ops.kinema.bake_ik(frame_start=11, frame_end=19, step=1) == {"FINISHED"}
+        curve = self._wrist_curve(builder, rig)
+        assert sorted(round(p.co[0]) for p in curve.keyframe_points) == list(range(11, 20))
+
     def test_a_locked_curve_the_clear_removes_whole_is_baked(self, rig, builder):
         import bpy
 
@@ -540,11 +553,17 @@ class TestBake:
         assert keyed.get(20) == pytest.approx(1.0), keyed
         assert 111 not in keyed and 120 not in keyed
 
-        # A range given end first bakes nothing, and clears nothing either.
-        before = sorted(keys)
-        bpy.ops.kinema.bake_ik(frame_start=119, frame_end=111, step=1, clear_existing=True)
+        # A range given end first is refused before anything changes: the
+        # switch included, which keying off over it would rewrite.
+        wrist_before = sorted(keys)
+        switch_before = sorted(keyed.items())
+        with pytest.raises(RuntimeError, match="End frame 111 is before start frame 119"):
+            bpy.ops.kinema.bake_ik(frame_start=119, frame_end=111, step=1, clear_existing=True)
         after = sorted(round(p.co[0]) for p in self._wrist_curve(builder, rig).keyframe_points)
-        assert after == before
+        assert after == wrist_before
+        assert sorted((round(p.co[0]), p.co[1]) for p in switch.keyframe_points) == [
+            (frame, pytest.approx(value)) for frame, value in switch_before
+        ]
 
     def test_baked_animation_plays_without_the_solver(self, rig, builder):
         """The whole point: a delivered .blend must not need Kinema to animate."""

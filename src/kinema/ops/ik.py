@@ -775,6 +775,14 @@ class KINEMA_OT_bake_ik(KinemaRigOperator):
         if not ik_name or ik_name not in rig.pose.bones:
             self.report({"ERROR"}, "This rig has no IK target to bake")
             return {"CANCELLED"}
+        if self.frame_end < self.frame_start:
+            # Nothing to bake, and switching live IK off over it would still
+            # rewrite the switch's keys between the two.
+            self.report(
+                {"ERROR"},
+                f"End frame {self.frame_end} is before start frame {self.frame_start}",
+            )
+            return {"CANCELLED"}
 
         if manager.get_solver(rig, ik_name) is None:
             self.report({"ERROR"}, "Could not prepare a solver for this rig")
