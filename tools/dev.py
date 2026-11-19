@@ -590,8 +590,17 @@ def main() -> int:
     sub.add_parser("validate", help="validate blender_manifest.toml")
 
     build = sub.add_parser("build", help="build extension zips")
-    build.add_argument("--single", action="store_true",
+    split = build.add_mutually_exclusive_group()
+    # The default, named too: it is what fetch_wheels.py and Blender's own
+    # `extension build` call it.
+    split.add_argument("--split-platforms", dest="single", action="store_false",
+                       help="one zip per platform, each with only its own wheels "
+                            "(the default)")
+    split.add_argument("--single", dest="single", action="store_true",
                        help="one combined zip instead of per-platform zips")
+    # Set here, not left to the actions: sharing a dest, argparse would take the
+    # default from --split-platforms, a store_false, and build one zip.
+    build.set_defaults(single=False)
     build.add_argument("--skip-preflight", action="store_true",
                        help="build even if vendor/ or wheels/ are incomplete")
 

@@ -295,3 +295,37 @@ class TestFreeMemory:
         )
         assert dev._available_gb(meminfo) == 20.0
         assert dev._available_gb(tmp_path / "missing") is None
+
+
+class TestBuild:
+    """#91: fetch_wheels.py said "Build with --split-platforms", and dev.py build
+    refused the flag. Splitting is its default; the flag now says so explicitly."""
+
+    def _built(self, dev, monkeypatch, *flags) -> list[str]:
+        """The Blender command line ``dev.py build`` runs with ``flags``."""
+        calls = []
+        monkeypatch.setattr(dev, "preflight", lambda: None)
+        monkeypatch.setattr(dev, "find_blender", lambda: Path("blender"))
+        monkeypatch.setattr(dev.subprocess, "call", lambda cmd: calls.append(cmd) or 1)
+        monkeypatch.setattr("sys.argv", ["dev.py", "build", *flags])
+        assert dev.main() == 1
+        return calls[0]
+
+    def test_it_splits_by_platform_by_default(self, dev, monkeypatch):
+        assert "--split-platforms" in self._built(dev, monkeypatch)
+
+    def test_the_hint_s_flag_is_taken(self, dev, monkeypatch):
+        assert "--split-platforms" in self._built(dev, monkeypatch, "--split-platforms")
+
+    def test_single_builds_one_zip(self, dev, monkeypatch):
+        assert "--split-platforms" not in self._built(dev, monkeypatch, "--single")
+
+    def test_both_at_once_is_refused(self, dev, monkeypatch):
+        with pytest.raises(SystemExit):
+            self._built(dev, monkeypatch, "--single", "--split-platforms")
+
+    def test_fetch_wheels_hint_is_a_command_that_runs(self):
+        """The hint names dev.py build, which splits, rather than a bare flag."""
+        hint = (REPO_ROOT / "tools" / "fetch_wheels.py").read_text(encoding="utf-8")
+        assert "Build with --split-platforms" not in hint
+        assert "tools/dev.py build" in hint

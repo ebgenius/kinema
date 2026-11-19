@@ -312,7 +312,10 @@ def main() -> int:
     print(f"\n{len(names)} wheels, {total_mb:.1f} MB total across {len(platforms)} platform(s)")
     print(f"manifest updated: {MANIFEST.relative_to(REPO_ROOT)}")
     if len(platforms) > 1:
-        print("Build with --split-platforms so each zip carries only its own wheels.")
+        print(
+            "Build with `uv run python tools/dev.py build`: it makes one zip per "
+            "platform, each carrying only its own wheels."
+        )
     return 0
 
 
