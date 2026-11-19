@@ -734,3 +734,32 @@ class TestBake:
         assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=1, frame_end=81)
         bpy.context.scene.frame_set(frame)
         assert wrist.scale[0] == pytest.approx(3.0)
+
+    def test_a_bake_past_the_jobs_keys_holds_them(self, arm6, builder, strips, prefs):
+        """Past the job's last key its strips hold, over a track of the user's under
+        them. The copy being baked holds too, whatever the active action's
+        extrapolation is set to, so those frames bake what plays live."""
+        import bpy
+
+        first = builder.joint_bones(arm6)[0]
+        first.rotation_euler[1] = 0.3
+        first.keyframe_insert("rotation_euler", index=1, frame=1)
+        anim = arm6.animation_data
+        base, anim.action = anim.action, None
+        anim.nla_tracks.new().strips.new("mine", 1, base)
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        frames = range(135, 161)
+        live = {}
+        for frame in frames:
+            bpy.context.scene.frame_set(frame)
+            live[frame] = _q(builder, arm6)[0]
+        assert live[140] != pytest.approx(0.3), "precondition: the job holds over the track"
+        anim.action_extrapolation = "NOTHING"
+        assert "FINISHED" in bpy.ops.kinema.bake_ik(frame_start=120, frame_end=160)
+        assert anim.action_extrapolation == "NOTHING"
+        arm6.kinema_solver_mode = "OFF"
+        for frame in frames:
+            bpy.context.scene.frame_set(frame)
+            assert _q(builder, arm6)[0] == pytest.approx(live[frame], abs=1e-4), frame

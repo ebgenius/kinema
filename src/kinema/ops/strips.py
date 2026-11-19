@@ -495,7 +495,11 @@ def baking(rig, first: int, last: int, context=None):
     was_muted = job_track.mute
     job_track.mute = True
     blend, influence = anim.action_blend_type, anim.action_influence
+    extrapolation = anim.action_extrapolation
     anim.action_blend_type, anim.action_influence = "REPLACE", 1.0
+    # Held past its keys, as the job's strips hold, so frames there bake what
+    # plays live rather than whatever pose was left.
+    anim.action_extrapolation = "HOLD"
     _activate(rig, baked, baked_slot)
     state = Bake(True)
     try:
@@ -503,6 +507,7 @@ def baking(rig, first: int, last: int, context=None):
     finally:
         anim.action = None
         anim.action_blend_type, anim.action_influence = blend, influence
+        anim.action_extrapolation = extrapolation
         job_track.mute = was_muted
         if not state.keep:
             bpy.data.actions.remove(baked)
