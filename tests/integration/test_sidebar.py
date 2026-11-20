@@ -152,3 +152,57 @@ class TestQuickBar:
                 button.draw(_Layout(calls), bpy.context, arm6)
                 assert calls, key
             assert "FINISHED" in bpy.ops.kinema.add_ik()
+
+
+@pytest.fixture
+def prefs(addon):
+    """The add-on's preferences module, with the quick bar put back after."""
+    import bpy
+
+    module = importlib.import_module(f"{addon.__name__}.prefs")
+    yield module
+    assert "FINISHED" in bpy.ops.kinema.quick_button_reset()
+
+
+class TestQuickBarPreferences:
+    def test_the_defaults(self, prefs, addon):
+        quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
+        assert prefs.quick_button_keys() == list(quick_bar.DEFAULT)
+
+    def test_buttons_moved_removed_added_and_reset(self, prefs, panel, arm6, addon):
+        import bpy
+
+        quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
+        assert "FINISHED" in bpy.ops.kinema.quick_button_move(index=0, step=1)
+        assert prefs.quick_button_keys()[:2] == ["REST_POSE", "LIVE_IK"]
+        assert "CANCELLED" in bpy.ops.kinema.quick_button_move(index=0, step=-1)
+        assert "FINISHED" in bpy.ops.kinema.quick_button_remove(index=4)
+        assert "FINISHED" in bpy.ops.kinema.quick_button_add(button="KEY_JOINTS")
+        assert prefs.quick_button_keys() == [
+            "REST_POSE", "LIVE_IK", "GRAPH_EDITOR", "CONFIGURATIONS", "KEY_JOINTS"
+        ]
+        assert _drawn(panel.KINEMA_PT_quick_bar, bpy.context)[0] == (
+            "operator", "kinema.reset_pose"
+        ), "the panel draws them"
+        assert "FINISHED" in bpy.ops.kinema.quick_button_reset()
+        assert prefs.quick_button_keys() == list(quick_bar.DEFAULT)
+
+    def test_unknown_and_repeated_keys_are_left_out(self, prefs):
+        import types
+
+        stored = types.SimpleNamespace(quick_buttons="LIVE_IK,FROM_THE_FUTURE,,LIVE_IK,REST_POSE")
+        assert prefs.quick_button_keys(stored) == ["LIVE_IK", "REST_POSE"]
+
+    def test_the_section_lists_each_button_with_its_controls(self, prefs):
+        import types
+
+        calls = []
+        stored = types.SimpleNamespace(quick_buttons="LIVE_IK,REST_POSE,GRAPH_EDITOR")
+        prefs.KinemaPreferences._draw_quick_bar(stored, _Layout(calls))
+        labels = [kwargs.get("text") for name, _, kwargs in calls if name == "label"]
+        assert labels[1:5] == ["Live IK", "Spans the bar", "Rest Pose", "Graph Editor"]
+        operators = [args[0] for name, args, _ in calls if name == "operator"]
+        assert operators.count("kinema.quick_button_move") == 6
+        assert operators.count("kinema.quick_button_remove") == 3
+        menus = [args[0] for name, args, _ in calls if name == "operator_menu_enum"]
+        assert menus == ["kinema.quick_button_add"]

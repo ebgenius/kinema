@@ -262,7 +262,9 @@ class KINEMA_PT_quick_bar(KinemaPanelBase, Panel):
         sub = row.row()
         sub.alignment = "RIGHT"
         sub.label(text=f"{len(builder.joint_bones(rig))} DoF")
-        quick_bar.draw(layout, context, rig, quick_bar.DEFAULT)
+        from ..prefs import get_prefs, quick_button_keys
+
+        quick_bar.draw(layout, context, rig, quick_button_keys(get_prefs(context)))
 
 
 class KINEMA_PT_main(KinemaPanelBase, Panel):
