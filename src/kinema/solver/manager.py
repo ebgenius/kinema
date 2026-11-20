@@ -504,6 +504,14 @@ def _load_source_urdf(rig):
             "description from disk to restore the PyRoki solver"
         )
 
+    import os
+
+    if kind in ("file", "mjcf") and not os.path.isfile(source):
+        raise SolverError(
+            f"the description file is missing: {source}. Locate Description, in the "
+            f"Kinema panel, finds it again"
+        )
+
     try:
         if kind == "mjcf":
             # PyRoki only reads URDF, so re-parse the MJCF and render the
@@ -514,11 +522,7 @@ def _load_source_urdf(rig):
 
             return urdf_from_model(model_from_mjcf(source))
 
-        import os
         from pathlib import Path
-
-        if not os.path.isfile(source):
-            raise SolverError(f"the description file is missing: {source}")
 
         import yourdfpy
 
