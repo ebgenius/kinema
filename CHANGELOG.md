@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`kinema.api`, for scripts and other add-ons** (#102). A versioned module that won't change
+  under them: the rigs in a scene, their joints and limits, the tool and where it is,
+  and joint values read and set. The README's *Scripting Kinema* says how another
+  extension finds it.
 - **A robot's description kept relative to the .blend** (#92). Where the description is in
   the .blend's folder or under it, saving keeps its path relative to the .blend as well, so a
   project folder copied or moved as a whole, to another machine too, reads the description

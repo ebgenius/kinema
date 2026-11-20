@@ -106,6 +106,7 @@ from ..ui.panel import active_rig
 from . import collision as collision_ops
 from . import references, strips, velocity
 from .ik import key_joint_value, own_fcurve_containers
+from .pose import apply_joint_values, joint_values
 from .velocity import acceleration_limit_of, joint_value, limit_of
 
 #: Empty display size, as a fraction of the robot's reach. Waypoints are read
@@ -136,30 +137,6 @@ MAX_STORED_DOF = 32
 #: Marks an Empty as belonging to a waypoint, so a stray Empty in the scene is
 #: never mistaken for one and deleting a row only deletes what Kinema made.
 PROP_WAYPOINT = "kinema_waypoint"
-
-
-def _joint_values(rig) -> list[float]:
-    """The rig's current joint vector, read off the driving channels."""
-    values = []
-    for pose_bone in builder.joint_bones(rig):
-        is_prismatic = (
-            pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
-        )
-        values.append(
-            pose_bone.location[1] if is_prismatic else pose_bone.rotation_euler[1]
-        )
-    return values
-
-
-def _apply_joint_values(rig, values) -> None:
-    for pose_bone, value in zip(builder.joint_bones(rig), values, strict=False):
-        is_prismatic = (
-            pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
-        )
-        if is_prismatic:
-            pose_bone.location[1] = float(value)
-        else:
-            pose_bone.rotation_euler[1] = float(value)
 
 
 def _tool_bone(rig) -> str:
@@ -598,7 +575,7 @@ def _record(rig, waypoint, reference=None) -> str | None:
     if matrix is None:
         return "This rig has no TCP; create one first"
 
-    values = _joint_values(rig)
+    values = joint_values(rig)
     if len(values) > MAX_STORED_DOF:
         # Refused rather than truncated: a partly stored configuration would
         # restore to a pose the robot was never taught.
@@ -785,7 +762,7 @@ class KINEMA_OT_goto_waypoint(KinemaWaypointOperator):
                 here = taught
             else:
                 values = walked
-        _apply_joint_values(rig, values[: waypoint.dof])
+        apply_joint_values(rig, values[: waypoint.dof])
         # And put the goal where the tool now is, so live IK does not
         # immediately drag the arm back off the configuration just restored.
         ik_name = rig.get(builder.PROP_IK_BONE)
@@ -1131,7 +1108,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             (span.start, span.start_frame),
             (span.end, span.end_frame),
         ):
-            _apply_joint_values(rig, values_at(rig, waypoint, frame, changed)[: waypoint.dof])
+            apply_joint_values(rig, values_at(rig, waypoint, frame, changed)[: waypoint.dof])
             for pose_bone in builder.joint_bones(rig):
                 key_joint_value(pose_bone, frame)
 
@@ -1176,7 +1153,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             (span.start, span.start_frame),
             (span.end, span.end_frame),
         ):
-            _apply_joint_values(rig, values_at(rig, waypoint, frame, changed)[: waypoint.dof])
+            apply_joint_values(rig, values_at(rig, waypoint, frame, changed)[: waypoint.dof])
             for pose_bone in builder.joint_bones(rig):
                 key_joint_value(pose_bone, frame)
         return previous

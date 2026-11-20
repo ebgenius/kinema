@@ -1,0 +1,11 @@
+VERSION = (1, 0)
+class Error(Exception)
+dataclass frozen Joint(name: str, bone: str, type: str, lower: float | None, upper: float | None, velocity: float | None, acceleration: float | None, jerk: float | None, effort: float | None, external: str | None)
+dataclass frozen Tool(name: str, link: str, parent: str, offset: tuple[float, float, float], rotation: tuple[float, float, float])
+def is_rig(obj) -> 'bool'
+def rigs(scene=None) -> 'list'
+def joints(rig) -> 'list[Joint]'
+def joint_values(rig) -> 'np.ndarray'
+def set_joint_values(rig, values) -> 'None'
+def tools(rig) -> 'list[Tool]'
+def tool_frame(rig, tool: 'Tool | None' = None) -> 'np.ndarray'
