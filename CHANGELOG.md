@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Retime a motion from the NLA editor** (#96). The motions' strips are on two *Kinema
   Motions* tracks of their own, taking turns, so each can be moved or scaled. The next
-  Generate, Check or Optimize takes the new frames into the Motions list, and Generate lays
-  the job out at them.
+  Generate or Motion Check takes the new frames into the Motions list, and Generate lays the
+  job out at them.
 - **The job on the NLA, one strip per motion** (#96). Generate Motion lays the job out as a
   strip per motion, named after it, over a *Kinema Job* track with the pauses, the bridging
   joint moves, and *Before* and *After* strips for what is animated outside the job. They

@@ -167,11 +167,12 @@ bridging a gap, and *Before* and *After* strips holding whatever is animated out
 job, hand keys included. All the strips show the one action that holds the job's keys, each
 its own frames, so the robot plays exactly as it would from that action alone.
 - **Retime a motion in the NLA editor** by moving or scaling its strip. With the motions on
-  tracks of their own, a strip has room to move. Its new frames reach the Motions list the
-  next time Generate, Check or Optimize reads the job, and that operator's report says so.
-  The next Generate lays the job out at them. Until then the stretch a strip left holds the
-  pose before it, and Bake IK asks for that Generate first. A strip duplicated in the NLA
-  editor retimes nothing, since which copy is the motion's can't be told.
+  tracks of their own, a strip has room to move. The next Generate takes its new frames into
+  the Motions list and lays the job out at them, and a Motion Check takes them in too; the
+  report says so. Until then the stretch a strip left holds the pose before it, and Optimize
+  Motion and Bake IK ask for that Generate first. An operator that refuses changes nothing in
+  the Motions list. A strip duplicated in the NLA editor retimes nothing, since which copy
+  is the motion's can't be told.
 - Changing a motion's frames in the Motions list moves its strip on the next Generate. If a
   motion was retimed in both places, the Motions list's frames win, and the report says so.
 - A strip for a pause or a bridging joint move follows the motions around it, so moving it
