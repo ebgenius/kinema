@@ -784,6 +784,51 @@ A rig with an external axis needs none of this: the solver describes it from its
 bones. A rig linked from a library finds its description relative to the library's file,
 and isn't offered Locate: open the library's file, locate the description there, and save it.
 
+## Scripting Kinema
+
+`kinema.api` is the part of Kinema that scripts and other add-ons can rely on.
+Everything else is private and changes without notice. `api.VERSION` is
+`(major, minor)`: the minor number grows when something is added, and the major
+number changes when something changes or goes.
+
+Blender extensions can't depend on one another, so another add-on finds Kinema at
+runtime. Kinema's module name depends on the repository it was installed from, as
+in `bl_ext.blender_org.kinema`, so look it up by its last part:
+
+```python
+import importlib
+
+import bpy
+
+
+def find_kinema():
+    """Kinema's API, or None where Kinema isn't enabled."""
+    for name in bpy.context.preferences.addons.keys():
+        if name.rpartition(".")[2] == "kinema":
+            return importlib.import_module(name + ".api")
+    return None
+
+
+kinema = find_kinema()
+if kinema is not None and kinema.VERSION[0] == 1:
+    rig = kinema.rigs()[0]
+    print([joint.name for joint in kinema.joints(rig)])
+    kinema.set_joint_values(rig, [0.0, -0.5, 1.0, 0.0, 0.5, 0.0])
+    print(kinema.tool_frame(rig))  # 4x4, world space
+```
+
+It takes and gives Blender objects for rigs, NumPy arrays for joint values (in the
+rig's joint order, in radians and metres) and for frames (4x4, world space,
+metres), and small frozen dataclasses. A call that can't be done raises
+`kinema.Error`, saying why. Nothing pushes an undo step.
+
+| Function | |
+| --- | --- |
+| `rigs(scene=None)`, `is_rig(obj)` | The Kinema rigs in a scene, the current one by default |
+| `joints(rig)` | Each moving joint: its name, bone, type, and the limits the rig holds |
+| `joint_values(rig)`, `set_joint_values(rig, values)` | Where the joints stand. Setting them moves the IK goal to the tool, so live IK leaves them there |
+| `tools(rig)`, `tool_frame(rig, tool=None)` | The tool centre point, the link it's measured from with its offset, and where it is now, its Z out of the tool |
+
 ## Requirements
 
 Blender **5.2 LTS or newer** (embeds CPython 3.13). Everything else ships with the add-on.

@@ -14,6 +14,43 @@ from ..ui.panel import active_rig
 from . import deferral
 
 
+def joint_values(rig) -> list[float]:
+    """The rig's current joint vector, read off the driving channels."""
+    values = []
+    for pose_bone in builder.joint_bones(rig):
+        is_prismatic = pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
+        values.append(pose_bone.location[1] if is_prismatic else pose_bone.rotation_euler[1])
+    return values
+
+
+def apply_joint_values(rig, values) -> None:
+    """Write ``values`` to the rig's driving channels, one per joint bone."""
+    for pose_bone, value in zip(builder.joint_bones(rig), values, strict=False):
+        is_prismatic = pose_bone.bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
+        if is_prismatic:
+            pose_bone.location[1] = float(value)
+        else:
+            pose_bone.rotation_euler[1] = float(value)
+
+
+def set_joint_values(rig, values) -> None:
+    """Stand the rig's joints at ``values``, and put its IK goal on the bone IK aims
+    with, so live IK leaves them there rather than dragging the arm back to the
+    goal it had.
+
+    Live IK is held off until the goal has moved: an update in between solves
+    for the old goal -- on a rig it hasn't solved yet, or one whose held joints
+    were just set -- and puts the joints back where that goal wants them.
+    """
+    with handlers.suspended():
+        apply_joint_values(rig, values)
+        bpy.context.view_layer.update()
+        ik_name, tip = rig.get(builder.PROP_IK_BONE), manager.tip_bone(rig)
+        if ik_name and ik_name in rig.pose.bones and tip in rig.pose.bones:
+            rig.pose.bones[ik_name].matrix = rig.pose.bones[tip].matrix.copy()
+            bpy.context.view_layer.update()
+
+
 class KinemaRigOperator(Operator):
     """Base for operators that need a Kinema rig in the context."""
 
