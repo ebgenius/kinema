@@ -763,15 +763,16 @@ file missing**, live IK falls back to NumPy, and Optimize Motion says why it can
 **Locate Description…**, under that message, points the robot at the file again: a URDF,
 xacro or MJCF, read as an import reads it, with the rig's xacro arguments, and
 `package://` and meshes found from where the file is now. It is accepted only if it
-describes the same robot: the same moving joints by name and type, each turning about the
-same axis from the same place with the robot at rest, in the same chain. A different robot,
-or a changed one, is refused with what differs; a changed robot is imported again. Limits
-that differ are fine: the rig keeps its own, which the Motion Check and Optimize read, and
+describes the same robot: the same moving joints by name and type, each moving a link of
+the same name, its frame in the same place and turned the same way with the robot at rest,
+in the same chain. A different robot, or a changed one, is refused with what differs; a
+changed robot is imported again. Position, speed and effort limits that differ are fine: the rig keeps its own, which the Motion Check and Optimize read, and
 the report lists them. Nothing else in the file changes, and the solver is rebuilt from the
-new file without reopening the .blend.
+new file on the next solve, without reopening the .blend.
 
 A rig with an external axis needs none of this: the solver describes it from its own
-bones.
+bones. A rig linked from a library isn't offered it: open the library's file, locate the
+description there, and save it.
 
 ## Requirements
 

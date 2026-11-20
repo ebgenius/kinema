@@ -33,9 +33,19 @@ from ..ui.panel import active_rig
 FILE_KINDS = ("file", "mjcf")
 
 
+def file_name(path) -> str:
+    """The name at the end of ``path``, whichever system wrote it: a file made on
+    Windows and opened elsewhere keeps its backslashes."""
+    return str(path).replace("\\", "/").rsplit("/", 1)[-1]
+
+
 def description_missing(rig) -> bool:
-    """Whether ``rig`` was imported from a file that isn't where it was."""
-    if rig is None or rig.get(builder.PROP_SOURCE_KIND) not in FILE_KINDS:
+    """Whether ``rig`` was imported from a file that isn't where it was, and can be
+    pointed at it again here: not a rig linked from a library, which is the
+    library's to fix."""
+    if rig is None or rig.library is not None:
+        return False
+    if rig.get(builder.PROP_SOURCE_KIND) not in FILE_KINDS:
         return False
     source = rig.get(builder.PROP_SOURCE)
     if not source or os.path.isfile(str(source)):
@@ -127,7 +137,7 @@ class KINEMA_OT_locate_description(Operator, ImportHelper):
         source = rig.get(builder.PROP_SOURCE) if rig is not None else None
         if source:
             # Named as it was: the browser shows what to look for.
-            self.filepath = os.path.basename(str(source))
+            self.filepath = file_name(source)
         return super().invoke(context, event)
 
     def execute(self, context: bpy.types.Context) -> set[str]:

@@ -6,10 +6,14 @@ and Locate Description points the rig at it again -- but only at a file that
 describes the same robot. Driving a rig with another robot's kinematics would
 solve every pose wrong and say nothing.
 
-The same robot here is: the same moving joints, by name and type; each one's
-axis the same way in the world, and its frame in the same place, with the robot
-at rest; and the same chain, each joint moved by the same one before it. A
-difference in any of those is a changed robot, which is a re-import.
+The same robot here is: the same moving joints, by name and type, each moving
+a link by the same name; each one's frame in the same place and turned the same
+way, with the robot at rest, so its axis is too; and the same chain, each joint
+moved by the same one before it. A difference in any of those is a changed
+robot, which is a re-import. The links' names and frames matter beyond the
+joints': the rig keeps a correction per link, and its IK aims at a link by its
+name, so a frame turned about its joint's axis, or a link renamed, would leave
+the solver aiming somewhere else.
 
 Limits are another matter. They are kept on the rig from the import, and the
 Motion Check and Optimize read them there, so a description whose limits were
@@ -29,14 +33,17 @@ import numpy as np
 #: How far a joint's frame may sit from where it was, in metres: well under
 #: anything a description changes on purpose, well over float noise.
 POSITION_TOLERANCE = 1e-4
-#: How far its axis may turn, as the length of the difference between two unit
-#: vectors: about 0.006 degrees.
+#: How far its axis, or its frame, may turn: in radians, about 0.006 degrees --
+#: for the axis, as the length of the difference between two unit vectors.
 AXIS_TOLERANCE = 1e-4
 #: Limits that differ by less are the same, in radians or metres (per second).
 LIMIT_TOLERANCE = 1e-6
 
 #: The limits compared, with how a report names each.
-LIMITS = (("lower", "lower limit"), ("upper", "upper limit"), ("velocity", "speed limit"))
+LIMITS = (
+    ("lower", "lower limit"), ("upper", "upper limit"), ("velocity", "speed limit"),
+    ("effort", "effort limit"),
+)
 
 
 @dataclass
@@ -87,6 +94,10 @@ def compare(rig_model, described) -> Comparison:
                 f"'{name}' is {other.joint_type} there, {joint.joint_type} on the rig"
             )
             continue
+        if joint.child_link != other.child_link:
+            result.differences.append(
+                f"'{name}' moves '{other.child_link}' there, '{joint.child_link}' on the rig"
+            )
         ours_at, theirs_at = our_frames[name], their_frames[name]
         moved = float(np.linalg.norm(ours_at[:3, 3] - theirs_at[:3, 3]))
         if moved > POSITION_TOLERANCE:
@@ -96,6 +107,15 @@ def compare(rig_model, described) -> Comparison:
         if float(np.linalg.norm(axis - their_axis)) > AXIS_TOLERANCE:
             turned = np.degrees(np.arccos(np.clip(float(axis @ their_axis), -1.0, 1.0)))
             result.differences.append(f"'{name}' turns about an axis {turned:.1f}° off the rig's")
+        else:
+            # The axis can agree while the frame is turned about it.
+            relative = ours_at[:3, :3].T @ theirs_at[:3, :3]
+            cosine = np.clip((float(np.trace(relative)) - 1.0) / 2.0, -1.0, 1.0)
+            if float(np.arccos(cosine)) > AXIS_TOLERANCE:
+                result.differences.append(
+                    f"'{name}''s frame is turned {np.degrees(np.arccos(cosine)):.1f}° "
+                    f"from the rig's"
+                )
         before, their_before = our_owner.get(joint.parent_link), their_owner.get(other.parent_link)
         if before != their_before:
             result.differences.append(

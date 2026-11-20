@@ -119,6 +119,14 @@ class TestLocating:
         drawn = _drawn(modules)
         assert offer in drawn
         assert ("label", "Description file missing") in drawn
+        assert ("label", "arm6.urdf") in drawn
+
+    def test_a_path_from_another_system_shows_its_file_name(self, modules):
+        """A .blend made on Windows and opened elsewhere keeps its backslashes, which
+        only Windows splits a path at."""
+        locate = modules("ops.locate")
+        assert locate.file_name(r"C:\robots\arm6\arm6.urdf") == "arm6.urdf"
+        assert locate.file_name("/home/me/robots/arm6.urdf") == "arm6.urdf"
 
 
     def test_a_missing_description_is_found_again(
@@ -191,6 +199,23 @@ class TestLocating:
         assert bpy.ops.kinema.locate_description(filepath=str(loosened)) == {"FINISHED"}
         assert rig[builder.PROP_SOURCE] == str(loosened)
         assert _limits(modules, rig) == before
+
+    def test_a_xacro_is_read_with_the_rigs_arguments(self, modules, fixture_dir, clean_scene):
+        """A xacro that can't render without ``name:=`` is read with the arguments it
+        was imported with, as the solver reads it."""
+        import bpy
+
+        builder = modules("rig.builder")
+        urdf = fixture_dir / "ros_ws" / "Renamed_Package_Dir" / "urdf"
+        needs_args = urdf / "needs_args.urdf.xacro"
+        assert "FINISHED" in bpy.ops.kinema.build_robot(
+            filepath=str(needs_args), xacro_args="name:=located_arm"
+        )
+        rig = next(o for o in bpy.data.objects if builder.is_kinema_rig(o))
+        bpy.context.view_layer.objects.active = rig
+        rig[builder.PROP_SOURCE] = str(needs_args.with_name("gone.urdf.xacro"))
+        assert bpy.ops.kinema.locate_description(filepath=str(needs_args)) == {"FINISHED"}
+        assert rig[builder.PROP_SOURCE] == str(needs_args)
 
     def test_an_mjcf_is_found_again(self, modules, fixture_dir, clean_scene, moved):
         import bpy

@@ -12,7 +12,6 @@ click the dot beside a slider and you get a keyframe on the actual rig.
 from __future__ import annotations
 
 import math
-import os
 
 import bpy
 from bpy.props import (
@@ -261,7 +260,7 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
             # solver can't build from it until it is found again.
             box = layout.box()
             box.label(text="Description file missing", icon="ERROR")
-            box.label(text=os.path.basename(str(rig.get(builder.PROP_SOURCE))), icon="BLANK1")
+            box.label(text=locate.file_name(rig.get(builder.PROP_SOURCE)), icon="BLANK1")
             box.operator(
                 "kinema.locate_description", text="Locate Description…", icon="FILE_FOLDER"
             )

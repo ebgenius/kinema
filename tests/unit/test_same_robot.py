@@ -70,15 +70,40 @@ def test_a_joint_moved_elsewhere_in_the_chain_is_told_apart(arm6_text, tmp_path)
     assert any(says in line for line in result.differences), result.differences
 
 
+def test_a_frame_turned_about_its_axis_is_told_apart(arm6_text, tmp_path):
+    """joint6 turns about X; its frame rolled a quarter turn about X leaves the axis
+    and the frame's place as they were, and the link's orientation not."""
+    edited = _edited(
+        arm6_text,
+        '<origin xyz="0.08 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>',
+        '<origin xyz="0.08 0 0" rpy="1.5707963 0 0"/><axis xyz="1 0 0"/>',
+    )
+    result = same.compare(_model(arm6_text, tmp_path), _model(edited, tmp_path, "b.urdf"))
+    assert any("'joint6''s frame is turned 90.0°" in line for line in result.differences), (
+        result.differences
+    )
+
+
+def test_a_renamed_link_is_told_apart(arm6_text, tmp_path):
+    """The rig aims IK at a link by its name: the same joints moving a link named
+    otherwise is another robot to the solver."""
+    edited = arm6_text.replace('"wrist_3"', '"wrist_x"')
+    assert edited.count('"wrist_x"') == 3, "precondition: the link and both its joints"
+    result = same.compare(_model(arm6_text, tmp_path), _model(edited, tmp_path, "b.urdf"))
+    says = "'joint6' moves 'wrist_x' there, 'wrist_3' on the rig"
+    assert any(says in line for line in result.differences), result.differences
+
+
 def test_limits_that_differ_are_listed_not_refused(arm6_text, tmp_path):
     edited = _edited(
         arm6_text,
         '<limit lower="-2.5" upper="2.5" effort="150" velocity="3.15"/>',
-        '<limit lower="-2.4" upper="2.5" effort="150" velocity="2.0"/>',
+        '<limit lower="-2.4" upper="2.5" effort="120" velocity="2.0"/>',
     )
     result = same.compare(_model(arm6_text, tmp_path), _model(edited, tmp_path, "b.urdf"))
     assert result.same_robot, result.differences
     assert result.limits == [
         "'joint2' lower limit -2.4, the rig's -2.5",
         "'joint2' speed limit 2, the rig's 3.15",
+        "'joint2' effort limit 120, the rig's 150",
     ]
