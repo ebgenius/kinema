@@ -338,6 +338,14 @@ class KinemaMotion(PropertyGroup):
     duration: IntProperty(
         name="Frames", description="How many frames the move takes", get=_duration
     )
+    #: The frames this motion's NLA strip was laid out at, which are the frames
+    #: of the job's action it shows: how a strip moved in the NLA editor is told
+    #: from the others. See ops/strips.py.
+    laid_frames: IntVectorProperty(size=2, default=(0, 0), options={"HIDDEN"})
+    #: The frames this motion last had in step with its strip: laid out at, or
+    #: taken from the strip since. Frames of its own other than these were set
+    #: in the Motions list.
+    synced_frames: IntVectorProperty(size=2, default=(0, 0), options={"HIDDEN"})
 
 
 def waypoint_by_uid(rig, uid: str):
@@ -439,9 +447,22 @@ def job_plan(rig):
             f"This job, saved before motions, couldn't be made into motions: "
             f"{rig.kinema_unconverted}. Add its motions in the Motions list"
         )
-    job = plan_motions(rig.kinema_motions, rig.kinema_waypoints)
-    job.notes[:0] = notes
-    return job
+    # A motion's strip moved or scaled in the NLA editor retimes it. The job is
+    # planned at the new frames, and the operator writes them once nothing will
+    # refuse it: a cancelled operator leaves no undo step to take them back.
+    retimed, retimes = strips.catch_up(rig)
+    motions = list(rig.kinema_motions)
+    for motion, frames, _ in retimes:
+        motions[motions.index(motion)] = strips.Retimed(motion, frames)
+    try:
+        job = plan_motions(motions, rig.kinema_waypoints)
+    except WaypointError as exc:
+        if not retimes:
+            raise
+        moved = ", ".join(f"'{m.name}' to {a}-{b}" for m, (a, b), _ in retimes)
+        raise type(exc)(f"{exc}, with {moved} as its NLA strip was moved") from exc
+    job.notes[:0] = notes + retimed
+    return replace(job, retimes=retimes)
 
 
 def refusal(rig, waypoint) -> str | None:
@@ -992,6 +1013,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             return {"CANCELLED"}
         # Only now, with nothing refused: a cancelled operator leaves no undo
         # step, so a change made before a refusal could not be taken back.
+        strips.retime(rig, job.retimes)
         # Stored as Update stores a pose, so the waypoint *is* where its marker
         # is: Go To restores it there, and the next generation starts from it.
         for waypoint, values in followed:
@@ -1947,12 +1969,22 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
         plan = job.spans
         samples = play_job(context, rig, plan)
         checks = check_job(context, rig, plan, samples=samples)
+        if checks is not None:
+            # Written before anything reads the job's fingerprint: the estimates
+            # of frames needed, and the check stored with it.
+            strips.retime(rig, job.retimes)
         estimate_frames_needed(context, rig, checks, samples)
         flagged = store_check(rig, checks)
         if checks is None:
-            self.report(
-                {"WARNING"}, "Nothing checked: this rig has no TCP to measure the job by"
-            )
+            message = "Nothing checked: this rig has no TCP to measure the job by"
+            if job.retimes:
+                # Not written: a cancelled operator leaves no undo step.
+                moved = ", ".join(f"'{m.name}'" for m, _, _ in job.retimes)
+                message += (
+                    f". The NLA editor's retime of {moved} is taken into the Motions "
+                    f"list by the next Generate Motion"
+                )
+            self.report({"WARNING"}, message)
             return {"CANCELLED"}
         message = f"Checked {len(plan)} move{'s' if len(plan) != 1 else ''}"
         message += f"; {_flagged_text(flagged)}" if flagged else "; nothing to report"

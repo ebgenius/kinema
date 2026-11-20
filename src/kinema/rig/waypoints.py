@@ -29,7 +29,7 @@ move belonging to the waypoint arrived at, as ``MoveL(pick)`` says how to get
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 #: How a motion moves.
 MOVE_JOINT = "JOINT"
@@ -95,6 +95,10 @@ class Plan:
     spans: list
     #: One line per joint move :func:`plan` added between two motions.
     notes: list
+    #: Motions retimed from the NLA editor, as ops/strips.py's ``catch_up``
+    #: found them: planned at their new frames, which an operator writes into
+    #: the Motions list once nothing will refuse it.
+    retimes: list = field(default_factory=list)
 
 
 def plan(motions, waypoints) -> Plan:

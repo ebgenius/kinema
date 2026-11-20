@@ -1,21 +1,36 @@
 """The job as NLA strips: one per motion, all showing one action.
 
 Generate Motion writes the job's keys into one action, as it always has, and
-this lays that action out on the rig's NLA as strips: one per motion -- a hold
-between two motions, and a joint move bridging a gap, count as motions here --
-named after it and covering its frames, and a "Before" and an "After" strip for
-whatever the action holds outside the job, hand keys included, out to the
-scene's ends at least. They tile the timeline end to end and all show the same
-action, each its own frames, so the rig plays exactly as one action would:
-every channel, at every frame of the scene. They replace what is under them at
-full strength, as the active action plays any channel the tracks under it don't
-animate, whatever its blend and influence.
+this lays that action out on the rig's NLA as strips, all showing that action,
+each its own frames:
+
+* one per motion, named after it and covering its frames, on two tracks of
+  their own, "Kinema Motions", taking turns -- so any one can be moved or
+  scaled in the NLA editor without running into the next, which a strip on
+  the same track refuses to do;
+* under them, on the "Kinema Job" track, one for each pause between motions
+  and each joint move bridging a gap, and a "Before" and an "After" for
+  whatever the action holds outside the job, hand keys included, out to the
+  scene's ends at least.
+
+With nothing moved, every frame is played by one strip, so the rig plays
+exactly as one action would: every channel, at every frame of the scene. They
+replace what is under them at full strength, as the active action plays any
+channel the tracks under it don't animate, whatever its blend and influence.
 
 Why one action and not one per motion: a channel only the hand keys animate --
 a gripper finger -- would otherwise drop to its default during each motion,
-since a frame plays one strip per track. And why the last strip holds forward:
-past a track's last strip, a channel it animates drops to its default too, so
-the robot would snap to its rest pose after the job.
+since a frame plays one strip per track. Why the motions hold nothing past
+their frames: the track under them plays there. And why the job's track
+holds forward, with a strip out past each end of the job: past a track's last
+strip, a channel it animates drops to its default, so the robot would snap to
+its rest pose.
+
+A motion's strip moved or scaled in the NLA editor retimes the motion: the
+next operator that reads the job takes its new frames into the Motions list
+(:func:`catch_up`), and the next Generate lays the job out at them. Until then
+the stretch a strip left plays the job's track under it, which holds the pose
+before.
 
 Keys are written with the action made active again and the NLA off, which plays
 the same: :func:`editing`. Hand keys made in the active action since the last
@@ -28,6 +43,8 @@ longer show it.
 
 The tracks are known by what their strips show -- the job's action, or a bake --
 not by their names, so a track of the user's with the same name is left alone.
+A motion's strip is known by the frames of the action it shows, which are the
+frames its motion was laid out at.
 
 The add-on preference "Job as NLA Strips" turns all of this off. A rig laid out
 as strips is then put back in its active action on the next Generate.
@@ -42,11 +59,16 @@ import bpy
 
 #: The names Kinema gives its tracks.
 JOB_TRACK = "Kinema Job"
+MOTIONS_TRACK = "Kinema Motions"
 BAKED_TRACK = "Kinema Baked"
 BEFORE, AFTER = "Before", "After"
 #: Marks an action as a rig's job (its value is the rig's name), and as a bake.
 PROP_JOB = "kinema_job"
 PROP_BAKED = "kinema_baked"
+#: On the rig: the handle of the slot its job's strips show. A track showing
+#: another slot of the same action is someone else's -- another rig's, sharing
+#: the action. The handle, not the identifier: renaming a slot changes that.
+PROP_SLOT = "kinema_job_slot"
 
 
 def enabled(context=None) -> bool:
@@ -57,23 +79,34 @@ def enabled(context=None) -> bool:
     return bool(getattr(prefs, "job_as_strips", True)) if prefs is not None else True
 
 
-def _owned(anim, shows):
-    """The first track whose strips all show an action ``shows`` accepts."""
-    if anim is None:
-        return None
-    for track in anim.nla_tracks:
-        if len(track.strips) and all(
-            s.action is not None and shows(s.action) for s in track.strips
-        ):
-            return track
-    return None
-
-
-def _job_track(rig):
+def _job_tracks(rig) -> list:
+    """The tracks of ``rig``'s job, bottom to top: those whose strips all show its
+    action. The job's own track comes first, the motions' above it."""
     job = getattr(rig, "kinema_job_action", None)
-    if job is None:
-        return None
-    return _owned(rig.animation_data, lambda action: action == job)
+    anim = rig.animation_data
+    if job is None or anim is None:
+        return []
+    slot = rig.get(PROP_SLOT)
+
+    def shows_job(strip) -> bool:
+        if strip.action != job:
+            return False
+        return slot is None or getattr(strip.action_slot, "handle", None) == slot
+
+    return [t for t in anim.nla_tracks if len(t.strips) and all(map(shows_job, t.strips))]
+
+
+def _plays(anim, track) -> bool:
+    """Whether ``track`` plays: the NLA on, and it unmuted -- or, with a track
+    soloed, it the soloed one, muted or not."""
+    soloed = any(t.is_solo for t in anim.nla_tracks)
+    return anim.use_nla and (track.is_solo if soloed else not track.mute)
+
+
+def job_plays(rig) -> bool:
+    """Whether any of the job's strips play now."""
+    anim = rig.animation_data
+    return any(_plays(anim, track) for track in _job_tracks(rig))
 
 
 def _baked_tracks(rig) -> list:
@@ -105,15 +138,14 @@ def job_action(rig):
 
 def laid_out(rig) -> bool:
     """Whether ``rig``'s job is on its NLA as strips now."""
-    return _job_track(rig) is not None
+    return bool(_job_tracks(rig))
 
 
 def _slot(rig):
     """The slot the job's strips show, or the active one while the job is the
     active action; None if neither. A slot belongs to one action, so the active
     one of any other action is no answer."""
-    track = _job_track(rig)
-    if track is not None:
+    for track in _job_tracks(rig)[:1]:
         slot = getattr(track.strips[0], "action_slot", None)
         if slot is not None:
             return slot
@@ -257,8 +289,7 @@ def editing(rig, context=None):
         if job is not None:
             # Back to the active action, as it was before strips. The NLA
             # switch is left as it is: the active action plays either way.
-            track = _job_track(rig)
-            if track is not None:
+            for track in _job_tracks(rig):
                 anim.nla_tracks.remove(track)
             hand, hand_slot = anim.action, getattr(anim, "action_slot", None)
             _activate(rig, job, slot)
@@ -338,27 +369,63 @@ def _reach(job) -> tuple[float, float]:
     return float(math.floor(start)), float(math.ceil(end))
 
 
+def _tracks_for_job(rig, count: int) -> tuple:
+    """The job's track and ``count - 1`` motion tracks, emptied: the ones there
+    are, kept where they are among the rig's tracks, the missing ones made above
+    them, and any more removed -- an empty track would be no one's."""
+    anim = rig.animation_data
+    tracks = _job_tracks(rig)
+    for track in tracks[count:]:
+        anim.nla_tracks.remove(track)
+    tracks = tracks[:count]
+    for track in tracks:
+        for strip in list(track.strips):
+            track.strips.remove(strip)
+    while len(tracks) < count:
+        # Above the job's last track, so the bakes and the user's tracks keep
+        # their place above or under the job.
+        track = anim.nla_tracks.new(prev=tracks[-1]) if tracks else anim.nla_tracks.new()
+        track.name = JOB_TRACK if not tracks else MOTIONS_TRACK
+        if tracks:
+            # A job the user muted stays muted. Solo isn't copied: Blender
+            # solos one track at a time.
+            track.mute = tracks[0].mute
+        tracks.append(track)
+    return tuple(tracks)
+
+
 def _tile(rig, spans, slot) -> None:
-    """The job's track, its strips replaced by one per ``(name, start, end)`` of
-    ``spans`` -- in frame order, with Before and After added for what the job's
-    action holds outside them -- each showing those frames of the action. The
-    active action is then left empty."""
+    """The job laid out: each motion of ``spans`` -- ``(name, start, end, is a
+    motion)``, in frame order -- on the motions' tracks, taking turns, and the
+    rest on the job's track, with a Before and an After out past what the
+    action holds, a frame past the job's ends at least. The active action is
+    then left empty."""
     anim = rig.animation_data
     job = rig.kinema_job_action
-    track = _job_track(rig) or _new_track(anim, JOB_TRACK)
-    for strip in list(track.strips):
-        track.strips.remove(strip)
+    moves = sum(1 for *_, motion in spans if motion)
+    base, *motions = _tracks_for_job(rig, 1 + min(2, moves))
     start, end = _reach(job)
-    tiles = []
-    if start < spans[0][1]:
-        tiles.append((BEFORE, start, spans[0][1]))
-    tiles += spans
-    if end > spans[-1][2]:
-        tiles.append((AFTER, spans[-1][2], end))
+    first, last = spans[0][1], spans[-1][2]
+    # A frame past each end at least, so the job's track holds back before the
+    # job and forward after it -- a motion's strip holds nothing.
+    start, end = min(start, first - 1.0), max(end, last + 1.0)
+    fills = [(BEFORE, start, first)]
+    fills += [(name, a, b) for name, a, b, motion in spans if not motion]
+    fills.append((AFTER, last, end))
     anim.action = None
-    for index, (name, a, b) in enumerate(tiles):
-        strip = _new_strip(track, name, a, b, job, slot)
+    for index, (name, a, b) in enumerate(fills):
+        strip = _new_strip(base, name, a, b, job, slot)
         strip.extrapolation = "HOLD" if index == 0 else "HOLD_FORWARD"
+    for index, (name, a, b) in enumerate(
+        (name, a, b) for name, a, b, motion in spans if motion
+    ):
+        strip = _new_strip(motions[index % 2], name, a, b, job, slot)
+        strip.extrapolation = "NOTHING"
+    shown = getattr(base.strips[0].action_slot, "handle", None)
+    if shown is not None:
+        rig[PROP_SLOT] = int(shown)
+    elif PROP_SLOT in rig:
+        del rig[PROP_SLOT]
     anim.use_nla = True
 
 
@@ -374,14 +441,22 @@ def lay_out(rig, plan) -> int:
     job = getattr(rig, "kinema_job_action", None)
     if anim is None or job is None or anim.use_tweak_mode or not enabled() or not plan:
         return 0
+    from ..rig.waypoints import MADE_MOTION
+
     slot = getattr(anim, "action_slot", None) if anim.action == job else _slot(rig)
     spans = [
-        (span.label, float(span.start_frame), float(span.end_frame))
+        (span.label, float(span.start_frame), float(span.end_frame), span.made == MADE_MOTION)
         for span in plan if span.end_frame > span.start_frame
     ]
     if not spans:
         return 0
     _tile(rig, spans, slot)
+    for motion in getattr(rig, "kinema_motions", ()):
+        # What its strip shows of the action: how catch_up knows it. And the
+        # frames the Motions list last had from the strip, to tell a change
+        # made there from one made in the NLA editor.
+        motion.laid_frames = (motion.frame_start, motion.frame_end)
+        motion.synced_frames = (motion.frame_start, motion.frame_end)
     first, last = spans[0][1], spans[-1][2]
     muted = 0
     for strip in (s for t in _baked_tracks(rig) for s in t.strips):
@@ -405,15 +480,19 @@ def _cover(rig, slot) -> None:
     """Strips added at either end, where what the job's action holds now reaches
     past its strips: hand keys moved into it can. The strips there are left as
     they are, however the user has set them."""
-    track = _job_track(rig)
+    tracks = _job_tracks(rig)
+    track = tracks[0]
     job = rig.kinema_job_action
     start, end = _reach(job)
+    # The job's own track: a motion's strip, moved, holds nothing past it.
+    every = list(track.strips)
+    latest = max(float(s.frame_end) for s in every)
     laid = sorted(track.strips, key=lambda s: s.frame_start)
-    first, last = laid[0], laid[-1]
-    if end > last.frame_end:
-        strip = _new_strip(track, AFTER, float(last.frame_end), end, job, slot)
+    first = laid[0]
+    if end > latest:
+        strip = _new_strip(track, AFTER, latest, end, job, slot)
         strip.extrapolation = "HOLD_FORWARD"
-    if start < first.frame_start:
+    if start < min(float(s.frame_start) for s in every):
         strip = _new_strip(track, BEFORE, start, float(first.frame_start), job, slot)
         strip.extrapolation = "HOLD"
         if first.extrapolation == "HOLD":
@@ -447,7 +526,188 @@ def bake_refusal(rig, first: int, last: int) -> str:
     if any(track.is_solo for track in anim.nla_tracks):
         # A soloed track plays alone, without the copy the bake plays and keys.
         return "An NLA track of the robot's is soloed: un-solo it to bake"
+    if out_of_step(rig):
+        # The bake plays a copy of the action in the strips' place, at the frames
+        # the job was laid out at: a strip moved since would bake the wrong ones.
+        return (
+            "A strip of the job was moved or scaled in the NLA editor: Generate "
+            "Motion to lay the job out there, then bake"
+        )
     return ""
+
+
+def out_of_step(rig) -> bool:
+    """Whether any strip of the job plays frames other than the ones of the
+    action it shows -- moved or scaled in the NLA editor, a motion's or not --
+    so the job plays other than its keys say until Generate lays it out again."""
+    return any(_moved(s) for t in _job_tracks(rig) for s in t.strips)
+
+
+def _moved(strip) -> bool:
+    """Whether ``strip`` plays frames other than the ones of the action it shows."""
+    return (
+        abs(strip.frame_start - strip.action_frame_start) >= 1e-3
+        or abs(strip.frame_end - strip.action_frame_end) >= 1e-3
+    )
+
+
+def catch_up(rig) -> tuple[list, list]:
+    """The frames motions take from strips moved or scaled in the NLA editor, as
+    ``(notes, retimes)``: a line each for a report, and ``(motion, frames, the
+    frames its strip shows)`` to write. Nothing is written here, so a job
+    refused with them changes nothing.
+
+    A motion's strip is the one showing the frames of the action the motion was
+    laid out at. Where the strip now plays other frames, and the motion's own
+    frames are still the ones it was laid out at, the motion takes the strip's;
+    where both changed, the Motions list's are kept, and said so. A strip that
+    isn't a motion's -- a pause, a bridging joint move, Before or After -- takes
+    its frames from the motions around it, so a move of it goes, and is said.
+    """
+    anim = rig.animation_data
+    if anim is None or anim.use_tweak_mode or rig.library is not None:
+        return [], []
+    tracks = _job_tracks(rig)
+    if not tracks:
+        return [], []
+    # Motions laid out with the strips first: one added in the list since has
+    # no frames laid out, and its own stand in only where no laid one matches.
+    laid, unlaid = {}, {}
+    for motion in getattr(rig, "kinema_motions", ()):
+        kept = tuple(int(v) for v in motion.laid_frames)
+        (laid if kept[1] > kept[0] else unlaid).setdefault(_laid(motion), []).append(motion)
+    notes, retimes = [], []
+    as_generated = _as_generated(rig)
+    every = sorted((s for t in tracks for s in t.strips), key=lambda s: s.frame_start)
+    showing = {}
+    for strip in every:
+        shown = (round(strip.action_frame_start), round(strip.action_frame_end))
+        showing.setdefault(shown, []).append(strip)
+    noted = set()
+    for strip in every:
+        shown = (round(strip.action_frame_start), round(strip.action_frame_end))
+        plays = (round(strip.frame_start), round(strip.frame_end))
+        # A motion's own frames stand in only in a file laid out before motions
+        # kept theirs, where none has any: with one laid out, a motion without is
+        # one added since, and has no strip -- a pause's moved strip isn't its.
+        candidates = laid.get(shown) or (
+            [] if laid else [
+                m for m in unlaid.get(shown, ()) if as_generated or m.name == strip.name
+            ]
+        )
+        if len(candidates) > 1:
+            if shown not in noted:
+                noted.add(shown)
+                notes.append(
+                    f"{len(candidates)} motions have frames {shown[0]}-{shown[1]}, so the "
+                    f"NLA strip there retimes none of them"
+                )
+            continue
+        motion = candidates[0] if candidates else None
+        if motion is None:
+            if _moved(strip):
+                notes.append(
+                    f"The NLA strip '{strip.name}' isn't a motion's, so it follows the "
+                    f"motions around it: the next Generate puts it back"
+                )
+            continue
+        if len(showing[shown]) > 1:
+            # A strip duplicated in the NLA editor shows what the motion's does.
+            if shown not in noted:
+                noted.add(shown)
+                notes.append(
+                    f"{len(showing[shown])} strips show '{motion.name}', so it isn't "
+                    f"retimed: delete the copies, and the next Generate lays it out again"
+                )
+            continue
+        # Against the frames the motion last had in step with its strip, not the
+        # ones it was laid out at: a strip moved, caught up, and moved back to
+        # where it was laid out has moved again.
+        current, synced = (motion.frame_start, motion.frame_end), _laid(motion, "synced_frames")
+        if plays == synced:
+            continue
+        if current == plays:
+            # Retimed to the same frames in both places: in step again, and kept
+            # so, or a later move of the strip would read as a list edit.
+            retimes.append((motion, plays, shown))
+            continue
+        if current != synced:
+            notes.append(
+                f"'{motion.name}' was retimed in the Motions list and in the NLA editor: "
+                f"the Motions list's frames {current[0]}-{current[1]} are kept"
+            )
+            continue
+        start, end = plays[0], max(plays[1], plays[0] + 1)
+        retimes.append((motion, (start, end), shown))
+        notes.append(
+            f"'{motion.name}' retimed in the NLA editor, to frames {start}-{end}: "
+            f"Generate Motion lays the job out there"
+        )
+    return notes, retimes
+
+
+class Retimed:
+    """A motion as it reads with the frames its strip was moved to, for planning
+    the job before they are written."""
+
+    def __init__(self, motion, frames):
+        self._motion = motion
+        self.frame_start, self.frame_end = frames
+
+    def __getattr__(self, name):
+        return getattr(self._motion, name)
+
+
+def retime(rig, retimes) -> None:
+    """Write what :func:`catch_up` found into the Motions list.
+
+    In a file laid out before motions kept their laid-out frames, every motion
+    takes its own as them first: they are what its strip shows. All at once, as
+    the first retime there would otherwise be the only motion with any, and the
+    others' strips would no longer be found by their frames.
+    """
+    if retimes and not any(_has_laid(m) for m in getattr(rig, "kinema_motions", ())):
+        # Only the motions a strip stands for: one with their frames and their
+        # name, as the strips were named then. A motion added since has none.
+        laid = {
+            (s.name, (round(s.action_frame_start), round(s.action_frame_end)))
+            for t in _job_tracks(rig) for s in t.strips
+        }
+        shown = {frames for _, frames in laid}
+        as_generated = _as_generated(rig)
+        for motion in rig.kinema_motions:
+            frames = (motion.frame_start, motion.frame_end)
+            if (motion.name, frames) in laid or (as_generated and frames in shown):
+                motion.laid_frames = motion.synced_frames = frames
+    for motion, frames, shown in retimes:
+        motion.frame_start, motion.frame_end = frames
+        motion.synced_frames = frames
+        if motion.laid_frames[1] <= motion.laid_frames[0]:
+            motion.laid_frames = shown
+
+
+def _as_generated(rig) -> bool:
+    """Whether the Motions list is as the job was last generated from it. Then a
+    strip showing a motion's frames is that motion's, whatever it is called now:
+    a motion added since, on a pause's frames, would have changed the list."""
+    from .waypoints import job_signature
+
+    stored = getattr(rig, "kinema_generated_job", "")
+    return bool(stored) and stored == job_signature(rig)
+
+
+def _has_laid(motion) -> bool:
+    return motion.laid_frames[1] > motion.laid_frames[0]
+
+
+def _laid(motion, name="laid_frames") -> tuple:
+    """``motion``'s frames as its strip was laid out at, or last in step with it.
+    A file laid out before motions kept them has neither: its motions' frames
+    are taken for both, as they were when it was saved."""
+    frames = tuple(int(v) for v in getattr(motion, name))
+    if frames[1] > frames[0]:
+        return frames
+    return (int(motion.frame_start), int(motion.frame_end))
 
 
 class Bake:
@@ -491,9 +751,10 @@ def baking(rig, first: int, last: int, context=None):
     # The copy plays in the job's place: the job's track muted, the copy active
     # on top, at full strength. The NLA stays on, so any track of the user's
     # still plays under it, and what is baked is what plays.
-    job_track = _job_track(rig)
-    was_muted = job_track.mute
-    job_track.mute = True
+    job_tracks = _job_tracks(rig)
+    was_muted = [track.mute for track in job_tracks]
+    for track in job_tracks:
+        track.mute = True
     blend, influence = anim.action_blend_type, anim.action_influence
     extrapolation = anim.action_extrapolation
     anim.action_blend_type, anim.action_influence = "REPLACE", 1.0
@@ -508,7 +769,8 @@ def baking(rig, first: int, last: int, context=None):
         anim.action = None
         anim.action_blend_type, anim.action_influence = blend, influence
         anim.action_extrapolation = extrapolation
-        job_track.mute = was_muted
+        for track, mute in zip(job_tracks, was_muted, strict=True):
+            track.mute = mute
         if not state.keep:
             bpy.data.actions.remove(baked)
             if hand is not None:

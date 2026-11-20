@@ -435,6 +435,8 @@ class TestWhileSolving:
             "held joint's keys edited",
             "root posed",
             "frame rate",
+            "strip moved",
+            "after strip moved",
         ],
     )
     def test_a_robot_changed_meanwhile_gets_nothing_written(self, arm6, builder, modules, change):
@@ -474,6 +476,23 @@ class TestWhileSolving:
             modules("ops.ik").joint_curves(arm6)[held.name].keyframe_points[1].co.y += 0.1
         elif change == "root posed":
             arm6.pose.bones[builder.ROOT_BONE].location.x += 0.05
+        elif change == "strip moved":
+            # The last motion's strip, later in the NLA editor: nothing in the
+            # Motions list has changed yet.
+            strips = modules("ops.strips")
+            last = arm6.kinema_motions[-1]
+            strip = next(
+                s for t in strips._job_tracks(arm6) for s in t.strips
+                if (s.action_frame_start, s.action_frame_end) == (last.frame_start, last.frame_end)
+            )
+            strip.frame_start_ui += 10
+        elif change == "after strip moved":
+            # Not a motion's: it retimes nothing, but the job plays otherwise.
+            strips = modules("ops.strips")
+            strip = next(
+                s for t in strips._job_tracks(arm6) for s in t.strips if s.name == strips.AFTER
+            )
+            strip.frame_start_ui += 10
         else:
             bpy.context.scene.render.fps = 24
 
