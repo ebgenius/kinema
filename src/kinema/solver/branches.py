@@ -105,13 +105,29 @@ def joint_distance(a: np.ndarray, b: np.ndarray, is_revolute=None) -> float:
     return float(np.max(np.abs(wrapped)))
 
 
+def nearest(configurations, reference: np.ndarray, held=None) -> int:
+    """Which of ``configurations`` is nearest ``reference``: the index of the one
+    whose largest joint difference from it is smallest.
+
+    On the free joints only, where ``held`` marks the held ones. A held joint is
+    the same in every configuration found, and where the rig reads it otherwise
+    -- its channel dragged past its limit, say -- that difference is the same for
+    all of them, and at its largest it would hide which is nearest.
+    """
+    reference = np.asarray(reference, dtype=float)
+    free = np.ones(reference.shape, dtype=bool) if held is None else ~np.asarray(held, bool)
+    if not free.any():
+        return 0
+    return int(
+        np.argmin([np.max(np.abs(np.asarray(q, float) - reference)[free]) for q in configurations])
+    )
+
+
 def is_distinct(
     q: np.ndarray, found, tolerance: float = DISTINCT_TOLERANCE, is_revolute=None
 ) -> bool:
     """True if ``q`` is not already in ``found``."""
-    return all(
-        joint_distance(q, other, is_revolute) >= tolerance for other in found
-    )
+    return all(joint_distance(q, other, is_revolute) >= tolerance for other in found)
 
 
 def reach_error(chain: Chain, q: np.ndarray, goal: np.ndarray) -> tuple[float, float]:

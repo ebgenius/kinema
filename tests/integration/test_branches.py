@@ -280,6 +280,23 @@ class TestFindingSolutions:
         assert index == (nearest + 1) % len(stored)
         np.testing.assert_allclose(_q(builder, arm6), stored[index], atol=1e-5)
 
+    def test_live_ik_doesnt_move_the_arm_during_a_search(self, arm6, builder, ik_ops):
+        """The target moved, live IK not yet run: the search leaves the arm where it
+        stands, rather than letting an update in it solve for the moved target. Called
+        as the operator calls it, to read the arm before the update an operator's end
+        brings, after which live IK rightly follows the target."""
+        import bpy
+        from mathutils import Vector
+
+        _set_q(builder, arm6, REACHABLE)
+        bpy.ops.kinema.snap_ik()
+        arm6.kinema_ik_enabled = True
+        bpy.context.view_layer.update()
+        goal = arm6.pose.bones[arm6.get(builder.PROP_IK_BONE)]
+        goal.location += Vector((0.0, 0.0, 0.03))
+        assert ik_ops.search_solutions(bpy.context, arm6, seeds=20).done
+        np.testing.assert_allclose(_q(builder, arm6), REACHABLE, atol=1e-6)
+
     def test_live_ik_stays_on_the_chosen_configuration(self, arm6, builder, ik_ops):
         """Otherwise picking one would be undone by the next viewport update."""
         import bpy

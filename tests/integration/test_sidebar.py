@@ -362,3 +362,23 @@ class TestSnapToTool:
         assert ik_ops.goal_off_tool(arm6) and enabled(), "5 m out of reach"
         assert "FINISHED" in bpy.ops.kinema.snap_ik()
         assert not ik_ops.goal_off_tool(arm6) and not enabled()
+
+
+    def test_a_turned_target_on_a_scaled_robot_is_off_the_tool(self, panel, arm6, addon):
+        """Root scaled by 2 scales the matrices compared: their rotation is compared
+        without it, or a 0.1 rad turn read as none."""
+        import bpy
+        from mathutils import Euler, Vector
+
+        ik_ops = importlib.import_module(f"{addon.__name__}.ops.ik")
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = False
+        arm6.pose.bones["Root"].scale = Vector((2.0, 2.0, 2.0))
+        bpy.context.view_layer.update()
+        assert "FINISHED" in bpy.ops.kinema.snap_ik()
+        assert not ik_ops.goal_off_tool(arm6), "precondition: on the tool"
+        goal = arm6.pose.bones[arm6["kinema_ik_bone"]]
+        goal.rotation_mode = "XYZ"
+        goal.rotation_euler = Euler((0.1, 0.0, 0.0))
+        bpy.context.view_layer.update()
+        assert ik_ops.goal_off_tool(arm6)

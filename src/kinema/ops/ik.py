@@ -19,7 +19,7 @@ from bpy.types import Operator
 
 from .. import handlers
 from ..rig import builder, widgets
-from ..solver import chain, manager
+from ..solver import branches, chain, manager
 from ..ui.panel import active_rig
 from . import strips
 from .outcome import Outcome, reported
@@ -231,7 +231,11 @@ def goal_off_tool(rig) -> bool:
     goal, tool = _np4(bones[ik_name].matrix), _np4(bones[tip].matrix)
     if float(np.linalg.norm(goal[:3, 3] - tool[:3, 3])) > ON_TOOL_POSITION:
         return True
-    turn = (float(np.trace(goal[:3, :3].T @ tool[:3, :3])) - 1.0) / 2.0
+    # Turned only: a Root scaled by 2 scales both, and a trace of 4 (1 + 2 cos)
+    # past 3 would read as no turn at all.
+    goal_turn = goal[:3, :3] / np.linalg.norm(goal[:3, :3], axis=0)
+    tool_turn = tool[:3, :3] / np.linalg.norm(tool[:3, :3], axis=0)
+    turn = (float(np.trace(goal_turn.T @ tool_turn)) - 1.0) / 2.0
     return float(np.arccos(np.clip(turn, -1.0, 1.0))) > ON_TOOL_ROTATION
 
 
@@ -287,10 +291,9 @@ def reconfigure(rig, solver) -> bool:
         return False
     forget_auto_search(rig.name)
     current = chain.read_configuration(rig, solver.chain)
-    index = int(np.argmin([np.max(np.abs(np.asarray(s.q) - current)) for s in found]))
-    chain.write_configuration(
-        rig, solver.chain, np.asarray(found[index].q), skip=manager.held_mask(rig, solver.chain)
-    )
+    held = manager.held_mask(rig, solver.chain)
+    index = branches.nearest([s.q for s in found], current, held)
+    chain.write_configuration(rig, solver.chain, np.asarray(found[index].q), skip=held)
     # The configurations found, as Find Solutions keeps them: the arrows step
     # among them, and the quick bar says which this is.
     _store_solutions(rig, solver, found)
@@ -426,31 +429,32 @@ def search_solutions(context, rig, seeds: int = 0) -> Outcome:
     if solver is None:
         return Outcome(False, "ERROR", "Could not prepare a solver for this rig")
 
-    context.view_layer.update()
-    before = chain.read_configuration(rig, solver.chain)
-    window = getattr(context, "window", None)
-    if window is not None:
-        window.cursor_set("WAIT")
-    # Suspended for the same reason baking suspends: the search writes
-    # nothing, but it runs many solves and the live handler would interleave
-    # its own with them.
-    try:
-        with handlers.suspended():
-            found = manager.find_solutions(rig, solver, seeds=seeds)
-    finally:
+    # Live IK held off from the arm being read to its being put back, as a bake
+    # holds it off: the search runs many solves, which the handler would
+    # interleave with its own, and an update in between could solve a goal moved
+    # before the search and move the arm it is to leave where it stands.
+    with handlers.suspended():
+        context.view_layer.update()
+        before = chain.read_configuration(rig, solver.chain)
+        window = getattr(context, "window", None)
         if window is not None:
-            window.cursor_set("DEFAULT")
+            window.cursor_set("WAIT")
+        try:
+            found = manager.find_solutions(rig, solver, seeds=seeds)
+        finally:
+            if window is not None:
+                window.cursor_set("DEFAULT")
 
-    _store_solutions(rig, solver, found)
-    if found:
-        # The one the arm stands in: searching again is not a way to be moved
-        # on to another, and the arrows step from where the arm is.
-        rig.kinema_active_solution = int(
-            np.argmin([np.max(np.abs(np.asarray(s.q) - before)) for s in found])
-        )
-    # Put the arm back: searching is not a way to lose the pose you had.
-    chain.write_configuration(rig, solver.chain, before)
-    context.view_layer.update()
+        _store_solutions(rig, solver, found)
+        if found:
+            # The one the arm stands in: searching again is not a way to be moved
+            # on to another, and the arrows step from where the arm is.
+            rig.kinema_active_solution = branches.nearest(
+                [s.q for s in found], before, manager.held_mask(rig, solver.chain)
+            )
+        # Put the arm back: searching is not a way to lose the pose you had.
+        chain.write_configuration(rig, solver.chain, before)
+        context.view_layer.update()
 
     if not found:
         return Outcome(
