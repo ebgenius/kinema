@@ -490,8 +490,11 @@ def _load_source_urdf(rig):
         except Exception as exc:  # noqa: BLE001
             raise SolverError(f"could not describe this rig for the solver: {exc}") from exc
 
+    from ..rig.description_path import source_path
+
     kind = rig.get(builder.PROP_SOURCE_KIND)
-    source = rig.get(builder.PROP_SOURCE)
+    # Relative to the .blend first, where it is kept so, then where it was.
+    source = source_path(rig)
     if not kind or not source:
         return None
 

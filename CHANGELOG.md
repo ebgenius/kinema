@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A robot's description kept relative to the .blend** (#92). Where the description is in
+  the .blend's folder or under it, saving keeps its path relative to the .blend as well, so a
+  project folder copied or moved as a whole, to another machine too, reads the description
+  beside it with nothing to locate. A .blend moved on its own still finds it where it was.
 - **Locate Description…** (#92). Where a rig's description file is missing -- the .blend
   opened on another machine, or the folder moved -- the Kinema panel says so and offers
   to point the rig at it again. The file must describe the same robot, by its joints and
