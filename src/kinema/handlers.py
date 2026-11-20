@@ -316,15 +316,16 @@ def on_save_pre(filepath="", *_args) -> None:
     """Keep each rig's description path relative to the file being saved, too."""
     from .rig import description_path
 
-    description_path.remember_all(filepath)
+    description_path.before_save(filepath)
 
 
 @persistent
 def on_save_post(*_args) -> None:
-    """Back to the open file's own: a Save Copy saved them for the copy."""
+    """Back to the open file's own: a Save Copy saved them for the copy, and a save
+    that failed for a file that isn't there."""
     from .rig import description_path
 
-    description_path.remember_all(bpy.data.filepath)
+    description_path.after_save()
 
 
 @contextmanager
@@ -388,6 +389,7 @@ _HANDLERS = (
     (bpy.app.handlers.redo_post, on_undone),
     (bpy.app.handlers.save_pre, on_save_pre),
     (bpy.app.handlers.save_post, on_save_post),
+    (bpy.app.handlers.save_post_fail, on_save_post),
 )
 
 

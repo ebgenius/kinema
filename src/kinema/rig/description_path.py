@@ -16,10 +16,14 @@ beside the .blend's new place, which needn't be this robot's.
 
 Both are written when the file is saved, against the file it is saved as, so a
 rig imported before the .blend was first saved has one too, and Save As keeps it
-pointing at the same description from the new place. The absolute path is
-brought up to date at the same time, where the relative one found the file:
-Kinema 0.6 and earlier read only that. Blender's *Default To: Relative Paths*
-preference turns the relative path off, as it does for images.
+pointing at the same description from the new place. A Save Copy, or a save that
+fails, puts back the open file's own after: from the description each rig read
+before the save, never by reading the copy's path again from here, where it can
+name another file. The absolute path is brought up to date at the same time, where
+the file it names is gone and the relative one found the description: Kinema 0.6
+and earlier read only that. Where both find a file, the absolute one is kept.
+Blender's *Default To: Relative Paths* preference turns the relative path off, as
+it does for images.
 
 :func:`relative_to` needs no Blender, so it is tested without one.
 """
@@ -78,21 +82,27 @@ def source_path(rig) -> str | None:
     return str(source)
 
 
-def remember(rig, blend_path: str) -> None:
+def remember(rig, blend_path: str, path: str | None = None) -> None:
     """Keep ``rig``'s description path relative to ``blend_path`` as well, where it
-    can be, and the absolute one up to date. A description that is missing is left
-    as it is recorded, for Locate Description to find."""
+    can be, and the absolute one up to date where the file it names is gone.
+
+    ``path`` is the description, by default where :func:`source_path` finds it. A
+    description that is missing is left as it is recorded, for Locate Description
+    to find.
+    """
     import bpy
 
     from . import builder
 
     if rig.library is not None or rig.get(builder.PROP_SOURCE_KIND) not in FILE_KINDS:
         return
-    path = source_path(rig)
+    if path is None:
+        path = source_path(rig)
     if path is None or not os.path.isfile(path):
         return
     path = os.path.abspath(path)
-    if rig.get(builder.PROP_SOURCE) != path:
+    recorded = rig.get(builder.PROP_SOURCE)
+    if recorded != path and not os.path.isfile(str(recorded)):
         rig[builder.PROP_SOURCE] = path
     relative = (
         relative_to(path, blend_path)
@@ -106,12 +116,32 @@ def remember(rig, blend_path: str) -> None:
         rig[PROP_SOURCE_RELATIVE] = relative
 
 
-def remember_all(blend_path: str) -> None:
-    """:func:`remember` every rig in the file, against ``blend_path``."""
+#: Each rig's description as a save began, to put the open file's paths back from.
+_saving: list = []
+
+
+def before_save(blend_path: str) -> None:
+    """:func:`remember` every rig in the file against ``blend_path``, the file
+    being saved, noting first where each one's description is."""
     import bpy
 
     from . import builder
 
+    _saving.clear()
     for obj in bpy.data.objects:
         if builder.is_kinema_rig(obj):
-            remember(obj, blend_path)
+            path = source_path(obj)
+            _saving.append((obj, path))
+            remember(obj, blend_path, path)
+
+
+def after_save() -> None:
+    """Back to the open file's own paths, from where each description was as the
+    save began: after a Save Copy, or a save that failed, the open file is not the
+    one they were written against."""
+    import bpy
+
+    saving = list(_saving)
+    _saving.clear()
+    for rig, path in saving:
+        remember(rig, bpy.data.filepath, path)

@@ -135,6 +135,32 @@ class TestSaving:
             linked.objects = [rig.name]
         assert _relative(modules, linked.objects[0]) == "//arm6.urdf", "the copy's own"
 
+    def test_a_save_copy_doesnt_find_another_file_by_the_copys_path(
+        self, modules, project, fixture_dir
+    ):
+        """The copy's ``//arm6.urdf``, read from the open file's folder, names another
+        robot's file there."""
+        import bpy
+
+        paths = modules("rig.description_path")
+        rig = _build(modules, project / "robots" / "arm6.urdf")
+        _save(project / "scene.blend")
+        shutil.copy(fixture_dir / "arm3.urdf", project / "arm6.urdf")
+        copy = project / "robots" / "copy.blend"
+        assert "FINISHED" in bpy.ops.wm.save_as_mainfile(filepath=str(copy), copy=True)
+        assert paths.source_path(rig) == str(project / "robots" / "arm6.urdf")
+        assert _relative(modules, rig) == "//" + os.path.join("robots", "arm6.urdf")
+
+    def test_a_save_that_fails_leaves_the_open_files_own(self, modules, project):
+        import bpy
+
+        rig = _build(modules, project / "robots" / "arm6.urdf")
+        _save(project / "scene.blend")
+        nowhere = project / "robots" / "no such folder" / "scene.blend"
+        with pytest.raises(RuntimeError, match="Cannot open file"):
+            bpy.ops.wm.save_as_mainfile(filepath=str(nowhere))
+        assert _relative(modules, rig) == "//" + os.path.join("robots", "arm6.urdf")
+
 
 class TestMoving:
     def test_a_project_copied_as_a_whole_finds_its_own_robot(self, modules, project, tmp_path):
@@ -152,12 +178,14 @@ class TestMoving:
         assert paths.source_path(rig) == found
         assert not locate.description_missing(rig)
         assert manager._load_source_urdf(rig) is not None
+        original = rig[builder.PROP_SOURCE]
         _save(moved / "scene.blend")
-        assert rig[builder.PROP_SOURCE] == found, "kept up to date, for Kinema 0.6"
+        assert rig[builder.PROP_SOURCE] == original, "the file it names is there: kept"
 
     def test_a_project_moved_finds_its_robot_with_the_old_place_gone(
         self, modules, project, tmp_path
     ):
+        builder = modules("rig.builder")
         locate, manager = modules("ops.locate"), modules("solver.manager")
         _build(modules, project / "robots" / "arm6.urdf")
         _save(project / "scene.blend")
@@ -166,6 +194,9 @@ class TestMoving:
         rig = _open(moved / "scene.blend", modules)
         assert not locate.description_missing(rig)
         assert manager._load_source_urdf(rig) is not None
+        _save(moved / "scene.blend")
+        found = str(moved / "robots" / "arm6.urdf")
+        assert rig[builder.PROP_SOURCE] == found, "brought up to date, for Kinema 0.6"
 
     def test_a_blend_moved_on_its_own_finds_the_description_where_it_was(
         self, modules, project, tmp_path
