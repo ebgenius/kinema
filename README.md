@@ -40,9 +40,29 @@ Concretely, that means:
 [blender-urdf]: https://github.com/kralf/blender-urdf
 [PyRoki]: https://github.com/chungmin99/pyroki
 
+## The Kinema tab
+
+Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
+
+- **The quick bar**, first, names the robot shown and holds the buttons used all the time:
+  **Live IK** (or **Add IK Target**, where there is none), **Rest Pose**, **Graph Editor**,
+  **Configurations** (Find, then stepping through the arm's other ways to the pose) and
+  **Motion Check**. Which buttons, and their order, is yours to choose in the add-on's
+  preferences, under **Quick Bar**: move them up or down, remove them, add others (Key All,
+  Record Waypoint, Generate, Optimize, Snap to Tool, Bake IK), or Reset. Two sit to a row;
+  with an odd number, the first spans the bar. With no robot, the quick bar offers to import
+  one.
+- **Joints (FK)**, **Inverse Kinematics**, **Waypoints**, **Motions** and **Motion Check**,
+  the panels used most, each on its own: drag one by its grip to put it elsewhere, collapse
+  it, or Shift-click its header to pin it on every tab, as Blender's own sidebar panels go.
+  Rest Pose, Graph Editor and Key All are also icons in the Joints header.
+- **Robot Settings**, last, holds what is set once, as subpanels: **Import** (with Find a
+  Robot and Import Options), **Bones**, **Tool Centre Point**, **External Axes**, **Motion
+  Limits**, **Collision** and **Solver**. Its header names the robot.
+
 ## Dressing a rig, and where IK aims
 
-The sidebar's **Bones** list is one row per bone, and it answers the two questions that come
+The **Bones** list, under Robot Settings, is one row per bone, and it answers the two questions that come
 up as soon as a robot is imported.
 
 **Hang something off a bone.** Pick an object or a collection in a row and a linked copy
@@ -226,7 +246,8 @@ at each waypoint. Easing them is up to you:
 - **Bezier handles across a corner** of three waypoints bow the path through it. That is the
   blend radius a real controller would apply.
 
-**Graph Editor**, in Joints (FK), takes one click to open those curves:
+**Graph Editor**, in the quick bar and the Joints (FK) header, takes one click to open
+those curves:
 - **Where.** A Graph Editor already in the window is reused. Otherwise the bottom third of
   the 3D viewport becomes one, and the Timeline stays. Or, as the preferences say, it opens
   in a window of its own.
@@ -764,8 +785,8 @@ first, then the absolute one, so a .blend moved on its own still finds the file 
 A description anywhere else is kept by its absolute path only, as is every path while
 Blender's *Default To: Relative Paths* preference, under *File Paths*, is off.
 
-Move the description's folder, or open the .blend somewhere the file isn't, and the Kinema
-panel shows **Description file missing**, live IK falls back to NumPy, and Optimize Motion
+Move the description's folder, or open the .blend somewhere the file isn't, and Robot
+Settings shows **Description file missing**, live IK falls back to NumPy, and Optimize Motion
 says why it can't run.
 
 **Locate Description…**, under that message, points the robot at the file again: a URDF,

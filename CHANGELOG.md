@@ -170,6 +170,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The Kinema tab, laid out like Blender's own sidebar** (#103). A quick bar of the
+  buttons used all the time comes first -- Live IK, Rest Pose, Graph Editor,
+  Configurations and Motion Check, chosen and ordered in the preferences. Joints,
+  Inverse Kinematics, Waypoints, Motions and Motion Check are panels of their own, to
+  drag, collapse and pin; what is set once sits under Robot Settings. The Bones,
+  Waypoints and Motions lists show every row, so the mouse wheel over one scrolls the
+  sidebar instead of stopping on it.
 - **Waypoints are poses; motions are the moves between them**
   ([#96](https://github.com/ebgenius/kinema/issues/96)). A motion, in the new Motions list,
   goes from one waypoint to another, Joint or Linear, with its own start and end frame, as
