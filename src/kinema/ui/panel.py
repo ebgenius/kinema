@@ -376,7 +376,8 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
         # fixes it.
         flagged = {reading.joint for reading in velocity.warnings(rig, context.scene)}
 
-        column = layout.column(align=True)
+        # In a box, as the quick bar's buttons are.
+        column = layout.box().column(align=True)
         for pose_bone in joints:
             bone = pose_bone.bone
             is_revolute = bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic"
@@ -395,8 +396,9 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
                 icon="PINNED" if held else "UNPINNED", emboss=False,
             )
 
+            # The limit constraint the joint has: on its turn, or on its slide.
             limited = builder.PROP_LOWER in bone
-            icon = "CON_ROTLIMIT" if limited else "BLANK1"
+            icon = ("CON_ROTLIMIT" if is_revolute else "CON_LOCLIMIT") if limited else "BLANK1"
             sub = row.row(align=True)
             sub.enabled = limited
             sub.label(text="", icon=icon)

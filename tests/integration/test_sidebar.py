@@ -451,7 +451,7 @@ class TestQuickBarBox:
         assert self._said(panel)[1] == ["Live IK paused: pose the joints, or turn it on"]
         arm6.kinema_ik_enabled = True
         bpy.context.view_layer.update()
-        assert self._said(panel)[1] == []
+        assert self._said(panel)[1] == ["Following the target"]
 
         ik_ops = importlib.import_module(f"{addon.__name__}.ops.ik")
         assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=12)
@@ -460,14 +460,11 @@ class TestQuickBarBox:
         bpy.context.view_layer.update()
         handlers.solve_rig(arm6, force=True, live=True)  # as the handler would
         bpy.context.view_layer.update()
-        assert self._said(panel)[1] == [], "a moved target isn't news"
+        assert self._said(panel)[1] == ["Following the target"], "a moved target isn't news"
 
         goal.location += Vector((0.0, 0.0, 5.0))
         bpy.context.view_layer.update()
-        assert self._said(panel)[1] == [
-            "The tool can't reach the target",
-            "Try Config or Auto Config, or Snap to Tool",
-        ]
+        assert self._said(panel)[1] == ["Can't reach the target: try Config or Snap to Tool"]
         arm6.kinema_auto_configuration = True
         assert self._said(panel)[1] == ["The tool can't reach the target"], "not searched yet"
         handlers.solve_rig(arm6, force=True, live=True)  # searches, and finds nothing
@@ -477,13 +474,72 @@ class TestQuickBarBox:
         assert "FINISHED" in bpy.ops.kinema.snap_ik()
         ik_ops.forget_auto_search(arm6.name)
         ik_ops._auto_switched.add(arm6.name)  # as a switch records it
-        said = [
-            "The configuration changed",
-            "A linear move from the last waypoint can't cross it",
-        ]
+        said = ["Configuration changed, linear move can't cross it"]
         assert self._said(panel)[1] == said
         assert self._said(panel)[1] == said, "kept, not for a while"
         api = importlib.import_module(f"{addon.__name__}.api")
         api.add_waypoint(arm6, "after the switch")
-        assert self._said(panel)[1] == [], "until one is recorded"
+        assert self._said(panel)[1] == ["Following the target"], "until one is recorded"
         arm6.kinema_ik_enabled = False
+
+
+class TestStatusLine:
+    def test_always_one_line_so_the_panels_below_keep_still(self, panel, arm6, addon):
+        """Every state the line can be in: one label each."""
+        import types
+
+        import bpy
+        from mathutils import Vector
+
+        quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
+        ik_ops = importlib.import_module(f"{addon.__name__}.ops.ik")
+
+        def lines():
+            calls = []
+            panel.KINEMA_PT_quick_bar.draw(
+                types.SimpleNamespace(layout=_Layout(calls)), bpy.context
+            )
+            return len([name for name, _, _ in calls if name == "label"])
+
+        assert lines() == 1, "no IK target"
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = False
+        assert lines() == 1, "paused"
+        arm6.kinema_ik_enabled = True
+        assert lines() == 1, "following"
+        goal = arm6.pose.bones[arm6["kinema_ik_bone"]]
+        goal.location += Vector((0.0, 0.0, 5.0))
+        bpy.context.view_layer.update()
+        for auto in (False, True):
+            arm6.kinema_auto_configuration = auto
+            assert lines() == 1, f"off the tool, auto {auto}"
+        assert "FINISHED" in bpy.ops.kinema.snap_ik()
+        ik_ops._auto_switched.add(arm6.name)
+        assert lines() == 1, "configuration changed"
+        ik_ops.forget_switch(arm6.name)
+        arm6.kinema_ik_enabled = False
+        assert quick_bar.status(bpy.context, arm6)[0]
+
+
+class TestJointsBox:
+    def test_the_joints_sit_in_a_box(self, panel, arm6):
+        import types
+
+        import bpy
+
+        calls = []
+        panel.KINEMA_PT_joints.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
+        names = [name for name, _, _ in calls]
+        assert names.index("box") < names.index("prop")
+
+    def test_a_sliding_joint_shows_its_limit_as_a_slide(self, panel, fixture_dir, clean_scene):
+        """rail6's rail slides: Limit Location, where the arm's joints turn."""
+        import types
+
+        import bpy
+
+        assert "FINISHED" in bpy.ops.kinema.build_robot(filepath=str(fixture_dir / "rail6.urdf"))
+        calls = []
+        panel.KINEMA_PT_joints.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
+        icons = [kwargs.get("icon") for name, _, kwargs in calls if name == "label"]
+        assert "CON_LOCLIMIT" in icons and "CON_ROTLIMIT" in icons
