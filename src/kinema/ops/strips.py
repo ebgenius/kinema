@@ -533,8 +533,9 @@ def _moved(strip) -> bool:
 
 def catch_up(rig) -> tuple[list, list]:
     """The frames motions take from strips moved or scaled in the NLA editor, as
-    ``(notes, retimes)``: a line each for a report, and ``(motion, frames)`` to
-    write. Nothing is written here, so a job refused with them changes nothing.
+    ``(notes, retimes)``: a line each for a report, and ``(motion, frames, the
+    frames its strip shows)`` to write. Nothing is written here, so a job
+    refused with them changes nothing.
 
     A motion's strip is the one showing the frames of the action the motion was
     laid out at. Where the strip now plays other frames, and the motion's own
@@ -604,7 +605,7 @@ def catch_up(rig) -> tuple[list, list]:
             )
             continue
         start, end = plays[0], max(plays[1], plays[0] + 1)
-        retimes.append((motion, (start, end)))
+        retimes.append((motion, (start, end), shown))
         notes.append(
             f"'{motion.name}' retimed in the NLA editor, to frames {start}-{end}: "
             f"Generate Motion lays the job out there"
@@ -625,10 +626,14 @@ class Retimed:
 
 
 def retime(retimes) -> None:
-    """Write what :func:`catch_up` found into the Motions list."""
-    for motion, frames in retimes:
+    """Write what :func:`catch_up` found into the Motions list. A motion with no
+    frames laid out -- in a file laid out before they were kept -- keeps the
+    ones its strip shows, so the strip is still its after its frames change."""
+    for motion, frames, shown in retimes:
         motion.frame_start, motion.frame_end = frames
         motion.synced_frames = frames
+        if motion.laid_frames[1] <= motion.laid_frames[0]:
+            motion.laid_frames = shown
 
 
 def _laid(motion, name="laid_frames") -> tuple:

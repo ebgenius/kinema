@@ -451,14 +451,14 @@ def job_plan(rig):
     # once the job plans with the new frames, so a refusal changes nothing.
     retimed, retimes = strips.catch_up(rig)
     motions = list(rig.kinema_motions)
-    for motion, frames in retimes:
+    for motion, frames, _ in retimes:
         motions[motions.index(motion)] = strips.Retimed(motion, frames)
     try:
         job = plan_motions(motions, rig.kinema_waypoints)
     except WaypointError as exc:
         if not retimes:
             raise
-        moved = ", ".join(f"'{m.name}' to {a}-{b}" for m, (a, b) in retimes)
+        moved = ", ".join(f"'{m.name}' to {a}-{b}" for m, (a, b), _ in retimes)
         raise type(exc)(f"{exc}, with {moved} as its NLA strip was moved") from exc
     strips.retime(retimes)
     job.notes[:0] = notes + retimed

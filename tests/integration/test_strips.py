@@ -537,10 +537,15 @@ class TestRetime:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         for motion in arm6.kinema_motions:
             motion.laid_frames = motion.synced_frames = (0, 0)
+        # Caught up twice before any Generate: the strip is still the motion's
+        # once its frames have changed.
         _strip(strips, arm6, "back").frame_start_ui = 71
-        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        bpy.ops.kinema.check_motion()
         back = _motion(arm6, "back")
         assert (back.frame_start, back.frame_end) == (71, 91)
+        _strip(strips, arm6, "back").frame_start_ui = 76
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert (back.frame_start, back.frame_end) == (76, 96)
 
     def test_a_motion_added_since_doesnt_take_anothers_strip(
         self, arm6, builder, strips, prefs
@@ -556,7 +561,7 @@ class TestRetime:
         added.name, added.frame_start, added.frame_end = "added", 61, 81
         _strip(strips, arm6, "back").frame_start_ui = 71
         _, retimes = strips.catch_up(arm6)
-        assert [(m.name, frames) for m, frames in retimes] == [("back", (71, 91))]
+        assert [(m.name, frames) for m, frames, _ in retimes] == [("back", (71, 91))]
 
     def test_a_refused_retime_changes_nothing(self, arm6, builder, strips, prefs):
         """A strip moved onto another motion's frames: the job is refused for the
