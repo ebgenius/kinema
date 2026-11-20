@@ -170,7 +170,8 @@ its own frames, so the robot plays exactly as it would from that action alone.
   tracks of their own, a strip has room to move. Its new frames reach the Motions list the
   next time Generate, Check or Optimize reads the job, and that operator's report says so.
   The next Generate lays the job out at them. Until then the stretch a strip left holds the
-  pose before it.
+  pose before it, and Bake IK asks for that Generate first. A strip duplicated in the NLA
+  editor retimes nothing, since which copy is the motion's can't be told.
 - Changing a motion's frames in the Motions list moves its strip on the next Generate. If a
   motion was retimed in both places, the Motions list's frames win, and the report says so.
 - A strip for a pause or a bridging joint move follows the motions around it, so moving it

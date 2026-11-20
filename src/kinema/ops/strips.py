@@ -361,22 +361,27 @@ def _reach(job) -> tuple[float, float]:
     return float(math.floor(start)), float(math.ceil(end))
 
 
-def _tracks_for_job(rig) -> tuple:
-    """The job's track and the motions' two, emptied: the ones there are, kept
-    where they are among the rig's tracks, and the missing ones made above them."""
+def _tracks_for_job(rig, count: int) -> tuple:
+    """The job's track and ``count - 1`` motion tracks, emptied: the ones there
+    are, kept where they are among the rig's tracks, the missing ones made above
+    them, and any more removed -- an empty track would be no one's."""
     anim = rig.animation_data
     tracks = _job_tracks(rig)
-    for track in tracks[3:]:
+    for track in tracks[count:]:
         anim.nla_tracks.remove(track)
-    tracks = tracks[:3]
+    tracks = tracks[:count]
     for track in tracks:
         for strip in list(track.strips):
             track.strips.remove(strip)
-    while len(tracks) < 3:
+    while len(tracks) < count:
         # Above the job's last track, so the bakes and the user's tracks keep
         # their place above or under the job.
         track = anim.nla_tracks.new(prev=tracks[-1]) if tracks else anim.nla_tracks.new()
         track.name = JOB_TRACK if not tracks else MOTIONS_TRACK
+        if tracks:
+            # A job the user muted stays muted. Solo isn't copied: Blender
+            # solos one track at a time.
+            track.mute = tracks[0].mute
         tracks.append(track)
     return tuple(tracks)
 
@@ -389,7 +394,8 @@ def _tile(rig, spans, slot) -> None:
     then left empty."""
     anim = rig.animation_data
     job = rig.kinema_job_action
-    base, *motions = _tracks_for_job(rig)
+    moves = sum(1 for *_, motion in spans if motion)
+    base, *motions = _tracks_for_job(rig, 1 + min(2, moves))
     start, end = _reach(job)
     first, last = spans[0][1], spans[-1][2]
     # A frame past each end at least, so the job's track holds back before the
@@ -433,8 +439,11 @@ def lay_out(rig, plan) -> int:
         return 0
     _tile(rig, spans, slot)
     for motion in getattr(rig, "kinema_motions", ()):
-        # What its strip shows of the action: how catch_up knows it.
+        # What its strip shows of the action: how catch_up knows it. And the
+        # frames the Motions list last had from the strip, to tell a change
+        # made there from one made in the NLA editor.
         motion.laid_frames = (motion.frame_start, motion.frame_end)
+        motion.synced_frames = (motion.frame_start, motion.frame_end)
     first, last = spans[0][1], spans[-1][2]
     muted = 0
     for strip in (s for t in _baked_tracks(rig) for s in t.strips):
@@ -462,7 +471,8 @@ def _cover(rig, slot) -> None:
     track = tracks[0]
     job = rig.kinema_job_action
     start, end = _reach(job)
-    every = [s for t in tracks for s in t.strips]
+    # The job's own track: a motion's strip, moved, holds nothing past it.
+    every = list(track.strips)
     latest = max(float(s.frame_end) for s in every)
     laid = sorted(track.strips, key=lambda s: s.frame_start)
     first = laid[0]
@@ -503,7 +513,22 @@ def bake_refusal(rig, first: int, last: int) -> str:
     if any(track.is_solo for track in anim.nla_tracks):
         # A soloed track plays alone, without the copy the bake plays and keys.
         return "An NLA track of the robot's is soloed: un-solo it to bake"
+    if any(_moved(s) for t in _job_tracks(rig) for s in t.strips):
+        # The bake plays a copy of the action in the strips' place, at the frames
+        # the job was laid out at: a strip moved since would bake the wrong ones.
+        return (
+            "A strip of the job was moved or scaled in the NLA editor: Generate "
+            "Motion to lay the job out there, then bake"
+        )
     return ""
+
+
+def _moved(strip) -> bool:
+    """Whether ``strip`` plays frames other than the ones of the action it shows."""
+    return (
+        abs(strip.frame_start - strip.action_frame_start) >= 1e-3
+        or abs(strip.frame_end - strip.action_frame_end) >= 1e-3
+    )
 
 
 def catch_up(rig) -> list:
@@ -529,11 +554,13 @@ def catch_up(rig) -> list:
         if motion.laid_frames[1] > motion.laid_frames[0]
     }
     notes = []
-    for strip in sorted((s for t in tracks for s in t.strips), key=lambda s: s.frame_start):
-        if (
-            abs(strip.frame_start - strip.action_frame_start) < 1e-3
-            and abs(strip.frame_end - strip.action_frame_end) < 1e-3
-        ):
+    every = sorted((s for t in tracks for s in t.strips), key=lambda s: s.frame_start)
+    showing = {}
+    for strip in every:
+        shown = (round(strip.action_frame_start), round(strip.action_frame_end))
+        showing.setdefault(shown, []).append(strip)
+    for strip in every:
+        if not _moved(strip):
             continue
         shown = (round(strip.action_frame_start), round(strip.action_frame_end))
         plays = (round(strip.frame_start), round(strip.frame_end))
@@ -544,10 +571,17 @@ def catch_up(rig) -> list:
                 f"motions around it: the next Generate puts it back"
             )
             continue
+        if len(showing[shown]) > 1:
+            # A strip duplicated in the NLA editor shows what the motion's does.
+            notes.append(
+                f"{len(showing[shown])} strips show '{motion.name}', so it isn't "
+                f"retimed: delete the copies, and the next Generate lays it out again"
+            )
+            continue
         current = (motion.frame_start, motion.frame_end)
         if current == plays:
             continue
-        if current != shown:
+        if current != tuple(int(v) for v in motion.synced_frames):
             notes.append(
                 f"'{motion.name}' was retimed in the Motions list and in the NLA editor: "
                 f"the Motions list's frames {current[0]}-{current[1]} are kept"
@@ -555,6 +589,7 @@ def catch_up(rig) -> list:
             continue
         start, end = plays[0], max(plays[1], plays[0] + 1)
         motion.frame_start, motion.frame_end = start, end
+        motion.synced_frames = (start, end)
         notes.append(
             f"'{motion.name}' retimed in the NLA editor, to frames {start}-{end}: "
             f"Generate Motion lays the job out there"

@@ -491,6 +491,101 @@ class TestRetime:
         assert (back.frame_start, back.frame_end) == (71, 91)
 
 
+    def test_a_strip_moved_twice_retimes_twice(self, arm6, builder, strips, prefs):
+        """Caught up by the Motion Check, then moved again: the second move is the
+        NLA editor's too, not an edit in the Motions list."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        bpy.ops.kinema.check_motion()
+        back = _motion(arm6, "back")
+        assert (back.frame_start, back.frame_end) == (71, 91), "precondition: caught up"
+        _strip(strips, arm6, "back").frame_start_ui = 76
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert (back.frame_start, back.frame_end) == (76, 96)
+
+    def test_a_copied_strip_retimes_nothing(self, arm6, builder, strips, prefs):
+        """A strip duplicated in the NLA editor shows what the motion's does, so which
+        one is the motion's can't be told: neither retimes it."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        original = _strip(strips, arm6, "back")
+        track = next(t for t in strips._job_tracks(arm6) if original.name in t.strips)
+        strips._new_strip(
+            track, "back copy", 100.0, 120.0, arm6.kinema_job_action, original.action_slot,
+            action_start=61.0,
+        ).extrapolation = "NOTHING"
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        back = _motion(arm6, "back")
+        assert (back.frame_start, back.frame_end) == (61, 81)
+
+    def test_a_job_of_one_motion_keeps_one_motion_track(self, arm6, builder, strips, prefs):
+        """Only the motion tracks the job uses, so generating again adds none, and an
+        empty one -- no one's -- is never left behind."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _teach(builder, arm6, 1, Q0, "JOINT", "home")
+        _teach(builder, arm6, 21, REACH_A, "JOINT", "a")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        names = [t.name for t in arm6.animation_data.nla_tracks]
+        assert names == [strips.JOB_TRACK, strips.MOTIONS_TRACK], names
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert [t.name for t in arm6.animation_data.nla_tracks] == names
+
+    def test_new_motion_tracks_keep_the_job_muted(self, arm6, builder, strips, prefs):
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        anim = arm6.animation_data
+        base, *others = strips._job_tracks(arm6)
+        for track in others:
+            anim.nla_tracks.remove(track)
+        base.mute = True
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert [t.mute for t in strips._job_tracks(arm6)] == [True, True, True]
+
+    def test_cover_reads_the_jobs_own_track(self, arm6, builder, strips, prefs):
+        """A motion's strip moved out past After holds nothing past itself, so a key
+        added in between still needs After stretched to it."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        end = bpy.context.scene.frame_end
+        _strip(strips, arm6, "back").frame_start_ui = end + 50
+        job = arm6.kinema_job_action
+        curve = next(
+            c for bag in job.layers[0].strips[0].channelbags for c in bag.fcurves
+            if c.data_path.endswith("scale") and c.array_index == 0
+        )
+        curve.keyframe_points.insert(end + 30, 3.0)
+        strips._cover(arm6, strips._slot(arm6))
+        base = strips._job_tracks(arm6)[0]
+        assert max(s.frame_end for s in base.strips) >= end + 30
+
+    def test_a_bake_over_a_moved_strip_is_refused(self, arm6, builder, strips, prefs):
+        """The bake plays a copy of the action in the strips' place, at the frames the
+        job was laid out at: with a strip moved since, it asks for Generate first."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        with pytest.raises(RuntimeError, match="moved or scaled"):
+            bpy.ops.kinema.bake_ik(frame_start=61, frame_end=91)
+        assert not _track(arm6, strips.BAKED_TRACK)
+
     def test_the_job_holds_past_both_its_ends(self, arm6, builder, strips, prefs):
         """With nothing animated outside the job, the job's track still has a strip
         past each end, holding: a motion's strip holds nothing."""

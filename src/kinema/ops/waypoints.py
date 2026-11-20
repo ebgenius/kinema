@@ -342,6 +342,10 @@ class KinemaMotion(PropertyGroup):
     #: of the job's action it shows: how a strip moved in the NLA editor is told
     #: from the others. See ops/strips.py.
     laid_frames: IntVectorProperty(size=2, default=(0, 0), options={"HIDDEN"})
+    #: The frames this motion last had in step with its strip: laid out at, or
+    #: taken from the strip since. Frames of its own other than these were set
+    #: in the Motions list.
+    synced_frames: IntVectorProperty(size=2, default=(0, 0), options={"HIDDEN"})
 
 
 def waypoint_by_uid(rig, uid: str):
