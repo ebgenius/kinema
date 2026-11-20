@@ -59,13 +59,16 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
   move from the last one can't cross the change -- or that it is following the target. It
   is always one line, so the panels under it stay put. With no robot, the quick
   bar offers to import one.
-- **Joints (FK)**, **Inverse Kinematics**, **Waypoints**, **Motions** and **Motion Check**,
+- **Joints (FK)**, **Target (IK)**, **Waypoints**, **Motions** and **Motion Check**,
   the panels used most, each on its own: drag one by its grip to put it elsewhere, collapse
   it, or Shift-click its header to pin it on every tab, as Blender's own sidebar panels go.
-- **Robot Settings**, last, holds what is set once, as subpanels: **Import** (with Find a
-  Robot, Import Options, and Reset Meshes and Meshes at File Origin), **Bones**, **Tool
-  Centre Point**, **External Axes**, **Motion Limits**, **Collision** and **Solver**. Its
-  header names the robot.
+- **Robot Settings** holds what is set once for the robot shown: Reset Meshes and Meshes
+  at File Origin, and as subpanels **Bones**, **Tool Centre Point**, **External Axes**,
+  **Motion Limits** and **Collision**. Its header names the robot.
+- **Kinema Settings**, last, holds what is Kinema's rather than a robot's: **Import** (with
+  Find a Robot and Import Options), to bring in another robot, and **Solver**: which
+  solver drives the robot shown, PyRoki or NumPy, and whether PyRoki is there, with
+  Re-check.
 
 ## Dressing a rig, and where IK aims
 
@@ -104,7 +107,7 @@ flange instead and the chain is the seven arm joints it should be. Switching sna
 control onto the new target, so the arm does not jump.
 
 The choice is keyframable, so a shot can hand the goal from the wrist to the elbow part-way
-through. **Key Target Bone**, beside the field in the IK panel, is the way to key it: the
+through. **Key Target Bone**, beside the field in the Target (IK) panel, is the way to key it: the
 target is an index rather than a quantity, and those keys have to *step* between values.
 Interpolated, a hand-off from the tool point to joint 3 would pass through joints 1 and 2 on
 the frames in between and solve two chains nobody asked for. Baking follows a keyed target
@@ -564,7 +567,7 @@ or the other, wrist flipped, base swung round behind. Until now you got whicheve
 solver landed on from wherever the arm happened to be, which is how a shot ends up with the
 elbow on the wrong side of the robot and no obvious way to fix it.
 
-**Find Solutions**, in the IK panel, searches for the others. PyRoki is a nonlinear solver
+**Find Solutions**, in the Target (IK) panel, searches for the others. PyRoki is a nonlinear solver
 rather than an analytic one, so it does not enumerate branches — it converges to whichever
 is nearest its seed. So they are *found*: seed from configurations scattered across the joint
 limits, solve each, keep the ones that reached the goal, fold away the duplicates. That makes
@@ -580,7 +583,7 @@ left. Clicking it searches again, and the arm stays where it is: a search select
 configuration nearest the one the arm stands in. The arrows search again first, then step
 from there.
 
-**Auto Configuration**, in the quick bar and the IK panel's Configuration section, does
+**Auto Configuration**, in the quick bar and the Target (IK) panel's Configuration section, does
 this for you while live IK tracks the target. A live solve that misses the target means one
 of two things: the target is out of reach, or the arm can't get there from the
 configuration it is in, because the wrist would have to flip or a joint is at its limit.

@@ -179,8 +179,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buttons used all the time comes first -- Live IK, Configurations, Auto Config, Rest
   Pose, Snap to Tool, Motion Check and Graph Editor, chosen and ordered in the
   preferences. Joints,
-  Inverse Kinematics, Waypoints, Motions and Motion Check are panels of their own, to
-  drag, collapse and pin; what is set once sits under Robot Settings. The Bones,
+  Target (IK), Waypoints, Motions and Motion Check are panels of their own, to drag,
+  collapse and pin; what is set once for the robot sits under Robot Settings, and what is
+  Kinema's -- importing, and the solver -- under Kinema Settings. The Bones,
   Waypoints and Motions lists show every row, so the mouse wheel over one scrolls the
   sidebar instead of stopping on it.
 - **Waypoints are poses; motions are the moves between them**

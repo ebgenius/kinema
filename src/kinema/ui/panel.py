@@ -226,6 +226,7 @@ ORDER_WAYPOINTS = 3
 ORDER_MOTIONS = 4
 ORDER_MOTION_CHECK = 5
 ORDER_SETTINGS = 6
+ORDER_KINEMA = 7
 
 
 class KinemaPanelBase:
@@ -290,16 +291,25 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
         if rig is not None:
             self.layout.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name))
 
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         rig = active_rig(context)
-        if rig is None:
-            box = layout.box()
-            box.label(text="No robot selected", icon="INFO")
-            box.label(text="Import one, or select an existing rig.")
-            return
-
         layout.label(text=f"{len(builder.joint_bones(rig))} joints", icon="ARMATURE_DATA")
+
+        # The robot's meshes, where the import put them: put back on their links,
+        # or moved to where the file has them. Only with meshes to move, so it
+        # doesn't suggest a rig has meshes when it has none.
+        if builder.link_meshes(rig):
+            column = layout.column(align=True)
+            column.operator("kinema.reset_link_meshes", text="Reset Meshes", icon="LOOP_BACK")
+            column.prop(rig, "kinema_meshes_at_file_origin", icon="EXPORT")
+            if rig.kinema_meshes_at_file_origin:
+                # Warned loudly: the meshes no longer move with the rig.
+                layout.label(text="Meshes are off the rig", icon="ERROR")
         from ..ops import locate
 
         if locate.description_missing(rig):
@@ -313,9 +323,21 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
             )
 
 
+class KINEMA_PT_kinema(KinemaPanelBase, Panel):
+    """What is Kinema's rather than a robot's: importing another robot, and the
+    solver -- which one drives the robot shown, and whether PyRoki is there."""
+
+    bl_idname = "KINEMA_PT_kinema"
+    bl_label = "Kinema Settings"
+    bl_order = ORDER_KINEMA
+
+    def draw(self, context: bpy.types.Context) -> None:
+        pass
+
+
 class KINEMA_PT_import(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_import"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_parent_id = "KINEMA_PT_kinema"
     bl_label = "Import"
     bl_order = 0
 
@@ -337,18 +359,6 @@ class KINEMA_PT_import(KinemaPanelBase, Panel):
             body.use_property_split = True
             for name in SETTING_NAMES:
                 body.prop(context.scene.kinema, name)
-
-        # The robot's meshes, where the import put them: put back on their links,
-        # or moved to where the file has them. Only with meshes to move, so it
-        # doesn't suggest a rig has meshes when it has none.
-        rig = active_rig(context)
-        if rig is not None and builder.link_meshes(rig):
-            column = layout.column(align=True)
-            column.operator("kinema.reset_link_meshes", text="Reset Meshes", icon="LOOP_BACK")
-            column.prop(rig, "kinema_meshes_at_file_origin", icon="EXPORT")
-            if rig.kinema_meshes_at_file_origin:
-                # Warned loudly: the meshes no longer move with the rig.
-                layout.label(text="Meshes are off the rig", icon="ERROR")
 
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
@@ -1255,7 +1265,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
 class KINEMA_PT_ik(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_ik"
     bl_order = ORDER_IK
-    bl_label = "Inverse Kinematics"
+    bl_label = "Target (IK)"
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
@@ -1274,7 +1284,6 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         column = layout.column(align=True)
         column.prop(rig, "kinema_ik_enabled", toggle=True,
                     icon="PLAY" if rig.kinema_ik_enabled else "PAUSE")
-        column.prop(rig, "kinema_solver_mode", text="")
 
         # The friendly way to change the tip is the radio column in the Bones
         # list; this row shows where it landed and keys it.
@@ -1492,13 +1501,17 @@ def _solve_budget_ms() -> float:
 
 class KINEMA_PT_status(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_status"
-    bl_parent_id = "KINEMA_PT_main"
-    bl_order = 6
+    bl_parent_id = "KINEMA_PT_kinema"
+    bl_order = 1
     bl_label = "Solver"
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
+        rig = active_rig(context)
+        if rig is not None:
+            # Which solver drives the robot shown: PyRoki, NumPy, or none.
+            layout.prop(rig, "kinema_solver_mode", text="")
         column = layout.column(align=True)
 
         if runtime.solver_available():
@@ -1526,7 +1539,6 @@ classes = (
     KINEMA_PT_motions,
     KINEMA_PT_motion_check,
     KINEMA_PT_main,
-    KINEMA_PT_import,
     KINEMA_PT_bones,
     KINEMA_PT_tcp,
     KINEMA_PT_external_axes,
@@ -1535,6 +1547,8 @@ classes = (
     KINEMA_PT_motion_acceleration,
     KINEMA_PT_motion_unchecked,
     KINEMA_PT_collision,
+    KINEMA_PT_kinema,
+    KINEMA_PT_import,
     KINEMA_PT_status,
 )
 

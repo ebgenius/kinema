@@ -44,6 +44,7 @@ class TestLayout:
             "KINEMA_PT_motions",
             "KINEMA_PT_motion_check",
             "KINEMA_PT_main",
+            "KINEMA_PT_kinema",
         ]
 
     def test_robot_settings_holds_what_is_set_once(self, panel):
@@ -54,14 +55,25 @@ class TestLayout:
             if getattr(cls, "bl_parent_id", "") == "KINEMA_PT_main"
         ]
         assert _in_order(under) == [
-            "KINEMA_PT_import",
             "KINEMA_PT_bones",
             "KINEMA_PT_tcp",
             "KINEMA_PT_external_axes",
             "KINEMA_PT_motion_limits",
             "KINEMA_PT_collision",
-            "KINEMA_PT_status",
         ]
+
+    def test_kinema_settings_holds_what_is_kinemas(self, panel):
+        """Importing another robot, and the solver: not the robot shown's."""
+        assert panel.KINEMA_PT_kinema.bl_label == "Kinema Settings"
+        under = [
+            cls
+            for cls in _kinema_panels(panel)
+            if getattr(cls, "bl_parent_id", "") == "KINEMA_PT_kinema"
+        ]
+        assert _in_order(under) == ["KINEMA_PT_import", "KINEMA_PT_status"]
+
+    def test_the_ik_panel_is_the_target(self, panel):
+        assert panel.KINEMA_PT_ik.bl_label == "Target (IK)"
 
     def test_no_panel_is_labelled_kinema(self, panel):
         """The tab says Kinema; the panels say what they are."""
@@ -179,7 +191,7 @@ class TestQuickBar:
         assert texts() == [fresh.split("/")[0]]
 
     def test_the_switches_play_while_on_and_pause_while_off(self, panel, arm6, addon):
-        """Live IK and Auto Config, as the Inverse Kinematics panel's Live IK shows."""
+        """Live IK and Auto Config, as the Target (IK) panel's Live IK shows."""
         import bpy
 
         quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
@@ -296,21 +308,54 @@ class TestJointsHeader:
 
 
 class TestMeshes:
-    def test_reset_meshes_and_file_origin_are_under_import(self, panel, arm6):
-        """Where the import put the robot's meshes: put back, or where the file has them."""
+    def test_reset_meshes_and_file_origin_are_the_robots(self, panel, arm6):
+        """Where the import put this robot's meshes: Robot Settings', not Import's."""
         import bpy
 
-        drawn = _drawn(panel.KINEMA_PT_import, bpy.context)
+        drawn = _drawn(panel.KINEMA_PT_main, bpy.context)
         assert ("operator", "kinema.reset_link_meshes") in drawn
         assert ("prop", "kinema_meshes_at_file_origin") in drawn
-        joints = _drawn(panel.KINEMA_PT_joints, bpy.context)
-        assert ("operator", "kinema.reset_link_meshes") not in joints
+        for elsewhere in (panel.KINEMA_PT_import, panel.KINEMA_PT_joints):
+            assert ("operator", "kinema.reset_link_meshes") not in _drawn(elsewhere, bpy.context)
 
-    def test_not_with_no_robot(self, panel, clean_scene):
+    def test_robot_settings_only_with_a_robot(self, panel, clean_scene):
         import bpy
 
-        drawn = _drawn(panel.KINEMA_PT_import, bpy.context)
-        assert ("operator", "kinema.reset_link_meshes") not in drawn
+        assert not panel.KINEMA_PT_main.poll(bpy.context)
+
+
+class TestKinemaSettings:
+    def test_the_solver_dropdown_is_kinemas(self, panel, arm6):
+        """Which solver drives the robot: under Kinema Settings > Solver, with Re-check."""
+        import bpy
+
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        solver = _drawn(panel.KINEMA_PT_status, bpy.context)
+        assert ("prop", "kinema_solver_mode") in solver
+        assert ("operator", "kinema.check_dependencies") in solver
+        calls = []
+
+        class Drawn:
+            """The IK panel drawn into a recording layout, its helpers its own."""
+
+            layout = _Layout(calls)
+
+            def __getattr__(self, name):
+                return getattr(panel.KINEMA_PT_ik, name)
+
+        panel.KINEMA_PT_ik.draw(Drawn(), bpy.context)
+        assert ("prop", ("kinema_solver_mode",)) not in [
+            (name, args[1:2]) for name, args, _ in calls if name == "prop"
+        ]
+        assert ("prop", ("kinema_ik_enabled",)) in [
+            (name, args[1:2]) for name, args, _ in calls if name == "prop"
+        ], "precondition: the IK panel drawn"
+
+    def test_import_is_there_with_no_robot(self, panel, clean_scene):
+        import bpy
+
+        assert ("operator", "kinema.import_urdf") in _drawn(panel.KINEMA_PT_import, bpy.context)
+        assert ("prop", "kinema_solver_mode") not in _drawn(panel.KINEMA_PT_status, bpy.context)
 
 
 class TestRobotNamed:
@@ -474,7 +519,7 @@ class TestQuickBarBox:
         assert "FINISHED" in bpy.ops.kinema.snap_ik()
         ik_ops.forget_auto_search(arm6.name)
         ik_ops._auto_switched.add(arm6.name)  # as a switch records it
-        said = ["Configuration changed, linear move can't cross it"]
+        said = ["Config changed: linear move can't cross it"]
         assert self._said(panel)[1] == said
         assert self._said(panel)[1] == said, "kept, not for a while"
         api = importlib.import_module(f"{addon.__name__}.api")
