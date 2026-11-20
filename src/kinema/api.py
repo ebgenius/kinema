@@ -52,6 +52,18 @@ __all__ = [
     "clearance",
     "Reach",
     "reachable",
+    "Waypoint",
+    "waypoints",
+    "add_waypoint",
+    "remove_waypoint",
+    "Motion",
+    "motions",
+    "add_motion",
+    "remove_motion",
+    "add_ik_target",
+    "Report",
+    "generate",
+    "check",
 ]
 
 #: How far off a pose a solve may leave the tool and have reached it, in metres and
@@ -196,6 +208,52 @@ class Reach:
     def ok(self) -> bool:
         """Reachable, within limits and clear."""
         return self.reachable and self.within_limits and self.clear
+
+
+@dataclass(frozen=True, eq=False)
+class Waypoint:
+    """A taught pose: where the tool is, and the joints it was taught with.
+    Compared, and hashed, as itself."""
+
+    #: What it is called: one name per waypoint on a rig.
+    name: str
+    #: The joints it was taught with, in the rig's joint order.
+    values: np.ndarray
+    #: Where it is now: a 4x4 in world space, Z out of the tool, as
+    #: :func:`tool_frame` gives it. Its marker, if that has been moved.
+    pose: np.ndarray
+    #: The object it is taught relative to, by name, which it moves with; None
+    #: for the robot's base.
+    reference: str | None
+
+
+@dataclass(frozen=True)
+class Motion:
+    """One move between two waypoints, over frames of its own."""
+
+    name: str
+    #: The waypoints it moves from and to, by name.
+    start: str
+    end: str
+    #: ``"JOINT"``, the joints moving together, or ``"LINEAR"``, the tool along a
+    #: straight line, which takes an IK target: see :func:`add_ik_target`.
+    move: str
+    #: The frame it leaves ``start``, and the frame it is at ``end``.
+    frame_start: int
+    frame_end: int
+
+
+@dataclass(frozen=True)
+class Report:
+    """What :func:`generate` or :func:`check` did, as its operator reports it."""
+
+    #: Whether it was done: False where it was refused, with nothing written.
+    done: bool
+    #: ``"INFO"``, ``"WARNING"`` or ``"ERROR"``.
+    level: str
+    message: str
+    #: How many moves the Motion Check flagged.
+    flagged: int
 
 
 def _rig(obj):
@@ -489,3 +547,184 @@ def reachable(rig, pose, seed=None, tool: Tool | None = None, keep_clear: float 
         values=solution.values,
         clearance=measured,
     )
+
+
+def _job(rig):
+    """``rig``, checked, with a job saved before motions given its motions."""
+    from .ops import waypoints as job
+
+    rig = _rig(rig)
+    job.convert_saved_before_motions(rig)
+    return rig
+
+
+def _waypoint_named(rig, name: str):
+    found = next((w for w in rig.kinema_waypoints if w.name == name), None)
+    if found is None:
+        raise Error(f"{rig.name!r} has no waypoint {name!r}")
+    return found
+
+
+def _as_waypoint(rig, waypoint) -> Waypoint:
+    from .ops import references
+    from .ops import waypoints as job
+    from .rig import builder
+
+    reference = references.reference_of(rig, waypoint)
+    return Waypoint(
+        name=waypoint.name,
+        values=np.array(waypoint.q[: waypoint.dof], dtype=float),
+        pose=_np4(rig.matrix_world) @ _np4(job.pose_of(waypoint)) @ _np4(builder.BONE_TO_TOOL),
+        reference=reference.name if reference is not None else None,
+    )
+
+
+def waypoints(rig) -> list[Waypoint]:
+    """``rig``'s waypoints, in the order of its Waypoints list."""
+    rig = _job(rig)
+    return [_as_waypoint(rig, waypoint) for waypoint in rig.kinema_waypoints]
+
+
+def add_waypoint(rig, name: str | None = None, values=None, reference=None) -> Waypoint:
+    """Teach ``rig`` a waypoint with its joints at ``values``, or where they stand
+    now -- without moving it -- relative to ``reference``, an object it then moves
+    with, or the robot's base. A name another waypoint has is numbered, as Blender
+    names a copy. With its marker."""
+    from .ops import references
+    from .ops import waypoints as job
+
+    rig = _job(rig)
+    values = None if values is None else _values(rig, values)
+    if reference is not None and (
+        references.PROP_WAYPOINT in reference
+        or not references.in_robots_scene(rig, reference)
+        or references.relative_to_robot(rig, reference)
+    ):
+        raise Error(
+            f"{reference.name!r} can't hold a waypoint: it is the robot, rides on it, "
+            f"is a waypoint's marker, or is in no scene the robot is in"
+        )
+    waypoint, error = job.new_waypoint(rig, name or "", reference, values)
+    if error is not None:
+        raise Error(error)
+    return _as_waypoint(rig, waypoint)
+
+
+def remove_waypoint(rig, name: str) -> None:
+    """Remove ``rig``'s waypoint ``name``, its marker, and the motions to and from it."""
+    from .ops import waypoints as job
+
+    rig = _job(rig)
+    waypoint = _waypoint_named(rig, name)
+    job.delete_waypoint(rig, list(rig.kinema_waypoints).index(waypoint))
+
+
+def _as_motion(rig, motion) -> Motion:
+    from .ops import waypoints as job
+
+    start, end = job.waypoint_by_uid(rig, motion.start), job.waypoint_by_uid(rig, motion.end)
+    return Motion(
+        name=motion.name,
+        start=start.name if start is not None else "",
+        end=end.name if end is not None else "",
+        move=motion.move,
+        frame_start=int(motion.frame_start),
+        frame_end=int(motion.frame_end),
+    )
+
+
+def motions(rig) -> list[Motion]:
+    """``rig``'s motions, in the order of its Motions list."""
+    rig = _job(rig)
+    return [_as_motion(rig, motion) for motion in rig.kinema_motions]
+
+
+def add_motion(
+    rig,
+    start: str,
+    end: str,
+    frame_start: int,
+    frame_end: int,
+    move: str = "JOINT",
+    name: str | None = None,
+) -> Motion:
+    """A motion on ``rig`` from waypoint ``start`` to ``end``, by name, leaving on
+    ``frame_start`` and arriving on ``frame_end``; named ``name``, or after ``end``.
+    Motions that overlap are found when the job is generated or checked."""
+    from .ops import waypoints as job
+    from .rig.waypoints import MOVE_TYPES
+
+    rig = _job(rig)
+    if move not in MOVE_TYPES:
+        raise Error(f"a move is one of {', '.join(MOVE_TYPES)}, not {move!r}")
+    if int(frame_end) <= int(frame_start):
+        raise Error(f"a motion ends after it starts: frames {frame_start}-{frame_end}")
+    motion = job.new_motion(
+        rig,
+        _waypoint_named(rig, start),
+        _waypoint_named(rig, end),
+        int(frame_start),
+        int(frame_end),
+        move,
+        name or "",
+    )
+    return _as_motion(rig, motion)
+
+
+def remove_motion(rig, name: str) -> None:
+    """Remove ``rig``'s motion ``name``. Its waypoints stay."""
+    from .ops import waypoints as job
+
+    rig = _job(rig)
+    found = [i for i, motion in enumerate(rig.kinema_motions) if motion.name == name]
+    if not found:
+        raise Error(f"{rig.name!r} has no motion {name!r}")
+    if len(found) > 1:
+        raise Error(f"{rig.name!r} has {len(found)} motions called {name!r}: rename one")
+    job.delete_motion(rig, found[0])
+
+
+def add_ik_target(rig) -> None:
+    """Give ``rig`` an IK target at its tool, which linear moves are keyed on, with
+    live IK on. Nothing changes on a rig that has one."""
+    import bpy
+
+    from .ops import ik
+    from .ops import waypoints as job
+
+    rig = _rig(rig)
+    if job.ik_bone_name(rig) is not None:
+        return
+    outcome = ik.add_ik_target(bpy.context, rig)
+    if not outcome.done:
+        raise Error(outcome.message)
+
+
+def _report(outcome) -> Report:
+    return Report(
+        done=outcome.done,
+        level=outcome.level,
+        message=outcome.message,
+        flagged=outcome.flagged,
+    )
+
+
+def generate(rig) -> Report:
+    """Key ``rig`` through its motions in frame order, and check the job: Generate
+    Motion. Refused with why -- motions that overlap, a linear move with no IK
+    target -- it writes nothing."""
+    import bpy
+
+    from .ops import waypoints as job
+
+    return _report(job.generate_job(bpy.context, _job(rig)))
+
+
+def check(rig) -> Report:
+    """Play ``rig``'s job through once, solving as playback does, and check each
+    move -- its line, limits, speeds and clearance: Check Motion."""
+    import bpy
+
+    from .ops import waypoints as job
+
+    return _report(job.check_motion(bpy.context, _job(rig)))

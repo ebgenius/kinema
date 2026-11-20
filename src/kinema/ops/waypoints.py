@@ -106,7 +106,8 @@ from ..ui.panel import active_rig
 from . import collision as collision_ops
 from . import references, strips, velocity
 from .ik import key_joint_value, own_fcurve_containers
-from .pose import apply_joint_values, joint_values
+from .outcome import Outcome, reported
+from .pose import apply_joint_values, bone_matrices, joint_values
 from .velocity import acceleration_limit_of, joint_value, limit_of
 
 #: Empty display size, as a fraction of the robot's reach. Waypoints are read
@@ -565,17 +566,22 @@ def marker_has_moved(waypoint, tolerance: float = 1e-6) -> bool:
     )
 
 
-def _record(rig, waypoint, reference=None) -> str | None:
+def _record(rig, waypoint, reference=None, values=None) -> str | None:
     """Store the rig's current pose and configuration. Returns an error, or None.
 
     Relative to ``reference`` where given: the pose in its space, and where the
-    joints were taught in rig space.
+    joints were taught in rig space. At ``values``, a joint vector, where given:
+    the pose the tool would have there, with the rig left where it stands.
     """
     matrix = _tool_matrix(rig)
     if matrix is None:
         return "This rig has no TCP; create one first"
 
-    values = joint_values(rig)
+    if values is None:
+        values = joint_values(rig)
+    else:
+        values = [float(v) for v in values]
+        matrix = Matrix(bone_matrices(rig, values)[_tool_bone(rig)].tolist())
     if len(values) > MAX_STORED_DOF:
         # Refused rather than truncated: a partly stored configuration would
         # restore to a pose the robot was never taught.
@@ -641,33 +647,21 @@ class KINEMA_OT_add_waypoint(KinemaWaypointOperator):
         reference = (
             references.reference_of(rig, highlighted) if highlighted is not None else None
         )
-        waypoint = rig.kinema_waypoints.add()
-        waypoint.uid = _new_uid()
-        waypoint.name = self.name or f"point{len(rig.kinema_waypoints)}"
-
-        error = _record(rig, waypoint, reference)
+        waypoint, error = new_waypoint(rig, self.name, reference)
         if error is not None:
-            rig.kinema_waypoints.remove(len(rig.kinema_waypoints) - 1)
             self.report({"ERROR"}, error)
             return {"CANCELLED"}
-
-        waypoint.marker = _make_marker(rig, waypoint, _unflatten(waypoint.pose), reference)
-        rig.kinema_active_waypoint = len(rig.kinema_waypoints) - 1
         frame = context.scene.frame_current
         previous = waypoint_by_uid(rig, rig.kinema_last_recorded)
         message = f"Recorded '{waypoint.name}'"
         if reference is not None:
             message += f" relative to '{reference.name}'"
         if self.motion and previous is not None and frame > rig.kinema_last_recorded_frame:
-            motion = rig.kinema_motions.add()
-            motion.name = waypoint.name
-            motion.start, motion.end = previous.uid, waypoint.uid
             # Joint by default: it is the move that always works. Linear is a
             # deliberate choice about a tool path, so it should be one.
-            motion.move = MOVE_JOINT
-            motion.frame_start, motion.frame_end = rig.kinema_last_recorded_frame, frame
-            rig.kinema_active_motion = len(rig.kinema_motions) - 1
-            rig.kinema_unconverted = ""
+            motion = new_motion(
+                rig, previous, waypoint, rig.kinema_last_recorded_frame, frame
+            )
             message += (
                 f", with a motion from '{previous.name}' over frames "
                 f"{motion.frame_start}-{frame}"
@@ -793,35 +787,78 @@ class KINEMA_OT_remove_waypoint(KinemaWaypointOperator):
             self.report({"ERROR"}, "No waypoint to remove")
             return {"CANCELLED"}
 
-        waypoint = rig.kinema_waypoints[index]
-        name = waypoint.name
-        # The row owns its marker, the way an attachment row owns its copy.
-        marker = waypoint.marker
-        if marker is not None and PROP_WAYPOINT in marker:
-            bpy.data.objects.remove(marker, do_unlink=True)
-        uid = waypoint.uid
-        gone = [
-            i for i, motion in enumerate(rig.kinema_motions) if uid in (motion.start, motion.end)
-        ]
-        for i in reversed(gone):
-            rig.kinema_motions.remove(i)
-        left = len(rig.kinema_motions) - 1
-        rig.kinema_active_motion = max(0, min(rig.kinema_active_motion, left))
-        if rig.kinema_last_recorded == uid:
-            # Recording goes on from where the job now ends, or from nothing.
-            last = max(rig.kinema_motions, key=lambda m: int(m.frame_end), default=None)
-            rig.kinema_last_recorded = last.end if last is not None else ""
-            rig.kinema_last_recorded_frame = int(last.frame_end) if last is not None else 0
-        rig.kinema_waypoints.remove(index)
-        # max(0, ...): removing the last row leaves an empty list, and the
-        # index would otherwise go to -1 and rely on the property's own min to
-        # catch it.
-        rig.kinema_active_waypoint = max(0, min(index, len(rig.kinema_waypoints) - 1))
-        said = ""
-        if gone:
-            said = f", and {len(gone)} motion{'s' if len(gone) != 1 else ''} to and from it"
-        self.report({"INFO"}, f"Removed '{name}'{said}")
-        return {"FINISHED"}
+        return reported(self, delete_waypoint(rig, index))
+
+
+def new_waypoint(rig, name: str = "", reference=None, values=None):
+    """A waypoint on ``rig`` where its tool is -- or would be at ``values``, a joint
+    vector, the rig left where it stands -- relative to ``reference``, an object, or
+    the robot's base; with its marker. Returns it and None, or None and why not."""
+    waypoint = rig.kinema_waypoints.add()
+    waypoint.uid = _new_uid()
+    waypoint.name = name or f"point{len(rig.kinema_waypoints)}"
+    error = _record(rig, waypoint, reference, values)
+    if error is not None:
+        rig.kinema_waypoints.remove(len(rig.kinema_waypoints) - 1)
+        return None, error
+    waypoint.marker = _make_marker(rig, waypoint, _unflatten(waypoint.pose), reference)
+    rig.kinema_active_waypoint = len(rig.kinema_waypoints) - 1
+    return waypoint, None
+
+
+def delete_waypoint(rig, index: int) -> Outcome:
+    """Remove ``rig``'s waypoint at ``index``, its marker, and the motions to and from it."""
+    waypoint = rig.kinema_waypoints[index]
+    name = waypoint.name
+    # The row owns its marker, the way an attachment row owns its copy.
+    marker = waypoint.marker
+    if marker is not None and PROP_WAYPOINT in marker:
+        bpy.data.objects.remove(marker, do_unlink=True)
+    uid = waypoint.uid
+    gone = [
+        i for i, motion in enumerate(rig.kinema_motions) if uid in (motion.start, motion.end)
+    ]
+    for i in reversed(gone):
+        rig.kinema_motions.remove(i)
+    left = len(rig.kinema_motions) - 1
+    rig.kinema_active_motion = max(0, min(rig.kinema_active_motion, left))
+    if rig.kinema_last_recorded == uid:
+        # Recording goes on from where the job now ends, or from nothing.
+        last = max(rig.kinema_motions, key=lambda m: int(m.frame_end), default=None)
+        rig.kinema_last_recorded = last.end if last is not None else ""
+        rig.kinema_last_recorded_frame = int(last.frame_end) if last is not None else 0
+    rig.kinema_waypoints.remove(index)
+    # max(0, ...): removing the last row leaves an empty list, and the
+    # index would otherwise go to -1 and rely on the property's own min to
+    # catch it.
+    rig.kinema_active_waypoint = max(0, min(index, len(rig.kinema_waypoints) - 1))
+    said = ""
+    if gone:
+        said = f", and {len(gone)} motion{'s' if len(gone) != 1 else ''} to and from it"
+    return Outcome(True, "INFO", f"Removed '{name}'{said}")
+
+
+def new_motion(
+    rig, start, end, frame_start: int, frame_end: int, move: str = MOVE_JOINT, name: str = ""
+):
+    """A motion on ``rig`` from waypoint ``start`` to ``end`` over those frames, named
+    ``name`` or after the waypoint it ends at; made the active one."""
+    motion = rig.kinema_motions.add()
+    motion.name = name or end.name
+    motion.start, motion.end = start.uid, end.uid
+    motion.move = move
+    motion.frame_start, motion.frame_end = int(frame_start), int(frame_end)
+    rig.kinema_active_motion = len(rig.kinema_motions) - 1
+    rig.kinema_unconverted = ""
+    return motion
+
+
+def delete_motion(rig, index: int) -> Outcome:
+    """Remove ``rig``'s motion at ``index``. Its waypoints stay."""
+    name = rig.kinema_motions[index].name
+    rig.kinema_motions.remove(index)
+    rig.kinema_active_motion = max(0, min(index, len(rig.kinema_motions) - 1))
+    return Outcome(True, "INFO", f"Removed '{name}'")
 
 
 class KINEMA_OT_add_motion(KinemaWaypointOperator):
@@ -860,14 +897,9 @@ class KINEMA_OT_add_motion(KinemaWaypointOperator):
             index = list(rig.kinema_waypoints).index(target)
             target = rig.kinema_waypoints[(index + 1) % len(rig.kinema_waypoints)]
         first = int(last.frame_end) if last is not None else context.scene.frame_current
-        motion = rig.kinema_motions.add()
-        motion.name = target.name
-        motion.start, motion.end = start.uid, target.uid
-        motion.move = MOVE_JOINT
-        motion.frame_start = first
-        motion.frame_end = first + max(1, round(scene_fps(context.scene)))
-        rig.kinema_active_motion = len(rig.kinema_motions) - 1
-        rig.kinema_unconverted = ""
+        motion = new_motion(
+            rig, start, target, first, first + max(1, round(scene_fps(context.scene)))
+        )
         self.report(
             {"INFO"},
             f"Added '{motion.name}', '{start.name}' to '{target.name}' over frames "
@@ -890,11 +922,7 @@ class KINEMA_OT_remove_motion(KinemaWaypointOperator):
         if not 0 <= index < len(rig.kinema_motions):
             self.report({"ERROR"}, "No motion to remove")
             return {"CANCELLED"}
-        name = rig.kinema_motions[index].name
-        rig.kinema_motions.remove(index)
-        rig.kinema_active_motion = max(0, min(index, len(rig.kinema_motions) - 1))
-        self.report({"INFO"}, f"Removed '{name}'")
-        return {"FINISHED"}
+        return reported(self, delete_motion(rig, index))
 
 
 def _waypoint_at(rig, index: int):
@@ -917,246 +945,248 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
     )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        rig = active_rig(context)
-        job = _plan_or_report(self, rig)
-        if job is None:
-            return {"CANCELLED"}
-        plan = job.spans
-        # Where every waypoint is on every frame of the job, for those taught
-        # relative to an object that moves: see ops/references.py.
-        placement = place_job(context, rig, plan)
+        return reported(self, generate_job(context, active_rig(context)))
 
-        needs_ik = any(keyed_as(span, placement) == MOVE_LINEAR for span in plan)
-        ik_name = ik_bone_name(rig)
-        if needs_ik and ik_name is None:
-            moving = [
-                span.label
-                for span in plan
-                if span.move != MOVE_LINEAR and needs_tracking(span, placement)
-            ]
-            if moving:
-                names = ", ".join(f"'{name}'" for name in moving)
-                self.report(
-                    {"ERROR"},
-                    f"{names}: held on an object that moves, which the tool can only "
-                    f"follow with an IK target; add one",
-                )
-            else:
-                self.report(
-                    {"ERROR"},
-                    "Linear moves need an IK target; add one, or set those "
-                    "motions to Joint",
-                )
-            return {"CANCELLED"}
-        # The marker is the waypoint: one dragged since teaching takes every
-        # move to and from it along, and one relative to an object goes where
-        # the object is on each frame the job is there. Its joints are found
-        # there before anything is checked or written, and the checks below see
-        # them.
-        unreachable, followed, visits = follow_markers(rig, plan, placement)
-        if unreachable:
-            names = ", ".join(f"'{name}'" for name in unreachable)
-            self.report(
-                {"ERROR"},
-                f"{names}: the robot can't follow the marker there from the "
-                f"configuration it was taught in. Move the marker back, or pose "
-                f"the robot there and press Update",
+
+def generate_job(context, rig) -> Outcome:
+    """Key ``rig`` through its motions in frame order, and check the job: what
+    Generate Motion does. Nothing is written where it is refused."""
+    job, failed = _plan(rig)
+    if job is None:
+        return failed
+    plan = job.spans
+    # Where every waypoint is on every frame of the job, for those taught
+    # relative to an object that moves: see ops/references.py.
+    placement = place_job(context, rig, plan)
+
+    needs_ik = any(keyed_as(span, placement) == MOVE_LINEAR for span in plan)
+    ik_name = ik_bone_name(rig)
+    if needs_ik and ik_name is None:
+        moving = [
+            span.label
+            for span in plan
+            if span.move != MOVE_LINEAR and needs_tracking(span, placement)
+        ]
+        if moving:
+            names = ", ".join(f"'{name}'" for name in moving)
+            return Outcome(
+                False,
+                "ERROR",
+                f"{names}: held on an object that moves, which the tool can only "
+                f"follow with an IK target; add one",
             )
-            return {"CANCELLED"}
-        changed = {waypoint.as_pointer(): values for waypoint, values in followed}
-        changed.update(visits)
-        refused, turned, shared, changed = (
-            settle_configurations(rig, plan, changed, placement)
-            if needs_ik
-            else ([], [], [], changed)
+        return Outcome(
+            False,
+            "ERROR",
+            "Linear moves need an IK target; add one, or set those motions to Joint",
         )
-        if shared:
-            names = ", ".join(f"'{name}'" for name in shared)
-            self.report(
-                {"ERROR"},
-                f"{names}: linear moves arrive there a whole turn apart, and a "
-                f"waypoint keeps one turn for every move that uses it. Teach a "
-                f"waypoint for each, or make one of the moves a joint move",
-            )
-            return {"CANCELLED"}
-        if refused:
-            names = ", ".join(f"'{name}'" for name in refused)
-            self.report(
-                {"ERROR"},
-                f"{names}: taught in a different configuration from the waypoint "
-                f"before, and a linear move can't change configuration. Make it a "
-                f"joint move, or re-teach one of the two",
-            )
-            return {"CANCELLED"}
-        # Only now, with nothing refused: a cancelled operator leaves no undo
-        # step, so a change made before a refusal could not be taken back.
-        strips.retime(rig, job.retimes)
-        # Stored as Update stores a pose, so the waypoint *is* where its marker
-        # is: Go To restores it there, and the next generation starts from it.
-        for waypoint, values in followed:
+    # The marker is the waypoint: one dragged since teaching takes every
+    # move to and from it along, and one relative to an object goes where
+    # the object is on each frame the job is there. Its joints are found
+    # there before anything is checked or written, and the checks below see
+    # them.
+    unreachable, followed, visits = follow_markers(rig, plan, placement)
+    if unreachable:
+        names = ", ".join(f"'{name}'" for name in unreachable)
+        return Outcome(
+            False,
+            "ERROR",
+            f"{names}: the robot can't follow the marker there from the "
+            f"configuration it was taught in. Move the marker back, or pose "
+            f"the robot there and press Update",
+        )
+    changed = {waypoint.as_pointer(): values for waypoint, values in followed}
+    changed.update(visits)
+    refused, turned, shared, changed = (
+        settle_configurations(rig, plan, changed, placement)
+        if needs_ik
+        else ([], [], [], changed)
+    )
+    if shared:
+        names = ", ".join(f"'{name}'" for name in shared)
+        return Outcome(
+            False,
+            "ERROR",
+            f"{names}: linear moves arrive there a whole turn apart, and a "
+            f"waypoint keeps one turn for every move that uses it. Teach a "
+            f"waypoint for each, or make one of the moves a joint move",
+        )
+    if refused:
+        names = ", ".join(f"'{name}'" for name in refused)
+        return Outcome(
+            False,
+            "ERROR",
+            f"{names}: taught in a different configuration from the waypoint "
+            f"before, and a linear move can't change configuration. Make it a "
+            f"joint move, or re-teach one of the two",
+        )
+    # Only now, with nothing refused: a cancelled operator leaves no undo
+    # step, so a change made before a refusal could not be taken back.
+    strips.retime(rig, job.retimes)
+    # Stored as Update stores a pose, so the waypoint *is* where its marker
+    # is: Go To restores it there, and the next generation starts from it.
+    for waypoint, values in followed:
+        waypoint.q = values
+        waypoint.pose = _flatten(references.local_pose(waypoint))
+    for span in plan:
+        for waypoint in (span.start, span.end):
+            if references.reference_of(rig, waypoint) is not None:
+                # A marker dragged on its object moves the waypoint on it; the
+                # joints stay where they were taught, and each visit walks
+                # from there.
+                waypoint.pose = _flatten(references.local_pose(waypoint))
+    for waypoint, values, _, _ in turned:
+        if references.reference_of(rig, waypoint) is None:
             waypoint.q = values
-            waypoint.pose = _flatten(references.local_pose(waypoint))
+
+    first, last = plan[0].start_frame, plan[-1].end_frame
+    # A linear finish leaves a switch-off key one frame past the end, so
+    # the job owns that frame too -- but only then. Claiming it after a
+    # joint finish, where nothing is written there, would have the next
+    # regeneration delete a key the user had put on the first free frame.
+    ends_linear = keyed_as(plan[-1], placement) == MOVE_LINEAR
+    owned = (first, last + 1 if ends_linear else last)
+    # Union with what the last generation covered, which the new plan need
+    # not still reach: shortening a job by moving its final waypoint
+    # earlier has to take the old keys with it, or the robot goes on
+    # visiting a frame no waypoint claims any more.
+    clear_from, clear_to = _union(_generated_range(rig), owned)
+
+    original = context.scene.frame_current
+    # Suspended for the same reason baking suspends: writing keys walks the
+    # frame, and the live handler would solve each one on the way past and
+    # fight the values being written. Written into the job's action, which
+    # is then laid out as one NLA strip per motion: see ops/strips.py.
+    with _handlers_suspended(), strips.editing(rig, context):
+        _clear_generated(rig, ik_name, clear_from, clear_to)
+        # The target's last keyed rotation, so the next is keyed in the same
+        # hemisphere: see _key_linear_span.
+        previous = None
         for span in plan:
-            for waypoint in (span.start, span.end):
-                if references.reference_of(rig, waypoint) is not None:
-                    # A marker dragged on its object moves the waypoint on it; the
-                    # joints stay where they were taught, and each visit walks
-                    # from there.
-                    waypoint.pose = _flatten(references.local_pose(waypoint))
-        for waypoint, values, _, _ in turned:
-            if references.reference_of(rig, waypoint) is None:
-                waypoint.q = values
+            if keyed_as(span, placement) == MOVE_JOINT:
+                _key_joint_span(rig, span, changed)
+            else:
+                previous = _key_linear_span(
+                    rig, span, ik_name, previous, placement, changed
+                )
+        if ends_linear:
+            # Leave the switch off past the end. Without this the last
+            # linear span's "on" key is the final one on the channel, so
+            # the solver goes on running for every frame after the job --
+            # overwriting any joint animation out there, and doing the work
+            # to no purpose while the user scrubs. Written on the frame
+            # `owned` claims above; the two are one decision.
+            rig.kinema_ik_enabled = False
+            rig.keyframe_insert(data_path="kinema_ik_enabled", frame=owned[1])
+        _set_linear_interpolation(rig, ik_name)
+        muted = strips.lay_out(rig, plan)
+    rig.kinema_generated_range = owned
+    # What was generated, so Optimize Motion can tell when the keys no
+    # longer follow the waypoints.
+    rig.kinema_generated_job = job_signature(rig)
+    rig.kinema_optimized_job = ""
+    context.scene.frame_set(original)
+    checks = check_job(context, rig, plan, placement=placement)
+    # Kept on the move's row too, so it is still there once the report has
+    # gone: anyone who meant the taught turn has to re-teach that waypoint.
+    notes = {
+        frame: f"{description}: kept as the line arrives"
+        for _, _, description, frame in turned
+    }
+    for check in checks or ():
+        check.turn_note = notes.get(check.end_frame, "")
+    flagged = store_check(rig, checks)
 
-        first, last = plan[0].start_frame, plan[-1].end_frame
-        # A linear finish leaves a switch-off key one frame past the end, so
-        # the job owns that frame too -- but only then. Claiming it after a
-        # joint finish, where nothing is written there, would have the next
-        # regeneration delete a key the user had put on the first free frame.
-        ends_linear = keyed_as(plan[-1], placement) == MOVE_LINEAR
-        owned = (first, last + 1 if ends_linear else last)
-        # Union with what the last generation covered, which the new plan need
-        # not still reach: shortening a job by moving its final waypoint
-        # earlier has to take the old keys with it, or the robot goes on
-        # visiting a frame no waypoint claims any more.
-        clear_from, clear_to = _union(_generated_range(rig), owned)
-
-        original = context.scene.frame_current
-        # Suspended for the same reason baking suspends: writing keys walks the
-        # frame, and the live handler would solve each one on the way past and
-        # fight the values being written. Written into the job's action, which
-        # is then laid out as one NLA strip per motion: see ops/strips.py.
-        with _handlers_suspended(), strips.editing(rig, context):
-            _clear_generated(rig, ik_name, clear_from, clear_to)
-            # The target's last keyed rotation, so the next is keyed in the same
-            # hemisphere: see _key_linear_span.
-            previous = None
-            for span in plan:
-                if keyed_as(span, placement) == MOVE_JOINT:
-                    self._key_joint_span(rig, span, changed)
-                else:
-                    previous = self._key_linear_span(
-                        rig, span, ik_name, previous, placement, changed
-                    )
-            if ends_linear:
-                # Leave the switch off past the end. Without this the last
-                # linear span's "on" key is the final one on the channel, so
-                # the solver goes on running for every frame after the job --
-                # overwriting any joint animation out there, and doing the work
-                # to no purpose while the user scrubs. Written on the frame
-                # `owned` claims above; the two are one decision.
-                rig.kinema_ik_enabled = False
-                rig.keyframe_insert(data_path="kinema_ik_enabled", frame=owned[1])
-            _set_linear_interpolation(rig, ik_name)
-            muted = strips.lay_out(rig, plan)
-        rig.kinema_generated_range = owned
-        # What was generated, so Optimize Motion can tell when the keys no
-        # longer follow the waypoints.
-        rig.kinema_generated_job = job_signature(rig)
-        rig.kinema_optimized_job = ""
-        context.scene.frame_set(original)
-        checks = check_job(context, rig, plan, placement=placement)
-        # Kept on the move's row too, so it is still there once the report has
-        # gone: anyone who meant the taught turn has to re-teach that waypoint.
-        notes = {
-            frame: f"{description}: kept as the line arrives"
-            for _, _, description, frame in turned
-        }
-        for check in checks or ():
-            check.turn_note = notes.get(check.end_frame, "")
-        flagged = store_check(rig, checks)
-
-        message = (
-            f"Generated {len(plan)} move{'s' if len(plan) != 1 else ''} "
-            f"over frames {first}-{last}"
+    message = (
+        f"Generated {len(plan)} move{'s' if len(plan) != 1 else ''} "
+        f"over frames {first}-{last}"
+    )
+    if followed:
+        # Said, since it rewrites what was taught there.
+        names = ", ".join(f"'{waypoint.name}'" for waypoint, _ in followed)
+        several = len(followed) != 1
+        message += (
+            f", with {names} re-solved at {'their' if several else 'its'} "
+            f"moved marker{'s' if several else ''}"
         )
-        if followed:
-            # Said, since it rewrites what was taught there.
-            names = ", ".join(f"'{waypoint.name}'" for waypoint, _ in followed)
-            several = len(followed) != 1
-            message += (
-                f", with {names} re-solved at {'their' if several else 'its'} "
-                f"moved marker{'s' if several else ''}"
-            )
-        if checks is None:
-            message += "; not checked, since this rig has no TCP to measure it by"
-        elif flagged:
-            message += f"; {_flagged_text(flagged)} in the motion check"
-        for note in job.notes:
-            message += f". {note}"
-        if muted:
-            message += f". {strips.muted_text(muted)}"
-        for waypoint, _, description, _ in turned:
-            message += (
-                f". '{waypoint.name}' was taught a whole turn from where the line "
-                f"arrives, and keeps the turn it arrives with ({description}). "
-                f"Re-teach it to change that"
-            )
-        self.report({"WARNING"} if flagged or job.notes else {"INFO"}, message)
-        return {"FINISHED"}
+    if checks is None:
+        message += "; not checked, since this rig has no TCP to measure it by"
+    elif flagged:
+        message += f"; {_flagged_text(flagged)} in the motion check"
+    for note in job.notes:
+        message += f". {note}"
+    if muted:
+        message += f". {strips.muted_text(muted)}"
+    for waypoint, _, description, _ in turned:
+        message += (
+            f". '{waypoint.name}' was taught a whole turn from where the line "
+            f"arrives, and keeps the turn it arrives with ({description}). "
+            f"Re-teach it to change that"
+        )
+    return Outcome(True, "WARNING" if flagged or job.notes else "INFO", message, flagged)
 
-    @staticmethod
-    def _key_joint_span(rig, span, changed) -> None:
-        """Key the joints at both ends and switch live IK off for the span.
 
-        The joints are what carry a MoveJ, so the solver must not be writing
-        over them while it runs. Each end's are the waypoint's as the job meets
-        it there (``changed``: see :func:`values_at`).
-        """
-        rig.kinema_ik_enabled = False
-        rig.keyframe_insert(data_path="kinema_ik_enabled", frame=span.start_frame)
-        for waypoint, frame in (
-            (span.start, span.start_frame),
-            (span.end, span.end_frame),
-        ):
-            apply_joint_values(rig, values_at(rig, waypoint, frame, changed)[: waypoint.dof])
-            for pose_bone in builder.joint_bones(rig):
-                key_joint_value(pose_bone, frame)
+def _key_joint_span(rig, span, changed) -> None:
+    """Key the joints at both ends and switch live IK off for the span.
 
-    @staticmethod
-    def _key_linear_span(rig, span, ik_name: str, previous, placement, changed):
-        """Key the IK goal along the move and switch live IK on for the span.
+    The joints are what carry a MoveJ, so the solver must not be writing
+    over them while it runs. Each end's are the waypoint's as the job meets
+    it there (``changed``: see :func:`values_at`).
+    """
+    rig.kinema_ik_enabled = False
+    rig.keyframe_insert(data_path="kinema_ik_enabled", frame=span.start_frame)
+    for waypoint, frame in (
+        (span.start, span.start_frame),
+        (span.end, span.end_frame),
+    ):
+        apply_joint_values(rig, values_at(rig, waypoint, frame, changed)[: waypoint.dof])
+        for pose_bone in builder.joint_bones(rig):
+            key_joint_value(pose_bone, frame)
 
-        The solver tracks the goal every frame, so keying the goal's own
-        transform LINEAR is what makes the tool travel a straight line: the
-        goal moves along it, and the arm follows.
+def _key_linear_span(rig, span, ik_name: str, previous, placement, changed):
+    """Key the IK goal along the move and switch live IK on for the span.
 
-        Each rotation is keyed in the same hemisphere as the one before it
-        (``previous``, returned updated for the next move). A pose converts to
-        either of two opposite quaternions, and Blender interpolates the four
-        channels independently, so a pair keyed from opposite hemispheres turns
-        the tool the long way round -- 340 degrees for a 20 degree move.
+    The solver tracks the goal every frame, so keying the goal's own
+    transform LINEAR is what makes the tool travel a straight line: the
+    goal moves along it, and the arm follows.
 
-        The joints are keyed at both ends as well, at the configurations those
-        waypoints were taught in. IK overrides them on every frame, but it
-        solves *from* them: without these keys it would seed from whatever the
-        neighbouring keys hold, and solve the line in that configuration.
+    Each rotation is keyed in the same hemisphere as the one before it
+    (``previous``, returned updated for the next move). A pose converts to
+    either of two opposite quaternions, and Blender interpolates the four
+    channels independently, so a pair keyed from opposite hemispheres turns
+    the tool the long way round -- 340 degrees for a 20 degree move.
 
-        On an object that moves, the line moves with it: the goal is keyed on
-        every frame, where the line is on that frame. So is a hold there, which
-        follows the object as the tool would follow a conveyor.
-        """
-        rig.kinema_ik_enabled = True
-        rig.keyframe_insert(data_path="kinema_ik_enabled", frame=span.start_frame)
-        goal = rig.pose.bones[ik_name]
-        goal.rotation_mode = "QUATERNION"
-        for frame, pose in line_of(span, placement):
-            goal.matrix = pose
-            if previous is not None:
-                rotation = goal.rotation_quaternion.copy()
-                rotation.make_compatible(previous)
-                goal.rotation_quaternion = rotation
-            previous = goal.rotation_quaternion.copy()
-            goal.keyframe_insert(data_path="location", frame=frame)
-            goal.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+    The joints are keyed at both ends as well, at the configurations those
+    waypoints were taught in. IK overrides them on every frame, but it
+    solves *from* them: without these keys it would seed from whatever the
+    neighbouring keys hold, and solve the line in that configuration.
 
-        for waypoint, frame in (
-            (span.start, span.start_frame),
-            (span.end, span.end_frame),
-        ):
-            apply_joint_values(rig, values_at(rig, waypoint, frame, changed)[: waypoint.dof])
-            for pose_bone in builder.joint_bones(rig):
-                key_joint_value(pose_bone, frame)
-        return previous
+    On an object that moves, the line moves with it: the goal is keyed on
+    every frame, where the line is on that frame. So is a hold there, which
+    follows the object as the tool would follow a conveyor.
+    """
+    rig.kinema_ik_enabled = True
+    rig.keyframe_insert(data_path="kinema_ik_enabled", frame=span.start_frame)
+    goal = rig.pose.bones[ik_name]
+    goal.rotation_mode = "QUATERNION"
+    for frame, pose in line_of(span, placement):
+        goal.matrix = pose
+        if previous is not None:
+            rotation = goal.rotation_quaternion.copy()
+            rotation.make_compatible(previous)
+            goal.rotation_quaternion = rotation
+        previous = goal.rotation_quaternion.copy()
+        goal.keyframe_insert(data_path="location", frame=frame)
+        goal.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+    for waypoint, frame in (
+        (span.start, span.start_frame),
+        (span.end, span.end_frame),
+    ):
+        apply_joint_values(rig, values_at(rig, waypoint, frame, changed)[: waypoint.dof])
+        for pose_bone in builder.joint_bones(rig):
+            key_joint_value(pose_bone, frame)
+    return previous
 
 
 # --------------------------------------------------------------------------
@@ -1939,48 +1969,50 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
     )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        rig = active_rig(context)
-        job = _plan_or_report(self, rig)
-        if job is None:
-            return {"CANCELLED"}
-        plan = job.spans
-        samples = play_job(context, rig, plan)
-        checks = check_job(context, rig, plan, samples=samples)
-        if checks is not None:
-            # Written before anything reads the job's fingerprint: the estimates
-            # of frames needed, and the check stored with it.
-            strips.retime(rig, job.retimes)
-        estimate_frames_needed(context, rig, checks, samples)
-        flagged = store_check(rig, checks)
-        if checks is None:
-            message = "Nothing checked: this rig has no TCP to measure the job by"
-            if job.retimes:
-                # Not written: a cancelled operator leaves no undo step.
-                moved = ", ".join(f"'{m.name}'" for m, _, _ in job.retimes)
-                message += (
-                    f". The NLA editor's retime of {moved} is taken into the Motions "
-                    f"list by the next Generate Motion"
-                )
-            self.report({"WARNING"}, message)
-            return {"CANCELLED"}
-        message = f"Checked {len(plan)} move{'s' if len(plan) != 1 else ''}"
-        message += f"; {_flagged_text(flagged)}" if flagged else "; nothing to report"
-        for note in job.notes:
-            message += f". {note}"
-        self.report({"WARNING"} if flagged or job.notes else {"INFO"}, message)
-        return {"FINISHED"}
+        return reported(self, check_motion(context, active_rig(context)))
 
 
-def _plan_or_report(operator, rig):
-    """The rig's job, or None with the reason reported: a warning for an overlap,
-    which only the user can resolve, and an error for the rest."""
+def check_motion(context, rig) -> Outcome:
+    """Play ``rig``'s job through once, solving as playback does, and check each
+    move: what Check Motion does."""
+    job, failed = _plan(rig)
+    if job is None:
+        return failed
+    plan = job.spans
+    samples = play_job(context, rig, plan)
+    checks = check_job(context, rig, plan, samples=samples)
+    if checks is not None:
+        # Written before anything reads the job's fingerprint: the estimates
+        # of frames needed, and the check stored with it.
+        strips.retime(rig, job.retimes)
+    estimate_frames_needed(context, rig, checks, samples)
+    flagged = store_check(rig, checks)
+    if checks is None:
+        message = "Nothing checked: this rig has no TCP to measure the job by"
+        if job.retimes:
+            # Not written: a cancelled operator leaves no undo step.
+            moved = ", ".join(f"'{m.name}'" for m, _, _ in job.retimes)
+            message += (
+                f". The NLA editor's retime of {moved} is taken into the Motions "
+                f"list by the next Generate Motion"
+            )
+        return Outcome(False, "WARNING", message)
+    message = f"Checked {len(plan)} move{'s' if len(plan) != 1 else ''}"
+    message += f"; {_flagged_text(flagged)}" if flagged else "; nothing to report"
+    for note in job.notes:
+        message += f". {note}"
+    return Outcome(True, "WARNING" if flagged or job.notes else "INFO", message, flagged)
+
+
+def _plan(rig):
+    """The rig's job, and None; or None, and why there is none: a warning for an
+    overlap, which only the user can resolve, and an error for the rest."""
     try:
-        return job_plan(rig)
+        return job_plan(rig), None
     except MotionsOverlap as exc:
-        operator.report({"WARNING"}, f"{exc}. Nothing was generated or checked")
+        return None, Outcome(False, "WARNING", f"{exc}. Nothing was generated or checked")
     except WaypointError as exc:
-        operator.report({"ERROR"}, str(exc))
-    return None
+        return None, Outcome(False, "ERROR", str(exc))
 
 
 def _generated_paths(rig, ik_name: str | None) -> set[str]:

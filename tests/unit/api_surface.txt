@@ -21,3 +21,15 @@ dataclass frozen eq Clearance(distance: 'float', bone: 'str | None', obstacle: '
 def clearance(rig, values=None) -> 'Clearance'
 dataclass frozen Reach(reachable: 'bool', within_limits: 'bool', clear: 'bool', values: 'np.ndarray', clearance: 'Clearance') -> None
 def reachable(rig, pose, seed=None, tool: 'Tool | None' = None, keep_clear: 'float' = 0.0) -> 'Reach'
+dataclass frozen Waypoint(name: 'str', values: 'np.ndarray', pose: 'np.ndarray', reference: 'str | None') -> None
+def waypoints(rig) -> 'list[Waypoint]'
+def add_waypoint(rig, name: 'str | None' = None, values=None, reference=None) -> 'Waypoint'
+def remove_waypoint(rig, name: 'str') -> 'None'
+dataclass frozen eq Motion(name: 'str', start: 'str', end: 'str', move: 'str', frame_start: 'int', frame_end: 'int') -> None
+def motions(rig) -> 'list[Motion]'
+def add_motion(rig, start: 'str', end: 'str', frame_start: 'int', frame_end: 'int', move: 'str' = 'JOINT', name: 'str | None' = None) -> 'Motion'
+def remove_motion(rig, name: 'str') -> 'None'
+def add_ik_target(rig) -> 'None'
+dataclass frozen eq Report(done: 'bool', level: 'str', message: 'str', flagged: 'int') -> None
+def generate(rig) -> 'Report'
+def check(rig) -> 'Report'
