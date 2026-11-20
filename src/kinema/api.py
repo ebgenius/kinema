@@ -247,7 +247,9 @@ class Motion:
 class Report:
     """What :func:`generate` or :func:`check` did, as its operator reports it."""
 
-    #: Whether it was done: False where it was refused, with nothing written.
+    #: Whether it was done: False where it was refused, with no keys written. The
+    #: job is still caught up first, and a check's findings cleared where it can't
+    #: be measured: see :func:`generate` and :func:`check`.
     done: bool
     #: ``"INFO"``, ``"WARNING"`` or ``"ERROR"``.
     level: str

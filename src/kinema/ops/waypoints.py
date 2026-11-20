@@ -950,7 +950,8 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
 
 def generate_job(context, rig) -> Outcome:
     """Key ``rig`` through its motions in frame order, and check the job: what
-    Generate Motion does. Nothing is written where it is refused."""
+    Generate Motion does. No keys are written where it is refused; the job is
+    caught up first all the same (see :func:`job_plan`)."""
     job, failed = _plan(rig)
     if job is None:
         return failed
