@@ -22,6 +22,7 @@ from ..rig import builder, widgets
 from ..solver import chain, manager
 from ..ui.panel import active_rig
 from . import strips
+from .outcome import Outcome, reported
 
 
 def _np4(matrix) -> np.ndarray:
@@ -48,98 +49,109 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
     bl_description = "Create a keyframable IK control at the tool centre point"
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        rig = active_rig(context)
-        tcp_bone = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
-        if tcp_bone not in rig.data.bones:
-            self.report({"ERROR"}, "This rig has no TCP; create one first")
-            return {"CANCELLED"}
-
-        ik_name = _ik_bone_name(tcp_bone)
-        previous_active = context.view_layer.objects.active
-        context.view_layer.objects.active = rig
-        if rig.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
-
-        bpy.ops.object.mode_set(mode="EDIT")
-        try:
-            edit_bones = rig.data.edit_bones
-            tcp = edit_bones[tcp_bone]
-            ik = edit_bones.get(ik_name) or edit_bones.new(ik_name)
-            ik.head = tcp.head
-            ik.tail = tcp.tail
-            ik.roll = tcp.roll
-            # Parented to Root, never into the chain: an IK goal that moved
-            # with the arm it drives would chase its own tail.
-            ik.parent = edit_bones.get(builder.ROOT_BONE)
-            ik.use_connect = False
-        finally:
-            bpy.ops.object.mode_set(mode="OBJECT")
-
-        pose_bone = rig.pose.bones[ik_name]
-        pose_bone.rotation_mode = "QUATERNION"
-        pose_bone.custom_shape = widgets.ensure_widgets()["ik_target"]
-        pose_bone.use_custom_shape_bone_size = True
-
-        armature = rig.data
-        for collection in armature.collections_all:
-            if collection.name == builder.COLLECTION_IK:
-                collection.assign(armature.bones[ik_name])
-                collection.is_visible = True
-
-        rig[builder.PROP_IK_BONE] = ik_name
-
-        # Snap the goal onto the tip's *current* pose before switching live IK
-        # on. A new bone starts at its rest position, so enabling the solver
-        # first would immediately drag the arm back to the URDF rest pose and
-        # throw away whatever the user had posed. The tip is usually the TCP,
-        # but the rig may already be aimed at a bone further up the chain.
-        context.view_layer.update()
-        pose_bone.matrix = rig.pose.bones[manager.tip_bone(rig)].matrix.copy()
-        context.view_layer.update()
-
-        held = hold_external_axes(rig)
-
-        # The chain, not the compiled solver: the model has not changed, so one
-        # compiled before -- say before Remove IK Target -- is still right, and the
-        # warm-up below then costs nothing.
-        manager.forget_chain(rig.name)
-        handlers.reset(rig.name)
-        handlers.register_handlers()
-
-        # Pay JAX's one-off JIT compilation here, behind a wait cursor, rather
-        # than letting it land on the user's first drag of the control.
-        compile_seconds = self._warm_up(context, rig, ik_name)
-
-        rig.kinema_ik_enabled = True
-        if previous_active is not None:
-            context.view_layer.objects.active = previous_active
-
-        message = f"IK target '{ik_name}' created"
-        if compile_seconds > 1.0:
-            message += f" (solver compiled in {compile_seconds:.1f}s)"
-        if held:
-            message += f"; holding {', '.join(held)} by hand"
-        self.report({"INFO"}, message)
-        return {"FINISHED"}
+        return reported(self, add_ik_target(context, active_rig(context)))
 
     @staticmethod
     def _warm_up(context, rig, ik_name: str) -> float:
-        import time
+        return _warm_up(context, rig, ik_name)
 
-        solver = manager.get_solver(rig, ik_name)
-        if solver is None:
-            return 0.0
-        started = time.perf_counter()
-        context.window.cursor_set("WAIT")
-        try:
-            # Solving for where the tool already is: compiles the kernel without
-            # moving the robot.
-            solver.solve(rig, getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI))
-        except Exception:  # noqa: BLE001 - warmup is best-effort
-            pass
-        finally:
-            context.window.cursor_set("DEFAULT")
-        return time.perf_counter() - started
+
+def add_ik_target(context, rig) -> Outcome:
+    """A keyframable IK control at ``rig``'s tool centre point, with live IK on:
+    what Add IK Target does."""
+    tcp_bone = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    if tcp_bone not in rig.data.bones:
+        return Outcome(False, "ERROR", "This rig has no TCP; create one first")
+
+    ik_name = _ik_bone_name(tcp_bone)
+    previous_active = context.view_layer.objects.active
+    context.view_layer.objects.active = rig
+    if rig.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    try:
+        edit_bones = rig.data.edit_bones
+        tcp = edit_bones[tcp_bone]
+        ik = edit_bones.get(ik_name) or edit_bones.new(ik_name)
+        ik.head = tcp.head
+        ik.tail = tcp.tail
+        ik.roll = tcp.roll
+        # Parented to Root, never into the chain: an IK goal that moved
+        # with the arm it drives would chase its own tail.
+        ik.parent = edit_bones.get(builder.ROOT_BONE)
+        ik.use_connect = False
+    finally:
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    pose_bone = rig.pose.bones[ik_name]
+    pose_bone.rotation_mode = "QUATERNION"
+    pose_bone.custom_shape = widgets.ensure_widgets()["ik_target"]
+    pose_bone.use_custom_shape_bone_size = True
+
+    armature = rig.data
+    for collection in armature.collections_all:
+        if collection.name == builder.COLLECTION_IK:
+            collection.assign(armature.bones[ik_name])
+            collection.is_visible = True
+
+    rig[builder.PROP_IK_BONE] = ik_name
+
+    # Snap the goal onto the tip's *current* pose before switching live IK
+    # on. A new bone starts at its rest position, so enabling the solver
+    # first would immediately drag the arm back to the URDF rest pose and
+    # throw away whatever the user had posed. The tip is usually the TCP,
+    # but the rig may already be aimed at a bone further up the chain.
+    context.view_layer.update()
+    pose_bone.matrix = rig.pose.bones[manager.tip_bone(rig)].matrix.copy()
+    context.view_layer.update()
+
+    held = hold_external_axes(rig)
+
+    # The chain, not the compiled solver: the model has not changed, so one
+    # compiled before -- say before Remove IK Target -- is still right, and the
+    # warm-up below then costs nothing.
+    manager.forget_chain(rig.name)
+    handlers.reset(rig.name)
+    handlers.register_handlers()
+
+    # Pay JAX's one-off JIT compilation here, behind a wait cursor, rather
+    # than letting it land on the user's first drag of the control.
+    compile_seconds = KINEMA_OT_add_ik._warm_up(context, rig, ik_name)
+
+    rig.kinema_ik_enabled = True
+    if previous_active is not None:
+        context.view_layer.objects.active = previous_active
+
+    message = f"IK target '{ik_name}' created"
+    if compile_seconds > 1.0:
+        message += f" (solver compiled in {compile_seconds:.1f}s)"
+    if held:
+        message += f"; holding {', '.join(held)} by hand"
+    return Outcome(True, "INFO", message)
+
+
+def _warm_up(context, rig, ik_name: str) -> float:
+    import time
+
+    solver = manager.get_solver(rig, ik_name)
+    if solver is None:
+        return 0.0
+    started = time.perf_counter()
+    # A script may run with no window to show a cursor in.
+    window = getattr(context, "window", None)
+    if window is not None:
+        window.cursor_set("WAIT")
+    try:
+        # Solving for where the tool already is: compiles the kernel without
+        # moving the robot.
+        solver.solve(rig, getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI))
+    except Exception:  # noqa: BLE001 - warmup is best-effort
+        pass
+    finally:
+        if window is not None:
+            window.cursor_set("DEFAULT")
+    return time.perf_counter() - started
 
 
 class KINEMA_OT_remove_ik(KinemaRigOperator):

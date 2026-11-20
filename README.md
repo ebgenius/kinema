@@ -833,6 +833,50 @@ metres), and small frozen dataclasses. A call that can't be done raises
 | `obstacles(scene=None)`, `add_obstacle(obj, shape=None)`, `remove_obstacle(obj)` | What the robots are kept clear of: a box, a sphere or a floor |
 | `clearance(rig, values=None)` | The closest approach to an obstacle, at the joint values given or where the rig stands, and which bone and obstacle |
 | `reachable(rig, pose, seed=None, tool=None, keep_clear=0.0)` | Whether the tool can stand at a pose: reached, every joint in its range, and clear by `keep_clear` metres. `.ok` is all three |
+| `waypoints(rig)`, `add_waypoint(rig, name=None, values=None, reference=None)`, `remove_waypoint(rig, name)` | Taught poses: taught at joint values without moving the rig, relative to an object or the robot's base |
+| `motions(rig)`, `add_motion(rig, start, end, frame_start, frame_end, move="JOINT", name=None)`, `remove_motion(rig, name)` | Moves between waypoints, by name, joint or linear, over frames of their own |
+| `add_ik_target(rig)` | The IK target linear moves are keyed on |
+| `generate(rig)`, `check(rig)` | Generate Motion and Check Motion: whether it was done, the report, and how many moves were flagged |
+
+A job taught, generated and checked from a script, on the arm6 test robot:
+
+```python
+import importlib
+
+import bpy
+
+
+def find_kinema():
+    for name in bpy.context.preferences.addons.keys():
+        if name.rpartition(".")[2] == "kinema":
+            return importlib.import_module(name + ".api")
+    return None
+
+
+kinema = find_kinema()
+rig = kinema.rigs()[0]
+kinema.add_ik_target(rig)  # linear moves are keyed on it
+
+home = kinema.add_waypoint(rig, "home", [0.0, -0.6, 1.2, 0.0, 0.6, 0.0])
+above = home.pose.copy()
+above[:3, 3] += (0.1, 0.15, -0.05)  # metres, in world space
+reach = kinema.reachable(rig, above, seed=home.values)
+assert reach.ok, reach
+kinema.add_waypoint(rig, "above", reach.values)
+down = above.copy()
+down[2, 3] -= 0.1
+pick = kinema.solve(rig, down, seed=reach.values)
+assert pick.reached, pick
+kinema.add_waypoint(rig, "pick", pick.values)
+
+kinema.add_motion(rig, "home", "above", 1, 25)
+kinema.add_motion(rig, "above", "pick", 25, 49, move="LINEAR")
+kinema.add_motion(rig, "pick", "home", 49, 73)
+report = kinema.generate(rig)
+assert report.done and report.flagged == 0, report.message
+print(kinema.check(rig).message)
+```
+
 
 ## Requirements
 
