@@ -566,14 +566,17 @@ class TestRetime:
         for motion in arm6.kinema_motions:
             motion.laid_frames = motion.synced_frames = (0, 0)
         # Caught up twice before any Generate: the strip is still the motion's
-        # once its frames have changed.
+        # once its frames have changed, and another motion's strip is found too.
         _strip(strips, arm6, "back").frame_start_ui = 71
-        bpy.ops.kinema.check_motion()
+        assert bpy.ops.kinema.check_motion() == {"FINISHED"}
         back = _motion(arm6, "back")
         assert (back.frame_start, back.frame_end) == (71, 91)
         _strip(strips, arm6, "back").frame_start_ui = 76
+        _strip(strips, arm6, "a").scale = 0.5
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert (back.frame_start, back.frame_end) == (76, 96)
+        a = _motion(arm6, "a")
+        assert (a.frame_start, a.frame_end) == (1, 11)
 
     def test_a_motion_added_since_doesnt_take_anothers_strip(
         self, arm6, builder, strips, prefs
@@ -707,7 +710,7 @@ class TestRetime:
         assert calls, "precondition: estimated for the job Optimize wrote"
         calls.clear()
         _strip(strips, arm6, "back").frame_start_ui = 71
-        bpy.ops.kinema.check_motion()
+        assert bpy.ops.kinema.check_motion() == {"FINISHED"}, "precondition: checked"
         assert calls == []
 
     def test_a_copied_strip_retimes_nothing(self, arm6, builder, strips, prefs):

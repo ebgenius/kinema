@@ -646,15 +646,26 @@ class Retimed:
         return getattr(self._motion, name)
 
 
-def retime(retimes) -> None:
-    """Write what :func:`catch_up` found into the Motions list. A motion with no
-    frames laid out -- in a file laid out before they were kept -- keeps the
-    ones its strip shows, so the strip is still its after its frames change."""
+def retime(rig, retimes) -> None:
+    """Write what :func:`catch_up` found into the Motions list.
+
+    In a file laid out before motions kept their laid-out frames, every motion
+    takes its own as them first: they are what its strip shows. All at once, as
+    the first retime there would otherwise be the only motion with any, and the
+    others' strips would no longer be found by their frames.
+    """
+    if retimes and not any(_has_laid(m) for m in getattr(rig, "kinema_motions", ())):
+        for motion in rig.kinema_motions:
+            motion.laid_frames = motion.synced_frames = (motion.frame_start, motion.frame_end)
     for motion, frames, shown in retimes:
         motion.frame_start, motion.frame_end = frames
         motion.synced_frames = frames
         if motion.laid_frames[1] <= motion.laid_frames[0]:
             motion.laid_frames = shown
+
+
+def _has_laid(motion) -> bool:
+    return motion.laid_frames[1] > motion.laid_frames[0]
 
 
 def _laid(motion, name="laid_frames") -> tuple:
