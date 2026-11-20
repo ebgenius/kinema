@@ -504,13 +504,21 @@ class TestRetime:
         strip = _strip(strips, arm6, "hold at b")
         assert (strip.frame_start, strip.frame_end) == (41.0, 61.0)
 
-    def test_a_renamed_strip_still_retimes_its_motion(self, arm6, builder, strips, prefs):
-        """A motion's strip is known by the frames it shows, not its name."""
+    @pytest.mark.parametrize("laid", ["kept", "legacy"])
+    def test_a_renamed_strip_still_retimes_its_motion(
+        self, arm6, builder, strips, prefs, laid
+    ):
+        """A motion's strip is known by the frames it shows, not its name -- in a file
+        laid out before laid frames were kept too, while the Motions list is as the
+        job was generated from it."""
         import bpy
 
         prefs.job_as_strips = True
         _job(builder, arm6)
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        if laid == "legacy":
+            for motion in arm6.kinema_motions:
+                motion.laid_frames = motion.synced_frames = (0, 0)
         strip = _strip(strips, arm6, "back")
         strip.name = "something else"
         strip.frame_start_ui = 71

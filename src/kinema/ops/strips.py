@@ -577,6 +577,7 @@ def catch_up(rig) -> tuple[list, list]:
         kept = tuple(int(v) for v in motion.laid_frames)
         (laid if kept[1] > kept[0] else unlaid).setdefault(_laid(motion), []).append(motion)
     notes, retimes = [], []
+    as_generated = _as_generated(rig)
     every = sorted((s for t in tracks for s in t.strips), key=lambda s: s.frame_start)
     showing = {}
     for strip in every:
@@ -590,7 +591,9 @@ def catch_up(rig) -> tuple[list, list]:
         # kept theirs, where none has any: with one laid out, a motion without is
         # one added since, and has no strip -- a pause's moved strip isn't its.
         candidates = laid.get(shown) or (
-            [] if laid else [m for m in unlaid.get(shown, ()) if m.name == strip.name]
+            [] if laid else [
+                m for m in unlaid.get(shown, ()) if as_generated or m.name == strip.name
+            ]
         )
         if len(candidates) > 1:
             if shown not in noted:
@@ -670,15 +673,27 @@ def retime(rig, retimes) -> None:
             (s.name, (round(s.action_frame_start), round(s.action_frame_end)))
             for t in _job_tracks(rig) for s in t.strips
         }
+        shown = {frames for _, frames in laid}
+        as_generated = _as_generated(rig)
         for motion in rig.kinema_motions:
             frames = (motion.frame_start, motion.frame_end)
-            if (motion.name, frames) in laid:
+            if (motion.name, frames) in laid or (as_generated and frames in shown):
                 motion.laid_frames = motion.synced_frames = frames
     for motion, frames, shown in retimes:
         motion.frame_start, motion.frame_end = frames
         motion.synced_frames = frames
         if motion.laid_frames[1] <= motion.laid_frames[0]:
             motion.laid_frames = shown
+
+
+def _as_generated(rig) -> bool:
+    """Whether the Motions list is as the job was last generated from it. Then a
+    strip showing a motion's frames is that motion's, whatever it is called now:
+    a motion added since, on a pause's frames, would have changed the list."""
+    from .waypoints import job_signature
+
+    stored = getattr(rig, "kinema_generated_job", "")
+    return bool(stored) and stored == job_signature(rig)
 
 
 def _has_laid(motion) -> bool:
