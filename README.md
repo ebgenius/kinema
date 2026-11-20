@@ -48,9 +48,10 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
   all the time: **Live IK** (or **Add IK Target**, where there is none); **Configurations**
   (Find, then stepping through the arm's other ways to the pose) beside **Auto Config**;
   **Rest Pose** beside **Snap to Tool**, which is greyed out while the IK target is on the
-  tool and pressable once it is left off it; and **Motion Check** beside **Graph Editor**. Which buttons, and their order, is yours to choose in the add-on's preferences,
-  under **Quick Bar**: move them up or down, remove them, add others (Key All, Record
-  Waypoint, Generate, Optimize, Bake IK), or Reset. Two sit to a row; with an odd number,
+  tool and pressable once it is left off it; **Record** (a waypoint) beside **Generate**;
+  and **Motion Check** beside **Graph Editor**. Which buttons, and their order, is yours to
+  choose in the add-on's preferences, under **Quick Bar**: move them up or down, remove
+  them, add others (Key All, Optimize, Bake IK), or Reset. Two sit to a row; with an odd number,
   the first spans the bar. Under them, the bar says what most needs knowing and what to do
   about it: that the robot shown isn't the one selected, that Live IK is paused, that the
   tool can't reach the target (and what to try), that the target is out of reach (once

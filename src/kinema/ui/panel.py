@@ -229,6 +229,14 @@ ORDER_SETTINGS = 6
 ORDER_KINEMA = 7
 
 
+def section(layout, idname: str, label: str, *, closed: bool = False, icon: str = "NONE"):
+    """A collapsible section in a darker box of its own, as Blender's own panels
+    nest them. Returns where its contents go, or None while it is collapsed."""
+    header, body = layout.box().panel(idname, default_closed=closed)
+    header.label(text=label, icon=icon)
+    return body
+
+
 class KinemaPanelBase:
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -255,11 +263,6 @@ class KINEMA_PT_quick_bar(KinemaPanelBase, Panel):
             self.layout.label(text="No robot", icon="ARMATURE_DATA")
             return
         self.layout.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
-
-    def draw_header_preset(self, context: bpy.types.Context) -> None:
-        rig = active_rig(context)
-        if rig is not None:
-            self.layout.label(text=f"{len(builder.joint_bones(rig))} DoF")
 
     def draw(self, context: bpy.types.Context) -> None:
         from . import quick_bar
@@ -924,6 +927,8 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
             column.operator(
                 "kinema.optimize_motion", text="Optimize Motion", icon="IPO_EASE_IN_OUT"
             )
+        # What live IK plays, as keys: with the job it is made of.
+        layout.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
 
         # The same test the operator makes, not a truthier one: a rig whose IK
         # bone was deleted keeps the property, and checking only that would
@@ -1281,6 +1286,18 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             layout.label(text="Adds a keyframable control at the tool.", icon="BLANK1")
             return
 
+        body = section(layout, "kinema_ik_target", "Target")
+        if body is not None:
+            self._draw_target(body, rig)
+        self._draw_solutions(layout, context, rig)
+        self._draw_swivel(layout, rig)
+        body = section(layout, "kinema_ik_statistics", "IK Solver Statistics", closed=True)
+        if body is not None:
+            self._draw_readout(body, rig)
+
+    @staticmethod
+    def _draw_target(layout, rig) -> None:
+        """Live IK, which bone it aims with, and the target itself."""
         column = layout.column(align=True)
         column.prop(rig, "kinema_ik_enabled", toggle=True,
                     icon="PLAY" if rig.kinema_ik_enabled else "PAUSE")
@@ -1303,23 +1320,17 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         row.operator("kinema.key_ik_tip", text="", icon="DECORATE_KEYFRAME")
         tip.label(text=f"Solving to '{manager.tip_bone(rig)}'", icon="BONE_DATA")
 
-        row = layout.row(align=True)
-        row.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
-        row.operator("kinema.remove_ik", text="", icon="X")
-
-        self._draw_solutions(layout, rig)
-        self._draw_swivel(layout, rig)
-
-        layout.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
-        self._draw_readout(layout, rig)
+        column = layout.column(align=True)
+        column.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
+        column.operator("kinema.remove_ik", text="Delete Target", icon="X")
 
     @staticmethod
-    def _draw_solutions(layout, rig) -> None:
+    def _draw_solutions(layout, context, rig) -> None:
         """Cycle among the configurations that reach this pose."""
         from ..ops import ik as ik_ops
+        from . import quick_bar
 
-        header, body = layout.panel("kinema_solutions", default_closed=True)
-        header.label(text="Configuration")
+        body = section(layout, "kinema_solutions", "Configuration", closed=True)
         if body is None:
             return
 
@@ -1328,21 +1339,17 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         body.operator(
             "kinema.find_solutions", text="Find Solutions", icon="VIEWZOOM"
         )
-        if not count:
+        if count:
+            stale = ik_ops.solutions_are_stale(rig)
+            current = min(int(rig.kinema_active_solution) + 1, count)
+            row = body.row(align=True)
+            row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
+            row.label(text=f"Solution {current}" if stale else f"Solution {current} of {count}")
+            row.operator("kinema.apply_solution", text="", icon="TRIA_RIGHT").step = 1
+        else:
             body.label(text="An arm reaches a pose several ways.", icon="BLANK1")
-            return
-
-        stale = ik_ops.solutions_are_stale(rig)
-        current = min(int(rig.kinema_active_solution) + 1, count)
-        row = body.row(align=True)
-        row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
-        row.label(text=f"Solution {current}" if stale else f"Solution {current} of {count}")
-        row.operator("kinema.apply_solution", text="", icon="TRIA_RIGHT").step = 1
-
-        if stale:
-            # Found for a pose the target has left: the one picked is named, and
-            # the arrows find them again for this one before stepping.
-            body.label(text="The target moved: the arrows search again", icon="INFO")
+        # What the quick bar says, said here too.
+        quick_bar.draw_status(body, context, rig)
 
     @staticmethod
     def _draw_swivel(layout, rig) -> None:
@@ -1354,9 +1361,11 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             # rail robot does not offer one.
             return
 
-        header, body = layout.panel("kinema_swivel", default_closed=True)
         # Flagged in the header too, so a collapsed section still says so.
-        header.label(text="Elbow Swivel", icon="ERROR" if state == "stalled" else "NONE")
+        body = section(
+            layout, "kinema_swivel", "Elbow Swivel", closed=True,
+            icon="ERROR" if state == "stalled" else "NONE",
+        )
         if body is None:
             return
 
@@ -1397,8 +1406,7 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
 
         elapsed = handlers.last_solve_ms(rig)
         solver = manager_state(rig)
-        box = layout.box()
-        info = box.column(align=True)
+        info = layout.column(align=True)
         if elapsed is not None:
             budget = _solve_budget_ms()
             icon = "CHECKMARK" if elapsed <= budget else "ERROR"

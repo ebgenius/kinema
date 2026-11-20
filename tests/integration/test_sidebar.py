@@ -141,6 +141,8 @@ class TestQuickBar:
             ("prop", "kinema_auto_configuration"),
             ("operator", "kinema.reset_pose"),
             ("operator", "kinema.snap_ik"),
+            ("operator", "kinema.add_waypoint"),
+            ("operator", "kinema.generate_motion"),
             ("operator", "kinema.check_motion"),
             ("operator", "kinema.graph_editor"),
         ]
@@ -156,7 +158,7 @@ class TestQuickBar:
         panel.KINEMA_PT_quick_bar.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
         names = [name for name, _, _ in calls]
         splits = [kwargs for name, _, kwargs in calls if name == "split"]
-        assert splits == [{"factor": 0.5}] * 3, "three pairs, after Live IK alone"
+        assert splits == [{"factor": 0.5}] * 4, "four pairs, after Live IK alone"
         first_split = names.index("split")
         assert "operator" not in names[first_split : names.index("column", first_split)]
         assert names.count("column") >= 5, "the bar's, and one for each half"
@@ -262,7 +264,7 @@ class TestQuickBarPreferences:
         assert "FINISHED" in bpy.ops.kinema.quick_button_move(index=0, step=1)
         assert prefs.quick_button_keys()[:2] == ["CONFIGURATIONS", "LIVE_IK"]
         assert "CANCELLED" in bpy.ops.kinema.quick_button_move(index=0, step=-1)
-        assert "FINISHED" in bpy.ops.kinema.quick_button_remove(index=6)
+        assert "FINISHED" in bpy.ops.kinema.quick_button_remove(index=8)
         assert "FINISHED" in bpy.ops.kinema.quick_button_add(button="KEY_JOINTS")
         assert prefs.quick_button_keys() == [
             "CONFIGURATIONS",
@@ -270,6 +272,8 @@ class TestQuickBarPreferences:
             "AUTO_CONFIG",
             "REST_POSE",
             "SNAP_IK",
+            "RECORD_WAYPOINT",
+            "GENERATE",
             "MOTION_CHECK",
             "KEY_JOINTS",
         ]
@@ -333,17 +337,7 @@ class TestKinemaSettings:
         solver = _drawn(panel.KINEMA_PT_status, bpy.context)
         assert ("prop", "kinema_solver_mode") in solver
         assert ("operator", "kinema.check_dependencies") in solver
-        calls = []
-
-        class Drawn:
-            """The IK panel drawn into a recording layout, its helpers its own."""
-
-            layout = _Layout(calls)
-
-            def __getattr__(self, name):
-                return getattr(panel.KINEMA_PT_ik, name)
-
-        panel.KINEMA_PT_ik.draw(Drawn(), bpy.context)
+        calls = _ik_drawn(panel)
         assert ("prop", ("kinema_solver_mode",)) not in [
             (name, args[1:2]) for name, args, _ in calls if name == "prop"
         ]
@@ -373,15 +367,14 @@ class TestRobotNamed:
             )
             return [kwargs.get("text") for name, _, kwargs in calls if name == "label"]
 
-        header, preset = [], []
+        header = []
         panel.KINEMA_PT_quick_bar.draw_header(
             __import__("types").SimpleNamespace(layout=_Layout(header)), bpy.context
         )
-        panel.KINEMA_PT_quick_bar.draw_header_preset(
-            __import__("types").SimpleNamespace(layout=_Layout(preset)), bpy.context
-        )
         assert [kwargs.get("text") for name, _, kwargs in header if name == "label"] == ["arm6"]
-        assert [kwargs.get("text") for name, _, kwargs in preset if name == "label"] == ["6 DoF"]
+        assert not hasattr(panel.KINEMA_PT_quick_bar, "draw_header_preset"), (
+            "nothing at the header's right, where the pin goes"
+        )
         assert "Not selected: the robot last shown" not in labels()
         arm6.select_set(False)
         bpy.context.view_layer.objects.active = None
@@ -621,3 +614,91 @@ class TestJointsBox:
         panel.KINEMA_PT_joints.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
         icons = [kwargs.get("icon") for name, _, kwargs in calls if name == "label"]
         assert "CON_LOCLIMIT" in icons and "CON_ROTLIMIT" in icons
+
+
+class _Open(_Layout):
+    """A recording layout whose collapsible sections are all open."""
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            if name == "panel":
+                return _Open(self.calls), _Open(self.calls)
+            return _Open(self.calls)
+
+        return call
+
+
+def _ik_drawn(panel) -> list:
+    """The Target (IK) panel drawn with every section open, its helpers its own."""
+    import bpy
+
+    calls = []
+
+    class Drawn:
+        layout = _Open(calls)
+
+        def __getattr__(self, name):
+            return getattr(panel.KINEMA_PT_ik, name)
+
+    panel.KINEMA_PT_ik.draw(Drawn(), bpy.context)
+    return calls
+
+
+class TestTargetPanel:
+    @pytest.fixture
+    def targeted(self, arm6):
+        import bpy
+
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = False
+        return arm6
+
+    def test_its_sections_each_in_a_box(self, panel, targeted):
+        calls = _ik_drawn(panel)
+        sections = [args[0] for name, args, _ in calls if name == "panel"]
+        assert sections[:2] == ["kinema_ik_target", "kinema_solutions"]
+        assert sections[-1] == "kinema_ik_statistics"
+        names = [name for name, _, _ in calls]
+        boxes = [i for i, name in enumerate(names) if name == "box"]
+        panels = [i for i, name in enumerate(names) if name == "panel"]
+        assert all(box + 1 == section for box, section in zip(boxes, panels, strict=True)), (
+            "each section opened in a box of its own"
+        )
+
+    def test_the_target_is_deleted_by_a_button_that_says_so(self, panel, targeted):
+        operators = {
+            args[0]: kwargs.get("text")
+            for name, args, kwargs in _ik_drawn(panel)
+            if name == "operator"
+        }
+        assert operators["kinema.remove_ik"] == "Delete Target"
+        assert operators["kinema.snap_ik"] == "Snap to Tool"
+
+    def test_configuration_says_what_the_quick_bar_says(self, panel, targeted, addon):
+        import bpy
+
+        ik_ops = importlib.import_module(f"{addon.__name__}.ops.ik")
+        labels = [kwargs.get("text") for name, _, kwargs in _ik_drawn(panel) if name == "label"]
+        assert "Live IK paused: pose the joints, or turn it on" in labels
+        targeted.kinema_ik_enabled = True
+        bpy.context.view_layer.update()
+        ik_ops._auto_switched.add(targeted.name)
+        calls = _ik_drawn(panel)
+        labels = [kwargs.get("text") for name, _, kwargs in calls if name == "label"]
+        assert "Config changed: linear move can't cross it" in labels
+        assert "kinema.dismiss_config_change" in [a[0] for n, a, _ in calls if n == "operator"]
+        ik_ops.forget_switch(targeted.name)
+        targeted.kinema_ik_enabled = False
+
+    def test_bake_to_keyframes_is_with_the_motions(self, panel, targeted):
+        import types
+
+        import bpy
+
+        assert ("operator", "kinema.bake_ik") not in [
+            (n, a[0]) for n, a, _ in _ik_drawn(panel) if n == "operator"
+        ]
+        calls = []
+        panel.KINEMA_PT_motions.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
+        assert "kinema.bake_ik" in [args[0] for name, args, _ in calls if name == "operator"]

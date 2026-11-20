@@ -15,14 +15,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 #: The buttons a new install shows, in order: Live IK spanning the bar, then
-#: Configurations beside Auto Config, Rest Pose beside Snap to Tool, and Motion
-#: Check beside Graph Editor.
+#: Configurations beside Auto Config, Rest Pose beside Snap to Tool, Record beside
+#: Generate, and Motion Check beside Graph Editor.
 DEFAULT = (
     "LIVE_IK",
     "CONFIGURATIONS",
     "AUTO_CONFIG",
     "REST_POSE",
     "SNAP_IK",
+    "RECORD_WAYPOINT",
+    "GENERATE",
     "MOTION_CHECK",
     "GRAPH_EDITOR",
 )
@@ -231,8 +233,13 @@ def draw(layout, context, rig, keys) -> None:
         halves = column.split(factor=0.5)
         for key in row_keys:
             BUTTONS[key].draw(halves.column(), context, rig)
+    draw_status(box, context, rig)
+
+
+def draw_status(layout, context, rig) -> None:
+    """The status line, with the x that dismisses it where it can be."""
     text, icon, dismiss = status(context, rig)
-    row = box.row()
+    row = layout.row()
     row.label(text=text, icon=icon)
     if dismiss:
         # Seen, and let be: the usual line comes back.

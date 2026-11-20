@@ -177,8 +177,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The Kinema tab, laid out like Blender's own sidebar** (#103). A quick bar of the
   buttons used all the time comes first -- Live IK, Configurations, Auto Config, Rest
-  Pose, Snap to Tool, Motion Check and Graph Editor, chosen and ordered in the
-  preferences. Joints,
+  Pose, Snap to Tool, Record, Generate, Motion Check and Graph Editor, chosen and ordered
+  in the preferences. Target (IK) is in sections, Target, Configuration and IK Solver
+  Statistics, and Bake to Keyframes is with the Motions. Joints,
   Target (IK), Waypoints, Motions and Motion Check are panels of their own, to drag,
   collapse and pin; what is set once for the robot sits under Robot Settings, and what is
   Kinema's -- importing, and the solver -- under Kinema Settings. The Bones,

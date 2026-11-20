@@ -24,6 +24,7 @@ quick_bar = load_addon_module("ui.quick_bar")
                 ["LIVE_IK"],
                 ["CONFIGURATIONS", "AUTO_CONFIG"],
                 ["REST_POSE", "SNAP_IK"],
+                ["RECORD_WAYPOINT", "GENERATE"],
                 ["MOTION_CHECK", "GRAPH_EDITOR"],
             ],
         ),
