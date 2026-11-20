@@ -756,9 +756,17 @@ direction is readable at a glance.
 ## When the description moves
 
 A rig keeps the path of the description it was imported from, and the PyRoki solver is
-built from that file whenever it is needed. Open the .blend on another machine, or move the
-description's folder, and the file isn't there. The Kinema panel then shows **Description
-file missing**, live IK falls back to NumPy, and Optimize Motion says why it can't run.
+built from that file whenever it is needed. Where the description is in the .blend's folder
+or under it, the path is also kept relative to the .blend when the file is saved, as Blender
+keeps the paths of images: copy or move the project folder as a whole, to another place or
+another machine, and the robot reads the description beside it. The relative path is tried
+first, then the absolute one, so a .blend moved on its own still finds the file where it was.
+A description anywhere else is kept by its absolute path only, as is every path while
+Blender's *Default To: Relative Paths* preference, under *File Paths*, is off.
+
+Move the description's folder, or open the .blend somewhere the file isn't, and the Kinema
+panel shows **Description file missing**, live IK falls back to NumPy, and Optimize Motion
+says why it can't run.
 
 **Locate Description…**, under that message, points the robot at the file again: a URDF,
 xacro or MJCF, read as an import reads it, with the rig's xacro arguments, and
@@ -773,8 +781,8 @@ changes, and the solver is rebuilt from the new file on the next solve, without 
 the .blend.
 
 A rig with an external axis needs none of this: the solver describes it from its own
-bones. A rig linked from a library isn't offered it: open the library's file, locate the
-description there, and save it.
+bones. A rig linked from a library finds its description relative to the library's file,
+and isn't offered Locate: open the library's file, locate the description there, and save it.
 
 ## Requirements
 

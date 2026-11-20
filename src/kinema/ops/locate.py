@@ -26,11 +26,9 @@ from bpy.props import StringProperty
 from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 
-from ..rig import builder
+from ..rig import builder, description_path
+from ..rig.description_path import FILE_KINDS
 from ..ui.panel import active_rig
-
-#: The sources a description file stands behind: URDF or xacro, and MJCF.
-FILE_KINDS = ("file", "mjcf")
 
 
 def file_name(path) -> str:
@@ -47,8 +45,8 @@ def description_missing(rig) -> bool:
         return False
     if rig.get(builder.PROP_SOURCE_KIND) not in FILE_KINDS:
         return False
-    source = rig.get(builder.PROP_SOURCE)
-    if not source or os.path.isfile(str(source)):
+    source = description_path.source_path(rig)
+    if not source or os.path.isfile(source):
         return False
     from ..solver import rig_model
 
@@ -102,6 +100,12 @@ def relink(rig, path: str) -> tuple[bool, str]:
     kind, value = result.source
     rig[builder.PROP_SOURCE_KIND] = kind
     rig[builder.PROP_SOURCE] = value
+    # The path kept relative to the .blend names the file this replaces, and is
+    # read first: dropped, or it would put that one back. Kept for this file
+    # instead, where it can be.
+    if description_path.PROP_SOURCE_RELATIVE in rig:
+        del rig[description_path.PROP_SOURCE_RELATIVE]
+    description_path.remember(rig, bpy.data.filepath)
     # The solver and Optimize's kernels were built, or refused, from the file
     # that was missing: the next solve builds from this one.
     manager.invalidate(rig.name)
