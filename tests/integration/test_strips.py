@@ -507,6 +507,23 @@ class TestRetime:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert (back.frame_start, back.frame_end) == (76, 96)
 
+    def test_a_file_laid_out_before_retiming_still_retimes(
+        self, arm6, builder, strips, prefs
+    ):
+        """A file laid out before motions kept their laid-out frames has none: its
+        motions' own frames are taken for them, as they were when it was saved."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        for motion in arm6.kinema_motions:
+            motion.laid_frames = motion.synced_frames = (0, 0)
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        back = _motion(arm6, "back")
+        assert (back.frame_start, back.frame_end) == (71, 91)
+
     def test_a_copied_strip_retimes_nothing(self, arm6, builder, strips, prefs):
         """A strip duplicated in the NLA editor shows what the motion's does, so which
         one is the motion's can't be told: neither retimes it."""

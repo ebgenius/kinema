@@ -548,11 +548,7 @@ def catch_up(rig) -> list:
     tracks = _job_tracks(rig)
     if not tracks:
         return []
-    motions = {
-        tuple(int(v) for v in motion.laid_frames): motion
-        for motion in getattr(rig, "kinema_motions", ())
-        if motion.laid_frames[1] > motion.laid_frames[0]
-    }
+    motions = {_laid(motion): motion for motion in getattr(rig, "kinema_motions", ())}
     notes = []
     every = sorted((s for t in tracks for s in t.strips), key=lambda s: s.frame_start)
     showing = {}
@@ -581,7 +577,7 @@ def catch_up(rig) -> list:
         current = (motion.frame_start, motion.frame_end)
         if current == plays:
             continue
-        if current != tuple(int(v) for v in motion.synced_frames):
+        if current != _laid(motion, "synced_frames"):
             notes.append(
                 f"'{motion.name}' was retimed in the Motions list and in the NLA editor: "
                 f"the Motions list's frames {current[0]}-{current[1]} are kept"
@@ -595,6 +591,16 @@ def catch_up(rig) -> list:
             f"Generate Motion lays the job out there"
         )
     return notes
+
+
+def _laid(motion, name="laid_frames") -> tuple:
+    """``motion``'s frames as its strip was laid out at, or last in step with it.
+    A file laid out before motions kept them has neither: its motions' frames
+    are taken for both, as they were when it was saved."""
+    frames = tuple(int(v) for v in getattr(motion, name))
+    if frames[1] > frames[0]:
+        return frames
+    return (int(motion.frame_start), int(motion.frame_end))
 
 
 class Bake:
