@@ -526,7 +526,7 @@ def bake_refusal(rig, first: int, last: int) -> str:
     if any(track.is_solo for track in anim.nla_tracks):
         # A soloed track plays alone, without the copy the bake plays and keys.
         return "An NLA track of the robot's is soloed: un-solo it to bake"
-    if any(_moved(s) for t in _job_tracks(rig) for s in t.strips):
+    if out_of_step(rig):
         # The bake plays a copy of the action in the strips' place, at the frames
         # the job was laid out at: a strip moved since would bake the wrong ones.
         return (
@@ -534,6 +534,13 @@ def bake_refusal(rig, first: int, last: int) -> str:
             "Motion to lay the job out there, then bake"
         )
     return ""
+
+
+def out_of_step(rig) -> bool:
+    """Whether any strip of the job plays frames other than the ones of the
+    action it shows -- moved or scaled in the NLA editor, a motion's or not --
+    so the job plays other than its keys say until Generate lays it out again."""
+    return any(_moved(s) for t in _job_tracks(rig) for s in t.strips)
 
 
 def _moved(strip) -> bool:
@@ -582,7 +589,9 @@ def catch_up(rig) -> tuple[list, list]:
         # A motion's own frames stand in only in a file laid out before motions
         # kept theirs, where none has any: with one laid out, a motion without is
         # one added since, and has no strip -- a pause's moved strip isn't its.
-        candidates = laid.get(shown) or ([] if laid else unlaid.get(shown)) or []
+        candidates = laid.get(shown) or (
+            [] if laid else [m for m in unlaid.get(shown, ()) if m.name == strip.name]
+        )
         if len(candidates) > 1:
             if shown not in noted:
                 noted.add(shown)
@@ -655,8 +664,16 @@ def retime(rig, retimes) -> None:
     others' strips would no longer be found by their frames.
     """
     if retimes and not any(_has_laid(m) for m in getattr(rig, "kinema_motions", ())):
+        # Only the motions a strip stands for: one with their frames and their
+        # name, as the strips were named then. A motion added since has none.
+        laid = {
+            (s.name, (round(s.action_frame_start), round(s.action_frame_end)))
+            for t in _job_tracks(rig) for s in t.strips
+        }
         for motion in rig.kinema_motions:
-            motion.laid_frames = motion.synced_frames = (motion.frame_start, motion.frame_end)
+            frames = (motion.frame_start, motion.frame_end)
+            if (motion.name, frames) in laid:
+                motion.laid_frames = motion.synced_frames = frames
     for motion, frames, shown in retimes:
         motion.frame_start, motion.frame_end = frames
         motion.synced_frames = frames

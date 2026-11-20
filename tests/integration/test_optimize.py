@@ -436,6 +436,7 @@ class TestWhileSolving:
             "root posed",
             "frame rate",
             "strip moved",
+            "after strip moved",
         ],
     )
     def test_a_robot_changed_meanwhile_gets_nothing_written(self, arm6, builder, modules, change):
@@ -483,6 +484,13 @@ class TestWhileSolving:
             strip = next(
                 s for t in strips._job_tracks(arm6) for s in t.strips
                 if (s.action_frame_start, s.action_frame_end) == (last.frame_start, last.frame_end)
+            )
+            strip.frame_start_ui += 10
+        elif change == "after strip moved":
+            # Not a motion's: it retimes nothing, but the job plays otherwise.
+            strips = modules("ops.strips")
+            strip = next(
+                s for t in strips._job_tracks(arm6) for s in t.strips if s.name == strips.AFTER
             )
             strip.frame_start_ui += 10
         else:

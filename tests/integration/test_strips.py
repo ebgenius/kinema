@@ -713,6 +713,62 @@ class TestRetime:
         assert bpy.ops.kinema.check_motion() == {"FINISHED"}, "precondition: checked"
         assert calls == []
 
+    @pytest.mark.parametrize("moved", ["pause", "motion set back in the list"])
+    def test_optimize_waits_for_any_strip_out_of_step(
+        self, addon, arm6, builder, strips, prefs, moved
+    ):
+        """Any strip of the job moved -- a pause's, or a motion's whose frames were
+        set back in the list -- plays the job other than its keys say, so Optimize
+        asks for Generate first, as Bake does."""
+        import bpy
+
+        optimize = importlib.import_module(f"{addon.__name__}.ops.optimize")
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        if moved == "pause":
+            _strip(strips, arm6, "hold at b").frame_start_ui = 46
+        else:
+            _strip(strips, arm6, "back").frame_start_ui = 71
+            assert bpy.ops.kinema.check_motion() == {"FINISHED"}
+            back = _motion(arm6, "back")
+            back.frame_start, back.frame_end = 61, 81
+            assert strips.catch_up(arm6)[1] == [], "precondition: nothing to retime"
+        with pytest.raises(optimize.Refused, match="moved or scaled"):
+            optimize.prepare(bpy.context, arm6)
+
+    def test_a_legacy_migration_leaves_motions_added_since(
+        self, arm6, builder, strips, prefs
+    ):
+        """In a file laid out before laid frames were kept, a motion added since on a
+        pause's frames has no strip: the migration doesn't make the pause its, and
+        the pause moved retimes nothing."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        for motion in arm6.kinema_motions:
+            motion.laid_frames = motion.synced_frames = (0, 0)
+        at_b = _motion(arm6, "b").end
+        added = arm6.kinema_motions.add()
+        added.name, added.start, added.end = "added", at_b, at_b
+        added.frame_start, added.frame_end = 41, 61
+        # Before anything migrates: the pause's strip, shortened, shows the frames
+        # the added motion has, and isn't its.
+        pause = _strip(strips, arm6, "hold at b")
+        pause.scale = 0.5
+        assert strips.catch_up(arm6)[1] == []
+        pause.scale = 1.0
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        _, retimes = strips.catch_up(arm6)
+        strips.retime(arm6, retimes)
+        assert tuple(added.laid_frames) == (0, 0)
+        assert tuple(_motion(arm6, "a").laid_frames) == (1, 21), "the others migrate"
+        _strip(strips, arm6, "hold at b").scale = 0.5
+        _, retimes = strips.catch_up(arm6)
+        assert [m.name for m, _, _ in retimes] == []
+
     def test_a_copied_strip_retimes_nothing(self, arm6, builder, strips, prefs):
         """A strip duplicated in the NLA editor shows what the motion's does, so which
         one is the motion's can't be told: neither retimes it."""

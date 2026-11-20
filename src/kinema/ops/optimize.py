@@ -143,10 +143,11 @@ def prepare(context, rig) -> Job:
     except WaypointError as exc:
         raise Refused(str(exc)) from exc
     plan = job_plan.spans
-    if job_plan.retimes:
-        # The keys are still at the frames the strips were laid out at.
+    if job_plan.retimes or strips.out_of_step(rig):
+        # The keys are still at the frames the strips were laid out at, and the
+        # job plays other than they say: the solve would start from that.
         raise Refused(
-            "A motion's strip was moved or scaled in the NLA editor: Generate Motion "
+            "A strip of the job was moved or scaled in the NLA editor: Generate Motion "
             "to lay the job out there, then optimize"
         )
     signature = wp.job_signature(rig)
@@ -575,9 +576,9 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
         or manager.rig_identity(rig) != job.identity
         or wp.job_signature(rig) != job.signature
         or model_signature(rig, context.scene) != job.model
-        # A strip moved in the NLA editor meanwhile retimes its motion as soon as
-        # the job is read, which the solve, at the frames it started from, isn't.
-        or strips.catch_up(rig)[1]
+        # A strip moved in the NLA editor meanwhile: the job no longer plays as
+        # the solve, at the frames it started from, has it.
+        or strips.out_of_step(rig)
     ):
         return (
             False, "WARNING",
