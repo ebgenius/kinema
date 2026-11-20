@@ -568,6 +568,9 @@ def finish(context, job: Job) -> tuple[bool, str, str]:
         or manager.rig_identity(rig) != job.identity
         or wp.job_signature(rig) != job.signature
         or model_signature(rig, context.scene) != job.model
+        # A strip moved in the NLA editor meanwhile retimes its motion as soon as
+        # the job is read, which the solve, at the frames it started from, isn't.
+        or strips.catch_up(rig)[1]
     ):
         return (
             False, "WARNING",
