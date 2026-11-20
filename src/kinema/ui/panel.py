@@ -348,6 +348,14 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
     def poll(cls, context: bpy.types.Context) -> bool:
         return active_rig(context) is not None
 
+    def draw_header_preset(self, context: bpy.types.Context) -> None:
+        """Rest Pose, the Graph Editor -- where the keys made here are shaped -- and
+        Key All, at the header's right: here whether the quick bar has them or not."""
+        row = self.layout.row(align=True)
+        row.operator("kinema.reset_pose", text="", icon="LOOP_BACK", emboss=False)
+        row.operator("kinema.graph_editor", text="", icon="GRAPH", emboss=False)
+        row.operator("kinema.key_joints", text="", icon="DECORATE_KEYFRAME", emboss=False)
+
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         rig = active_rig(context)
@@ -356,12 +364,6 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
         if not joints:
             layout.label(text="This rig has no movable joints", icon="INFO")
             return
-
-        header = layout.row(align=True)
-        header.operator("kinema.reset_pose", text="Rest Pose", icon="LOOP_BACK")
-        header.operator("kinema.key_joints", text="Key All", icon="DECORATE_KEYFRAME")
-        # Where the keys this panel makes are shaped afterwards.
-        layout.operator("kinema.graph_editor", icon="GRAPH")
 
         # Beside Rest Pose because it answers the same question -- "put the
         # robot back" -- for the half Rest Pose cannot reach. Only shown when

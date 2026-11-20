@@ -206,3 +206,20 @@ class TestQuickBarPreferences:
         assert operators.count("kinema.quick_button_remove") == 3
         menus = [args[0] for name, args, _ in calls if name == "operator_menu_enum"]
         assert menus == ["kinema.quick_button_add"]
+
+
+class TestJointsHeader:
+    def test_rest_pose_graph_editor_and_key_all_sit_in_its_header(self, panel, arm6):
+        """Here whether the quick bar has them or not; the panel's body has the joints."""
+        import types
+
+        import bpy
+
+        calls = []
+        panel.KINEMA_PT_joints.draw_header_preset(
+            types.SimpleNamespace(layout=_Layout(calls)), bpy.context
+        )
+        operators = [args[0] for name, args, _ in calls if name == "operator"]
+        assert operators == ["kinema.reset_pose", "kinema.graph_editor", "kinema.key_joints"]
+        body = _drawn(panel.KINEMA_PT_joints, bpy.context)
+        assert ("operator", "kinema.reset_pose") not in body
