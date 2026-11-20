@@ -45,11 +45,10 @@ Concretely, that means:
 Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
 
 - **The quick bar**, first, names the robot shown in its header and holds the buttons used
-  all the time: **Motion Check**; **Live IK** (or **Add IK Target**, where there is none)
-  beside **Snap to Tool**, which is greyed out while the IK target is on the tool and
-  pressable once it is left off it; **Auto Config** beside **Configurations** (Find, then
-  stepping through the arm's other ways to the pose); and **Rest Pose** beside **Graph
-  Editor**. Which buttons, and their order, is yours to choose in the add-on's preferences,
+  all the time: **Live IK** (or **Add IK Target**, where there is none); **Configurations**
+  (Find, then stepping through the arm's other ways to the pose) beside **Auto Config**;
+  **Rest Pose** beside **Snap to Tool**, which is greyed out while the IK target is on the
+  tool and pressable once it is left off it; and **Motion Check** beside **Graph Editor**. Which buttons, and their order, is yours to choose in the add-on's preferences,
   under **Quick Bar**: move them up or down, remove them, add others (Key All, Record
   Waypoint, Generate, Optimize, Bake IK), or Reset. Two sit to a row; with an odd number,
   the first spans the bar. With no robot, the quick bar offers to import one.
