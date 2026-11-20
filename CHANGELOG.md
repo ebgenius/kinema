@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Locate Description…** (#92). Where a rig's description file is missing -- the .blend
+  opened on another machine, or the folder moved -- the Kinema panel says so and offers
+  to point the rig at it again. The file must describe the same robot, by its joints and
+  links, their frames at rest and the chain, or it is refused with what differs; position,
+  speed and effort limits that differ are listed, and the rig keeps its own. The next solve
+  builds from the new file, without reopening the .blend.
 - **Retime a motion from the NLA editor** (#96). The motions' strips are on two *Kinema
   Motions* tracks of their own, taking turns, so each can be moved or scaled. The next
   Generate or Motion Check takes the new frames into the Motions list, and Generate lays the

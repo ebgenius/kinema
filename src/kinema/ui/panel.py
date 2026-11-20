@@ -253,6 +253,17 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
             # Kept while something else is selected: say so, so the panels
             # aren't read as the selected object's.
             layout.label(text="Not selected: the robot last shown", icon="RESTRICT_SELECT_ON")
+        from ..ops import locate
+
+        if locate.description_missing(rig):
+            # Where the file went missing: on another machine, or moved. The
+            # solver can't build from it until it is found again.
+            box = layout.box()
+            box.label(text="Description file missing", icon="ERROR")
+            box.label(text=locate.file_name(rig.get(builder.PROP_SOURCE)), icon="BLANK1")
+            box.operator(
+                "kinema.locate_description", text="Locate Description…", icon="FILE_FOLDER"
+            )
 
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):

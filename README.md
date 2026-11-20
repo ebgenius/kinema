@@ -753,6 +753,29 @@ the tool frame on the marker permuted — tool Z on the bone's Y — and reports
 not the bone's, in the panel. The marker draws the approach axis long and arrowed so the
 direction is readable at a glance.
 
+## When the description moves
+
+A rig keeps the path of the description it was imported from, and the PyRoki solver is
+built from that file whenever it is needed. Open the .blend on another machine, or move the
+description's folder, and the file isn't there. The Kinema panel then shows **Description
+file missing**, live IK falls back to NumPy, and Optimize Motion says why it can't run.
+
+**Locate Description…**, under that message, points the robot at the file again: a URDF,
+xacro or MJCF, read as an import reads it, with the rig's xacro arguments, and
+`package://` and meshes found from where the file is now. It is accepted only if it
+describes the same robot: the same moving joints by name and type, each moving a link of
+the same name, its frame in the same place and turned the same way with the robot at rest,
+in the same chain. A different robot, or a changed one, is refused with what differs; a
+changed robot is imported again. Position, speed and effort limits that differ are fine:
+the rig keeps its own -- the position and speed limits the Motion Check and Optimize read,
+and the effort shown with them -- and the report lists them. Nothing else in the file
+changes, and the solver is rebuilt from the new file on the next solve, without reopening
+the .blend.
+
+A rig with an external axis needs none of this: the solver describes it from its own
+bones. A rig linked from a library isn't offered it: open the library's file, locate the
+description there, and save it.
+
 ## Requirements
 
 Blender **5.2 LTS or newer** (embeds CPython 3.13). Everything else ships with the add-on.

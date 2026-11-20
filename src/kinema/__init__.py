@@ -24,6 +24,7 @@ from .ops import (
     ik,
     import_dae,
     import_robot,
+    locate,
     optimize,
     pose,
     tcp,
@@ -41,7 +42,7 @@ from .ui import axis_preview, collision_overlay, overlay, panel, tcp_preview
 # whose panel sits in the Graph Editor rather than under Kinema's, has no
 # order to keep, and optimize only adds an operator to waypoints' panel.
 _MODULES = (
-    prefs, panel, import_dae, import_robot, pose, tcp, ik, attach, collision, waypoints,
+    prefs, panel, import_dae, import_robot, locate, pose, tcp, ik, attach, collision, waypoints,
     velocity, external_axes, graph_editor, optimize,
 )
 
