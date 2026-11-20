@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Auto Configuration** (#103). While live IK tracks the target, a solve that misses
+  it runs a configuration search: where another configuration reaches the target, the
+  arm switches to the nearest; where none does, the target is out of reach and nothing
+  changes. Snap to Tool, in the quick bar, can be pressed only while the target is off
+  the tool.
 - **`kinema.api`, for scripts and other add-ons** (#102). A versioned module that won't change
   under them: the rigs in a scene, their joints and limits, the tool and where it is,
   and joint values read and set; a tool pose solved for, its clearance from the
@@ -171,8 +176,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The Kinema tab, laid out like Blender's own sidebar** (#103). A quick bar of the
-  buttons used all the time comes first -- Live IK, Rest Pose, Graph Editor,
-  Configurations and Motion Check, chosen and ordered in the preferences. Joints,
+  buttons used all the time comes first -- Motion Check, Live IK, Snap to Tool, Auto
+  Config, Configurations, Rest Pose and Graph Editor, chosen and ordered in the
+  preferences. Joints,
   Inverse Kinematics, Waypoints, Motions and Motion Check are panels of their own, to
   drag, collapse and pin; what is set once sits under Robot Settings. The Bones,
   Waypoints and Motions lists show every row, so the mouse wheel over one scrolls the

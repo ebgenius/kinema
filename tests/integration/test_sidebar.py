@@ -124,11 +124,13 @@ class TestQuickBar:
 
         assert "FINISHED" in bpy.ops.kinema.add_ik()
         assert _drawn(panel.KINEMA_PT_quick_bar, bpy.context) == [
+            ("operator", "kinema.check_motion"),
             ("prop", "kinema_ik_enabled"),
+            ("operator", "kinema.snap_ik"),
+            ("prop", "kinema_auto_configuration"),
+            ("operator", "kinema.find_solutions"),
             ("operator", "kinema.reset_pose"),
             ("operator", "kinema.graph_editor"),
-            ("operator", "kinema.find_solutions"),
-            ("operator", "kinema.check_motion"),
         ]
 
     def test_two_of_a_row_get_half_the_bar_each(self, panel, arm6):
@@ -142,7 +144,7 @@ class TestQuickBar:
         panel.KINEMA_PT_quick_bar.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
         names = [name for name, _, _ in calls]
         splits = [kwargs for name, _, kwargs in calls if name == "split"]
-        assert splits == [{"factor": 0.5}, {"factor": 0.5}], "two pairs, after Live IK alone"
+        assert splits == [{"factor": 0.5}] * 3, "three pairs, after Motion Check alone"
         first_split = names.index("split")
         assert "operator" not in names[first_split : names.index("column", first_split)]
         assert names.count("column") >= 5, "the bar's, and one for each half"
@@ -179,7 +181,9 @@ class TestQuickBar:
     def test_live_ik_offers_an_ik_target_where_there_is_none(self, panel, arm6):
         import bpy
 
-        assert _drawn(panel.KINEMA_PT_quick_bar, bpy.context)[0] == ("operator", "kinema.add_ik")
+        drawn = _drawn(panel.KINEMA_PT_quick_bar, bpy.context)
+        assert ("operator", "kinema.add_ik") in drawn
+        assert ("prop", "kinema_ik_enabled") not in drawn
 
     def test_with_no_robot_it_offers_an_import(self, panel, clean_scene):
         import bpy
@@ -221,21 +225,23 @@ class TestQuickBarPreferences:
 
         quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
         assert "FINISHED" in bpy.ops.kinema.quick_button_move(index=0, step=1)
-        assert prefs.quick_button_keys()[:2] == ["REST_POSE", "LIVE_IK"]
+        assert prefs.quick_button_keys()[:2] == ["LIVE_IK", "MOTION_CHECK"]
         assert "CANCELLED" in bpy.ops.kinema.quick_button_move(index=0, step=-1)
-        assert "FINISHED" in bpy.ops.kinema.quick_button_remove(index=4)
+        assert "FINISHED" in bpy.ops.kinema.quick_button_remove(index=6)
         assert "FINISHED" in bpy.ops.kinema.quick_button_add(button="KEY_JOINTS")
         assert prefs.quick_button_keys() == [
-            "REST_POSE",
             "LIVE_IK",
-            "GRAPH_EDITOR",
+            "MOTION_CHECK",
+            "SNAP_IK",
+            "AUTO_CONFIG",
             "CONFIGURATIONS",
+            "REST_POSE",
             "KEY_JOINTS",
         ]
         assert _drawn(panel.KINEMA_PT_quick_bar, bpy.context)[0] == (
             "operator",
-            "kinema.reset_pose",
-        ), "the panel draws them"
+            "kinema.add_ik",
+        ), "the panel draws them: Live IK first, offering an IK target"
         assert "FINISHED" in bpy.ops.kinema.quick_button_reset()
         assert prefs.quick_button_keys() == list(quick_bar.DEFAULT)
 

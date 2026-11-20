@@ -20,7 +20,12 @@ quick_bar = load_addon_module("ui.quick_bar")
         ),
         (
             quick_bar.DEFAULT,
-            [["LIVE_IK"], ["REST_POSE", "GRAPH_EDITOR"], ["CONFIGURATIONS", "MOTION_CHECK"]],
+            [
+                ["MOTION_CHECK"],
+                ["LIVE_IK", "SNAP_IK"],
+                ["AUTO_CONFIG", "CONFIGURATIONS"],
+                ["REST_POSE", "GRAPH_EDITOR"],
+            ],
         ),
         ((), []),
     ],

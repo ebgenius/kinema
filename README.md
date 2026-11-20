@@ -44,14 +44,15 @@ Concretely, that means:
 
 Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
 
-- **The quick bar**, first, names the robot shown and holds the buttons used all the time:
-  **Live IK** (or **Add IK Target**, where there is none), **Rest Pose**, **Graph Editor**,
-  **Configurations** (Find, then stepping through the arm's other ways to the pose) and
-  **Motion Check**. Which buttons, and their order, is yours to choose in the add-on's
-  preferences, under **Quick Bar**: move them up or down, remove them, add others (Key All,
-  Record Waypoint, Generate, Optimize, Snap to Tool, Bake IK), or Reset. Two sit to a row;
-  with an odd number, the first spans the bar. With no robot, the quick bar offers to import
-  one.
+- **The quick bar**, first, names the robot shown in its header and holds the buttons used
+  all the time: **Motion Check**; **Live IK** (or **Add IK Target**, where there is none)
+  beside **Snap to Tool**, which is greyed out while the IK target is on the tool and
+  pressable once it is left off it; **Auto Config** beside **Configurations** (Find, then
+  stepping through the arm's other ways to the pose); and **Rest Pose** beside **Graph
+  Editor**. Which buttons, and their order, is yours to choose in the add-on's preferences,
+  under **Quick Bar**: move them up or down, remove them, add others (Key All, Record
+  Waypoint, Generate, Optimize, Bake IK), or Reset. Two sit to a row; with an odd number,
+  the first spans the bar. With no robot, the quick bar offers to import one.
 - **Joints (FK)**, **Inverse Kinematics**, **Waypoints**, **Motions** and **Motion Check**,
   the panels used most, each on its own: drag one by its grip to put it elsewhere, collapse
   it, or Shift-click its header to pin it on every tab, as Blender's own sidebar panels go.
@@ -568,8 +569,21 @@ The ◀ ▶ arrows cycle through what turned up. Applying one only writes joint 
 **Key All** keyframes it and it bakes like anything else — flipping the elbow between two
 frames is two keyed poses, which is what a robot programmer would do anyway.
 
-Solutions belong to one goal pose. Move the IK target and the panel says they are stale
-rather than offering configurations for a pose the robot is no longer being asked to reach.
+Solutions belong to one goal pose. Move the IK target and the quick bar names the one
+picked, *Config 8*, without how many there were: they were found for a pose the target has
+left. Clicking it searches again, and the arm stays where it is: a search selects the
+configuration nearest the one the arm stands in. The arrows search again first, then step
+from there.
+
+**Auto Configuration**, in the quick bar and the IK panel's Configuration section, does
+this for you while live IK tracks the target. A live solve that misses the target means one
+of two things: the target is out of reach, or the arm can't get there from the
+configuration it is in, because the wrist would have to flip or a joint is at its limit.
+With it on, a miss runs a search, which tells the two apart. If it finds configurations
+that reach the target, the arm switches to the one nearest where it was; if it finds none,
+nothing changes. It searches 12 seeds, about 0.15 s on a six-axis arm, and after a search
+that found nothing it waits until the target has moved on 1 cm or 5° and half a second has
+gone by. It runs for viewport solves only: playback and renders play what was keyed.
 Held joints stay where they stand in every solution, so on a robot with its rail held, every
 alternative is an arm reaching from where the carriage already is.
 

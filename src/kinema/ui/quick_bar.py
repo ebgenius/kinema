@@ -14,8 +14,18 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-#: The buttons a new install shows, in order.
-DEFAULT = ("LIVE_IK", "REST_POSE", "GRAPH_EDITOR", "CONFIGURATIONS", "MOTION_CHECK")
+#: The buttons a new install shows, in order: Motion Check spanning the bar, then
+#: Live IK beside Snap to Tool, Auto Config beside Configurations, and Rest Pose
+#: beside Graph Editor.
+DEFAULT = (
+    "MOTION_CHECK",
+    "LIVE_IK",
+    "SNAP_IK",
+    "AUTO_CONFIG",
+    "CONFIGURATIONS",
+    "REST_POSE",
+    "GRAPH_EDITOR",
+)
 
 
 @dataclass(frozen=True)
