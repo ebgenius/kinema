@@ -217,6 +217,17 @@ def whole_list(count: int) -> dict:
     return {"rows": rows, "maxrows": rows}
 
 
+#: Where each top-level panel stands in the Kinema tab, top first. Blender keeps
+#: the order a user drags them into, per file; these are where they start.
+ORDER_QUICK_BAR = 0
+ORDER_JOINTS = 1
+ORDER_IK = 2
+ORDER_WAYPOINTS = 3
+ORDER_MOTIONS = 4
+ORDER_MOTION_CHECK = 5
+ORDER_SETTINGS = 6
+
+
 class KinemaPanelBase:
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -224,28 +235,21 @@ class KinemaPanelBase:
 
 
 class KINEMA_PT_main(KinemaPanelBase, Panel):
+    """The robot's settings: what is set once -- importing, bones, the TCP,
+    external axes, limits, collision and the solver -- as subpanels, under the
+    everyday panels. Its header names the robot."""
+
     bl_idname = "KINEMA_PT_main"
-    bl_label = "Kinema"
+    bl_label = "Robot Settings"
+    bl_order = ORDER_SETTINGS
+
+    def draw_header(self, context: bpy.types.Context) -> None:
+        rig = active_rig(context)
+        if rig is not None:
+            self.layout.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name))
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
-
-        column = layout.column(align=True)
-        column.scale_y = 1.2
-        column.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
-
-        header, body = layout.panel("kinema_find_robot", default_closed=True)
-        header.label(text="Find a Robot")
-        if body is not None:
-            _draw_catalog(body, context)
-
-        header, body = layout.panel("kinema_import_options", default_closed=True)
-        header.label(text="Import Options")
-        if body is not None:
-            body.use_property_split = True
-            for name in SETTING_NAMES:
-                body.prop(context.scene.kinema, name)
-
         rig = active_rig(context)
         if rig is None:
             box = layout.box()
@@ -253,7 +257,6 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
             box.label(text="Import one, or select an existing rig.")
             return
 
-        layout.separator()
         row = layout.row()
         row.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
         count = len(builder.joint_bones(rig))
@@ -277,9 +280,35 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
             )
 
 
+class KINEMA_PT_import(KinemaPanelBase, Panel):
+    bl_idname = "KINEMA_PT_import"
+    bl_parent_id = "KINEMA_PT_main"
+    bl_label = "Import"
+    bl_order = 0
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+
+        column = layout.column(align=True)
+        column.scale_y = 1.2
+        column.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
+
+        header, body = layout.panel("kinema_find_robot", default_closed=True)
+        header.label(text="Find a Robot")
+        if body is not None:
+            _draw_catalog(body, context)
+
+        header, body = layout.panel("kinema_import_options", default_closed=True)
+        header.label(text="Import Options")
+        if body is not None:
+            body.use_property_split = True
+            for name in SETTING_NAMES:
+                body.prop(context.scene.kinema, name)
+
+
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_joints"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_order = ORDER_JOINTS
     bl_label = "Joints (FK)"
 
     @classmethod
@@ -357,6 +386,7 @@ class KINEMA_PT_motion_limits(KinemaPanelBase, Panel):
 
     bl_idname = "KINEMA_PT_motion_limits"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 4
     bl_label = "Motion Limits"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -639,6 +669,7 @@ class KINEMA_UL_bones(UIList):
 class KINEMA_PT_bones(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_bones"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 1
     bl_label = "Bones"
 
     @classmethod
@@ -750,7 +781,7 @@ class KINEMA_UL_motions(UIList):
 
 class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_waypoints"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_order = ORDER_WAYPOINTS
     bl_label = "Waypoints"
 
     @classmethod
@@ -808,7 +839,7 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
     """The moves between waypoints, each with its own frames, and the job they make."""
 
     bl_idname = "KINEMA_PT_motions"
-    bl_parent_id = "KINEMA_PT_waypoints"
+    bl_order = ORDER_MOTIONS
     bl_label = "Motions"
 
     @classmethod
@@ -916,7 +947,7 @@ class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
     """
 
     bl_idname = "KINEMA_PT_motion_check"
-    bl_parent_id = "KINEMA_PT_waypoints"
+    bl_order = ORDER_MOTION_CHECK
     bl_label = "Motion Check"
 
     @classmethod
@@ -982,6 +1013,7 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
 
     bl_idname = "KINEMA_PT_collision"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 5
     bl_label = "Collision"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -1062,6 +1094,7 @@ class KINEMA_PT_external_axes(KinemaPanelBase, Panel):
 
     bl_idname = "KINEMA_PT_external_axes"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 3
     bl_label = "External Axes"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -1097,6 +1130,7 @@ class KINEMA_PT_external_axes(KinemaPanelBase, Panel):
 class KINEMA_PT_tcp(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_tcp"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 2
     bl_label = "Tool Centre Point"
 
     @classmethod
@@ -1194,7 +1228,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
 
 class KINEMA_PT_ik(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_ik"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_order = ORDER_IK
     bl_label = "Inverse Kinematics"
 
     @classmethod
@@ -1431,6 +1465,7 @@ def _solve_budget_ms() -> float:
 class KINEMA_PT_status(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_status"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 6
     bl_label = "Solver"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -1456,20 +1491,21 @@ classes = (
     KINEMA_UL_bones,
     KINEMA_UL_waypoints,
     KINEMA_UL_motions,
-    KINEMA_PT_main,
     KINEMA_PT_joints,
+    KINEMA_PT_ik,
+    KINEMA_PT_waypoints,
+    KINEMA_PT_motions,
+    KINEMA_PT_motion_check,
+    KINEMA_PT_main,
+    KINEMA_PT_import,
+    KINEMA_PT_bones,
+    KINEMA_PT_tcp,
+    KINEMA_PT_external_axes,
     KINEMA_PT_motion_limits,
     KINEMA_PT_motion_speed,
     KINEMA_PT_motion_acceleration,
     KINEMA_PT_motion_unchecked,
-    KINEMA_PT_bones,
-    KINEMA_PT_waypoints,
-    KINEMA_PT_motions,
-    KINEMA_PT_motion_check,
     KINEMA_PT_collision,
-    KINEMA_PT_external_axes,
-    KINEMA_PT_tcp,
-    KINEMA_PT_ik,
     KINEMA_PT_status,
 )
 
