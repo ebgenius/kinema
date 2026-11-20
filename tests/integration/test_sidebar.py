@@ -178,8 +178,8 @@ class TestQuickBar:
         bpy.context.view_layer.update()
         assert texts() == [fresh.split("/")[0]]
 
-    def test_the_switches_play_while_off_and_pause_while_on(self, panel, arm6, addon):
-        """Live IK and Auto Config: Play to start them, Pause to stop them."""
+    def test_the_switches_play_while_on_and_pause_while_off(self, panel, arm6, addon):
+        """Live IK and Auto Config, as the Inverse Kinematics panel's Live IK shows."""
         import bpy
 
         quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
@@ -196,9 +196,9 @@ class TestQuickBar:
             ("AUTO_CONFIG", "kinema_auto_configuration"),
         ):
             setattr(arm6, name, False)
-            assert icon(key) == "PLAY", key
-            setattr(arm6, name, True)
             assert icon(key) == "PAUSE", key
+            setattr(arm6, name, True)
+            assert icon(key) == "PLAY", key
         arm6.kinema_ik_enabled = False
 
     def test_live_ik_offers_an_ik_target_where_there_is_none(self, panel, arm6):
@@ -441,7 +441,7 @@ class TestQuickBarBox:
         bpy.context.view_layer.update()
         assert "FINISHED" in bpy.ops.kinema.add_ik()
         arm6.kinema_ik_enabled = False
-        assert self._said(panel)[1] == ["Live IK paused: pose the joints, or press Play"]
+        assert self._said(panel)[1] == ["Live IK paused: pose the joints, or turn it on"]
         arm6.kinema_ik_enabled = True
         bpy.context.view_layer.update()
         assert self._said(panel)[1] == ["Following the target"]

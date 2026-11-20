@@ -60,9 +60,10 @@ def _auto_configuration(layout, _context, rig) -> None:
 
 
 def _toggle(layout, rig, name: str, text: str) -> None:
-    """A switch that plays: Play while it is off, to start it, and Pause while on."""
+    """A switch that plays, as the Inverse Kinematics panel's Live IK shows it: Play
+    while it is on, running, and Pause while it is off."""
     on = bool(getattr(rig, name))
-    layout.prop(rig, name, text=text, toggle=True, icon="PAUSE" if on else "PLAY")
+    layout.prop(rig, name, text=text, toggle=True, icon="PLAY" if on else "PAUSE")
 
 
 def _snap_to_tool(layout, _context, rig) -> None:
@@ -191,7 +192,7 @@ def status(context, rig) -> list[tuple[str, str]]:
     if ik_bone_name(rig) is None:
         return [("Add an IK target to pose the tool by it", "INFO")]
     if not rig.kinema_ik_enabled:
-        return [("Live IK paused: pose the joints, or press Play", "INFO")]
+        return [("Live IK paused: pose the joints, or turn it on", "INFO")]
     if ik_ops.goal_off_tool(rig):
         if rig.kinema_auto_configuration:
             return [
