@@ -37,8 +37,9 @@ def surface() -> str:
         thing = getattr(api, name)
         if dataclasses.is_dataclass(thing):
             # The constructor's signature: field names, types, order and defaults.
-            frozen = " frozen" if thing.__dataclass_params__.frozen else ""
-            lines.append(f"dataclass{frozen} {name}{inspect.signature(thing)}")
+            params = thing.__dataclass_params__
+            flags = "".join(f" {flag}" for flag in ("frozen", "eq") if getattr(params, flag))
+            lines.append(f"dataclass{flags} {name}{inspect.signature(thing)}")
         elif inspect.isclass(thing):
             bases = ", ".join(base.__name__ for base in thing.__bases__)
             lines.append(f"class {name}({bases})")
@@ -93,7 +94,12 @@ BEFORE = "VERSION = (1, 0)\ndef a(x)\n"
         ("VERSION = (1, 2)\ndef a(x)\n", BEFORE, "can't go back"),
     ],
     ids=[
-        "unchanged", "added-unbumped", "added-minor", "changed-minor", "changed-major", "gone",
+        "unchanged",
+        "added-unbumped",
+        "added-minor",
+        "changed-minor",
+        "changed-major",
+        "gone",
         "lowered",
     ],
 )

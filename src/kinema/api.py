@@ -54,6 +54,10 @@ __all__ = [
     "reachable",
 ]
 
+#: How far off a pose a solve may leave the tool and have reached it, in metres and
+#: radians: what both solvers call converged.
+_REACHED_POSITION = 1e-3
+_REACHED_ROTATION = 1e-3
 #: How far past a limit a joint may stand and still be within it: float noise.
 _LIMIT_TOLERANCE = 1e-6
 
@@ -113,25 +117,29 @@ class Tool:
     rotation: tuple[float, float, float]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Solution:
-    """What :func:`solve` found: joint values, and how near they put the tool."""
+    """What :func:`solve` found: joint values, and how near they put the tool.
+
+    Compared, and hashed, as itself: it carries an array, which ``==`` can't
+    make one answer of.
+    """
 
     #: Every joint, in the rig's joint order: the ones the tool hangs from solved,
     #: the rest as seeded.
     values: np.ndarray
-    #: Whether they put the tool on the pose, within a tenth of a millimetre and a
-    #: hundredth of a degree.
+    #: Whether they put the tool on the pose: within a millimetre, and 0.001 rad
+    #: (about 0.06°), as Kinema's solvers call a solve done.
     reached: bool
     #: How far off they leave it, in metres and radians.
     position_error: float
     rotation_error: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Capsule:
     """A capsule the rig's clearance is measured with: a segment and a radius, on a
-    bone, in that bone's frame, in metres."""
+    bone, in that bone's frame, in metres. Compared, and hashed, as itself."""
 
     bone: str
     a: np.ndarray
@@ -139,14 +147,15 @@ class Capsule:
     radius: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Obstacle:
     """Something the robot is kept clear of, as it stands now.
 
     ``shape`` is ``"BOX"``, ``"SPHERE"`` or ``"FLOOR"``. ``frame`` is a 4x4 in world
     space: a box's centre and rotation, a sphere's centre, or a point on the floor
     with its Z the floor's normal (everything below is solid). ``size`` is a box's
-    half-extents, a sphere's radius, or nothing for a floor.
+    half-extents, a sphere's radius, or ``()`` for a floor. Compared, and hashed,
+    as itself.
     """
 
     name: str
@@ -168,9 +177,10 @@ class Clearance:
     obstacle: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Reach:
-    """Whether the rig can stand its tool at a pose: :func:`reachable`."""
+    """Whether the rig can stand its tool at a pose: :func:`reachable`. Compared,
+    and hashed, as itself."""
 
     #: The solve put the tool on the pose.
     reachable: bool
@@ -335,11 +345,13 @@ def solve(rig, pose, seed=None, tool: Tool | None = None) -> Solution:
     """Joint values that stand ``tool`` (the rig's first by default) at ``pose``, a
     4x4 in world space, Z out of the tool -- without moving the rig.
 
-    Solved from ``seed``, a joint vector, or where the joints stand now; the joints
-    the rig holds stay at their seed. On the solver the rig is set to: PyRoki,
+    Solved from ``seed``, a joint vector, or where the joints stand now -- a held
+    joint where the rig shows it, past a limit or not; the joints the rig holds
+    stay at their seed. On the solver the rig is set to: PyRoki,
     which may compile on its first solve, or NumPy.
     """
     from .rig import builder
+    from .solver import chain as chain_mod
     from .solver import manager
 
     rig = _rig(rig)
@@ -360,12 +372,20 @@ def solve(rig, pose, seed=None, tool: Tool | None = None) -> Solution:
     )
     mode = getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI)
     held = manager.held_mask(rig, solver.chain)
+    if seed is None and held.any():
+        # A held joint stands where the rig shows it, its limit constraint and
+        # all, as live IK seeds it: see chain.displayed_configuration.
+        start[on_chain] = chain_mod.displayed_configuration(
+            rig, solver.chain, start[on_chain], only=held
+        )
     result = solver.solve_for(rig, bone_goal, start[on_chain], mode, held=held)
     values = start.copy()
     values[on_chain] = result.q
     return Solution(
         values=values,
-        reached=bool(result.converged),
+        reached=bool(
+            result.position_error < _REACHED_POSITION and result.rotation_error < _REACHED_ROTATION
+        ),
         position_error=float(result.position_error),
         rotation_error=float(result.rotation_error),
     )
@@ -392,6 +412,7 @@ def obstacles(scene=None) -> list[Obstacle]:
     import bpy
 
     from .ops import collision
+    from .rig import collision as geometry
 
     depsgraph = bpy.context.evaluated_depsgraph_get()
     found = []
@@ -402,7 +423,9 @@ def obstacles(scene=None) -> list[Obstacle]:
                 name=shape.name,
                 shape=shape.kind,
                 frame=np.array(shape.matrix, dtype=float),
-                size=tuple(float(v) for v in shape.size),
+                size=()
+                if shape.kind == geometry.KIND_FLOOR
+                else tuple(float(v) for v in shape.size),
             )
         )
     return found

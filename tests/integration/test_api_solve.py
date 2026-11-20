@@ -241,3 +241,46 @@ class TestReachable:
         seed[0] = first.upper + 0.2
         reach = api.reachable(arm6, _pose_at(api, arm6, POSED), seed=seed)
         assert not reach.within_limits and not reach.ok
+
+
+class TestReviewed:
+    def test_results_carrying_arrays_compare_and_hash_as_themselves(self, api, arm6):
+        _fit(arm6)
+        api.add_obstacle(_cube("Crate", (0.6, 0.4, 0.2)))
+        first, again = api.obstacles(), api.obstacles()
+        assert first != again and first == first  # by identity, not raising
+        reach = api.reachable(arm6, _pose_at(api, arm6, POSED))
+        assert len({reach, *first, *api.capsules(arm6), api.solve(arm6, np.eye(4))}) >= 3
+
+    @pytest.mark.parametrize("beyond, reached", [(0.0005, True), (0.003, False)])
+    def test_reached_within_a_millimetre(self, api, arm6, beyond, reached):
+        """Stretched straight out, the tool can't go further: just beyond is as near
+        as it gets."""
+        pose = api.tool_frame(arm6)
+        reach = pose[:3, 3] - np.array(arm6.matrix_world.translation)
+        pose[:3, 3] += reach / np.linalg.norm(reach) * beyond
+        solution = api.solve(arm6, pose)
+        assert solution.position_error > 0.0004, "precondition: out of reach"
+        assert solution.reached is reached, solution
+
+    def test_a_floor_has_no_size(self, api, arm6):
+        import bpy
+
+        plane = _cube("Floor", (0.0, 0.0, 0.0))
+        api.add_obstacle(plane, shape="FLOOR")
+        (found,) = api.obstacles()
+        assert (found.shape, found.size) == ("FLOOR", ())
+        assert plane.name in bpy.context.scene.objects
+
+    def test_a_held_joint_past_its_limit_is_seeded_where_it_shows(self, api, arm6):
+        """Its channel past the range, its limit constraint holding it at the end. The
+        shoulder's: the base's range is nearly a full turn, and past it is inside it."""
+        import bpy
+
+        shoulder = api.joints(arm6)[1]
+        bone = arm6.pose.bones[shoulder.bone]
+        bone.kinema_ik_hold = True
+        bone.rotation_euler[1] = shoulder.upper + 0.3
+        bpy.context.view_layer.update()
+        solution = api.solve(arm6, _pose_at(api, arm6, POSED))
+        assert solution.values[1] == pytest.approx(shoulder.upper, abs=1e-4)
