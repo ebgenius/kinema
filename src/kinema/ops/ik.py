@@ -214,6 +214,27 @@ class KINEMA_OT_snap_ik(KinemaRigOperator):
         return {"FINISHED"}
 
 
+#: How far the IK target may be from the tool, in metres and radians, and stand
+#: on it: what the solvers call a solve done (POSITION_TOLERANCE x 10).
+ON_TOOL_POSITION = 1e-3
+ON_TOOL_ROTATION = 1e-3
+
+
+def goal_off_tool(rig) -> bool:
+    """Whether ``rig``'s IK target has been left off the bone it aims with: dragged
+    out of reach, or the tool posed by hand while live IK was off. False with no
+    IK target, where there is nothing to snap."""
+    ik_name, tip = rig.get(builder.PROP_IK_BONE), manager.tip_bone(rig)
+    bones = rig.pose.bones
+    if not ik_name or ik_name not in bones or tip not in bones:
+        return False
+    goal, tool = _np4(bones[ik_name].matrix), _np4(bones[tip].matrix)
+    if float(np.linalg.norm(goal[:3, 3] - tool[:3, 3])) > ON_TOOL_POSITION:
+        return True
+    turn = (float(np.trace(goal[:3, :3].T @ tool[:3, :3])) - 1.0) / 2.0
+    return float(np.arccos(np.clip(turn, -1.0, 1.0))) > ON_TOOL_ROTATION
+
+
 class KINEMA_OT_set_ik_tip(KinemaRigOperator):
     bl_idname = "kinema.set_ik_tip"
     bl_label = "Set IK Target Bone"

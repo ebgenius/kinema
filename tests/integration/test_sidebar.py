@@ -314,3 +314,45 @@ class TestRobotNamed:
         calls = []
         panel.KINEMA_PT_main.draw_header(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
         assert [kwargs.get("text") for name, _, kwargs in calls if name == "label"] == ["arm6"]
+
+
+class _Settings(_Layout):
+    """A layout that records what is set on it, ``enabled`` among it."""
+
+    def __setattr__(self, name, value):
+        self.calls.append(("set", (name, value), {}))
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return _Settings(self.calls)
+
+        return call
+
+
+class TestSnapToTool:
+    def test_pressable_only_while_the_target_is_off_the_tool(self, panel, arm6, addon):
+        """Dragged out of reach, live IK tracks it but the tool can't follow."""
+        import bpy
+        from mathutils import Vector
+
+        quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
+        ik_ops = importlib.import_module(f"{addon.__name__}.ops.ik")
+
+        def enabled():
+            calls = []
+            quick_bar.BUTTONS["SNAP_IK"].draw(_Settings(calls), bpy.context, arm6)
+            assert ("operator", ("kinema.snap_ik",)) in [(n, a[:1]) for n, a, _ in calls]
+            return [value for name, (attr, value), _ in (
+                c for c in calls if c[0] == "set"
+            ) if attr == "enabled"] == [True]
+
+        assert not ik_ops.goal_off_tool(arm6), "no IK target: nothing to snap"
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        assert not ik_ops.goal_off_tool(arm6) and not enabled()
+        goal = arm6.pose.bones[arm6["kinema_ik_bone"]]
+        goal.location += Vector((0.0, 0.0, 5.0))
+        bpy.context.view_layer.update()
+        assert ik_ops.goal_off_tool(arm6) and enabled(), "5 m out of reach"
+        assert "FINISHED" in bpy.ops.kinema.snap_ik()
+        assert not ik_ops.goal_off_tool(arm6) and not enabled()

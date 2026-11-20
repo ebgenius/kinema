@@ -45,6 +45,15 @@ def _live_ik(layout, _context, rig) -> None:
     layout.prop(rig, "kinema_ik_enabled", text="Live IK", toggle=True, icon="CON_KINEMATIC")
 
 
+def _snap_to_tool(layout, _context, rig) -> None:
+    """Put the IK target back on the tool: only to be pressed while it is off it."""
+    from ..ops import ik as ik_ops
+
+    row = layout.row()
+    row.enabled = ik_ops.goal_off_tool(rig)
+    row.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
+
+
 def _configurations(layout, _context, rig) -> None:
     """Step through the configurations found for this pose, or find them.
 
@@ -120,9 +129,9 @@ BUTTONS: dict[str, Button] = {
     ),
     "SNAP_IK": Button(
         "Snap to Tool",
-        "Put the IK target where the tool is",
+        "Put the IK target where the tool is: pressable while the target is off it",
         "SNAP_ON",
-        _operator("kinema.snap_ik", "Snap to Tool", "SNAP_ON"),
+        _snap_to_tool,
     ),
     "BAKE_IK": Button(
         "Bake IK",
