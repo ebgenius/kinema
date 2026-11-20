@@ -396,6 +396,7 @@ class TestAutoConfiguration:
         bpy.context.view_layer.update()
         assert search == [ik_ops.AUTO_SEEDS]
         assert not ik_ops.goal_off_tool(arm6), "the tool on the target"
+        assert ik_ops.switched_recently(arm6), "for the quick bar to say so"
         assert ik_ops.solution_count(arm6) > 0, "what was found, to step through"
         stored = ik_ops._read_solutions(arm6)
         np.testing.assert_allclose(
@@ -444,6 +445,7 @@ class TestAutoConfiguration:
         bpy.context.view_layer.update()
         handlers.solve_rig(arm6, force=True, live=True)
         assert search == [ik_ops.AUTO_SEEDS]
+        assert ik_ops.auto_found_nothing(arm6), "for the quick bar to say it's out of reach"
         stood = _q(builder, arm6)
         handlers.solve_rig(arm6, force=True, live=True)
         assert search == [ik_ops.AUTO_SEEDS], "the same miss isn't searched twice"

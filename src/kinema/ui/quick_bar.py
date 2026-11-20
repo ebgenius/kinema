@@ -193,18 +193,19 @@ def status(context, rig) -> list[tuple[str, str]]:
         return [("Add an IK target to pose the tool by it", "INFO")]
     if not rig.kinema_ik_enabled:
         return [("Live IK paused: pose the joints, or turn it on", "INFO")]
+    auto = rig.kinema_auto_configuration
     if ik_ops.goal_off_tool(rig):
-        if rig.kinema_auto_configuration:
-            return [
-                ("The target is out of reach", "ERROR"),
-                ("Snap to Tool brings it back", "BLANK1"),
-            ]
+        if auto and ik_ops.auto_found_nothing(rig):
+            # Searched, and no configuration reaches it: out of the robot's reach.
+            return [("The target is out of reach", "ERROR")]
+        if auto:
+            return [("The tool can't reach the target", "ERROR")]
         return [
             ("The tool can't reach the target", "ERROR"),
             ("Try Config or Auto Config, or Snap to Tool", "BLANK1"),
         ]
-    if ik_ops.solution_count(rig) and ik_ops.solutions_are_stale(rig):
-        return [("The target moved: Config searches again", "INFO")]
+    if auto and ik_ops.switched_recently(rig):
+        return [("The configuration changed", "INFO")]
     return [("Following the target", "CHECKMARK")]
 
 

@@ -446,13 +446,14 @@ class TestQuickBarBox:
         bpy.context.view_layer.update()
         assert self._said(panel)[1] == ["Following the target"]
 
+        ik_ops = importlib.import_module(f"{addon.__name__}.ops.ik")
         assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=12)
         goal = arm6.pose.bones[arm6["kinema_ik_bone"]]
         goal.location += Vector((0.0, 0.0, 0.01))
         bpy.context.view_layer.update()
         handlers.solve_rig(arm6, force=True, live=True)  # as the handler would
         bpy.context.view_layer.update()
-        assert self._said(panel)[1] == ["The target moved: Config searches again"]
+        assert self._said(panel)[1] == ["Following the target"], "a moved target isn't news"
 
         goal.location += Vector((0.0, 0.0, 5.0))
         bpy.context.view_layer.update()
@@ -461,8 +462,17 @@ class TestQuickBarBox:
             "Try Config or Auto Config, or Snap to Tool",
         ]
         arm6.kinema_auto_configuration = True
-        assert self._said(panel)[1] == [
-            "The target is out of reach",
-            "Snap to Tool brings it back",
-        ]
+        assert self._said(panel)[1] == ["The tool can't reach the target"], "not searched yet"
+        handlers.solve_rig(arm6, force=True, live=True)  # searches, and finds nothing
+        bpy.context.view_layer.update()
+        assert self._said(panel)[1] == ["The target is out of reach"]
+
+        assert "FINISHED" in bpy.ops.kinema.snap_ik()
+        ik_ops.forget_auto_search(arm6.name)
+        import time
+
+        ik_ops._auto_switched[arm6.name] = time.perf_counter()  # as a switch records it
+        assert self._said(panel)[1] == ["The configuration changed"]
+        ik_ops._auto_switched[arm6.name] -= ik_ops.SWITCH_NOTE_SECONDS
+        assert self._said(panel)[1] == ["Following the target"], "said for a few seconds"
         arm6.kinema_ik_enabled = False

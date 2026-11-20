@@ -250,14 +250,33 @@ AUTO_TURN = np.radians(5.0)
 AUTO_INTERVAL = 0.5
 #: rig name -> (the goal last searched for and found nothing at, when).
 _auto_searched: dict[str, tuple[np.ndarray, float]] = {}
+#: rig name -> when Auto Configuration last switched its configuration.
+_auto_switched: dict[str, float] = {}
+#: How long the quick bar says the configuration changed, in seconds.
+SWITCH_NOTE_SECONDS = 3.0
 
 
 def forget_auto_search(rig_name: str | None = None) -> None:
     """Search again on the next miss: tracking was regained, or a file opened."""
     if rig_name is None:
         _auto_searched.clear()
+        _auto_switched.clear()
     else:
         _auto_searched.pop(rig_name, None)
+
+
+def auto_found_nothing(rig) -> bool:
+    """Whether Auto Configuration's last search, for where the target is or near it,
+    found no configuration that reaches it: the target is out of reach."""
+    return rig.name in _auto_searched
+
+
+def switched_recently(rig) -> bool:
+    """Whether Auto Configuration switched the configuration in the last few seconds."""
+    import time
+
+    when = _auto_switched.get(rig.name)
+    return when is not None and time.perf_counter() - when < SWITCH_NOTE_SECONDS
 
 
 def _moved_on(last: np.ndarray, goal: np.ndarray) -> bool:
@@ -298,6 +317,7 @@ def reconfigure(rig, solver) -> bool:
     # among them, and the quick bar says which this is.
     _store_solutions(rig, solver, found)
     rig.kinema_active_solution = index
+    _auto_switched[rig.name] = time.perf_counter()
     return True
 
 
