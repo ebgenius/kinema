@@ -160,11 +160,29 @@ class TestJointValues:
         scene.frame_set(scene.frame_current - 1)
         np.testing.assert_allclose(api.joint_values(arm6), values, atol=1e-3)
 
+    def test_live_ik_on_a_rig_it_hasnt_solved_doesnt_undo_them(self, api, arm6, addon):
+        """As on a file just opened: live IK has no goal on record for the rig, so
+        the update that writes the joints would solve for the goal they left."""
+        import bpy
+
+        manager = importlib.import_module(f"{addon.__name__}.solver.manager")
+        handlers = importlib.import_module(f"{addon.__name__}.handlers")
+        arm6.kinema_solver_mode = manager.MODE_NUMPY
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = True
+        bpy.context.view_layer.update()
+        handlers.reset(arm6.name)
+        values = np.array([0.6, -0.3, 0.8, 0.0, 0.4, 0.0])
+        api.set_joint_values(arm6, values)
+        np.testing.assert_allclose(api.joint_values(arm6), values, atol=1e-3)
+
     def test_the_wrong_number_of_values_is_refused(self, api, arm6):
         with pytest.raises(api.Error, match="has 6 joints; 5 values were given"):
             api.set_joint_values(arm6, [0.0] * 5)
         with pytest.raises(api.Error, match="finite"):
             api.set_joint_values(arm6, [0.0] * 5 + [float("nan")])
+        with pytest.raises(api.Error, match="must be numbers"):
+            api.set_joint_values(arm6, ["a"] * 6)
 
     def test_what_isnt_a_rig_is_refused(self, api, arm6):
         mesh = next(o for o in arm6.children if o.type == "MESH")
@@ -187,3 +205,24 @@ class TestTools:
         np.testing.assert_allclose(
             api.tool_frame(arm6, api.tools(arm6)[0]), api.tool_frame(arm6), atol=1e-9
         )
+
+    def test_the_tool_frame_is_the_flange_turned_by_the_offset(self, api, arm6, addon):
+        """At rest: the frame a tool offset is measured from, moved and turned by it,
+        so its Z is out of the tool -- not the marker bone's own axes."""
+        import bpy
+        from mathutils import Euler, Matrix, Vector
+
+        builder = importlib.import_module(f"{addon.__name__}.rig.builder")
+        assert "FINISHED" in bpy.ops.kinema.edit_tcp(
+            parent=api.joints(arm6)[-1].bone, source="OFFSET",
+            offset=(0.01, 0.02, 0.15), rotation=(0.3, -0.2, 0.5),
+        )
+        bpy.context.view_layer.update()
+        (tool,) = api.tools(arm6)
+        assert tool.rotation == pytest.approx((0.3, -0.2, 0.5)), "precondition: turned"
+        flange = builder.tool_zero_frame(arm6.data.bones[tool.parent])
+        expected = (
+            arm6.matrix_world @ flange @ Matrix.Translation(Vector(tool.offset))
+            @ Euler(tool.rotation, "XYZ").to_matrix().to_4x4()
+        )
+        np.testing.assert_allclose(api.tool_frame(arm6), np.array(expected), atol=1e-5)

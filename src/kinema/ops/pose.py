@@ -36,13 +36,19 @@ def apply_joint_values(rig, values) -> None:
 def set_joint_values(rig, values) -> None:
     """Stand the rig's joints at ``values``, and put its IK goal on the bone IK aims
     with, so live IK leaves them there rather than dragging the arm back to the
-    goal it had."""
-    apply_joint_values(rig, values)
-    bpy.context.view_layer.update()
-    ik_name, tip = rig.get(builder.PROP_IK_BONE), manager.tip_bone(rig)
-    if ik_name and ik_name in rig.pose.bones and tip in rig.pose.bones:
-        rig.pose.bones[ik_name].matrix = rig.pose.bones[tip].matrix.copy()
+    goal it had.
+
+    Live IK is held off until the goal has moved: an update in between solves
+    for the old goal -- on a rig it hasn't solved yet, or one whose held joints
+    were just set -- and puts the joints back where that goal wants them.
+    """
+    with handlers.suspended():
+        apply_joint_values(rig, values)
         bpy.context.view_layer.update()
+        ik_name, tip = rig.get(builder.PROP_IK_BONE), manager.tip_bone(rig)
+        if ik_name and ik_name in rig.pose.bones and tip in rig.pose.bones:
+            rig.pose.bones[ik_name].matrix = rig.pose.bones[tip].matrix.copy()
+            bpy.context.view_layer.update()
 
 
 class KinemaRigOperator(Operator):

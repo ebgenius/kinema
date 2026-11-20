@@ -52,7 +52,9 @@ class Joint:
     """One moving joint of a rig, with the limits the rig holds.
 
     The rig's limits, not the description's: Load Joint Limits and external axes
-    write them to the rig, and the Motion Check and Optimize read them there.
+    write them to the rig. The Motion Check and Optimize read the range, speed and
+    acceleration there; jerk and effort are given for reference, and nothing
+    checks them.
     """
 
     #: The joint's name in the description, as ``joint3``.
@@ -166,7 +168,10 @@ def set_joint_values(rig, values) -> None:
     from .ops import pose
 
     rig = _rig(rig)
-    values = np.asarray(values, dtype=float).reshape(-1)
+    try:
+        values = np.asarray(values, dtype=float).reshape(-1)
+    except (TypeError, ValueError) as exc:
+        raise Error(f"joint values must be numbers: {exc}") from None
     count = len(joints(rig))
     if values.size != count:
         raise Error(f"{rig.name!r} has {count} joints; {values.size} values were given")
@@ -197,7 +202,10 @@ def tools(rig) -> list[Tool]:
 
 
 def tool_frame(rig, tool: Tool | None = None) -> np.ndarray:
-    """Where ``tool``, by default the rig's first, is now: a 4x4 in world space."""
+    """Where ``tool``, by default the rig's first, is now: a 4x4 in world space,
+    its Z out of the tool, as the panel shows it and a URDF ``<origin>`` gives it."""
+    from .rig import builder
+
     rig = _rig(rig)
     if tool is None:
         found = tools(rig)
@@ -207,4 +215,6 @@ def tool_frame(rig, tool: Tool | None = None) -> np.ndarray:
     bone = rig.pose.bones.get(tool.name)
     if bone is None:
         raise Error(f"{rig.name!r} has no tool {tool.name!r}")
-    return _np4(rig.matrix_world) @ _np4(bone.matrix)
+    # The marker bone's axes are a joint bone's, Y along it: the tool's are those
+    # turned so its Z is out of the tool.
+    return _np4(rig.matrix_world) @ _np4(bone.matrix) @ _np4(builder.BONE_TO_TOOL)

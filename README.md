@@ -827,7 +827,7 @@ metres), and small frozen dataclasses. A call that can't be done raises
 | `rigs(scene=None)`, `is_rig(obj)` | The Kinema rigs in a scene, the current one by default |
 | `joints(rig)` | Each moving joint: its name, bone, type, and the limits the rig holds |
 | `joint_values(rig)`, `set_joint_values(rig, values)` | Where the joints stand. Setting them moves the IK goal to the tool, so live IK leaves them there |
-| `tools(rig)`, `tool_frame(rig, tool=None)` | The tool centre point, the link it's measured from with its offset, and where it is now |
+| `tools(rig)`, `tool_frame(rig, tool=None)` | The tool centre point, the link it's measured from with its offset, and where it is now, its Z out of the tool |
 
 ## Requirements
 
