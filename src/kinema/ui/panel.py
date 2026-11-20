@@ -234,6 +234,37 @@ class KinemaPanelBase:
     bl_category = CATEGORY
 
 
+class KINEMA_PT_quick_bar(KinemaPanelBase, Panel):
+    """The robot shown, and the buttons used all the time, above every panel.
+
+    Header-less, so it stays first: there is nothing to drag or collapse it by.
+    With no robot, it offers to import one.
+    """
+
+    bl_idname = "KINEMA_PT_quick_bar"
+    bl_label = "Quick Bar"
+    bl_options = {"HIDE_HEADER"}
+    bl_order = ORDER_QUICK_BAR
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from . import quick_bar
+
+        layout = self.layout
+        rig = active_rig(context)
+        if rig is None:
+            row = layout.row()
+            row.scale_y = 1.2
+            row.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
+            return
+
+        row = layout.row()
+        row.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
+        sub = row.row()
+        sub.alignment = "RIGHT"
+        sub.label(text=f"{len(builder.joint_bones(rig))} DoF")
+        quick_bar.draw(layout, context, rig, quick_bar.DEFAULT)
+
+
 class KINEMA_PT_main(KinemaPanelBase, Panel):
     """The robot's settings: what is set once -- importing, bones, the TCP,
     external axes, limits, collision and the solver -- as subpanels, under the
@@ -1491,6 +1522,7 @@ classes = (
     KINEMA_UL_bones,
     KINEMA_UL_waypoints,
     KINEMA_UL_motions,
+    KINEMA_PT_quick_bar,
     KINEMA_PT_joints,
     KINEMA_PT_ik,
     KINEMA_PT_waypoints,
