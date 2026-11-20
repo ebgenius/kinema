@@ -52,11 +52,17 @@ def _live_ik(layout, _context, rig) -> None:
     if ik_bone_name(rig) is None:
         layout.operator("kinema.add_ik", text="Add IK Target", icon="CON_KINEMATIC")
         return
-    layout.prop(rig, "kinema_ik_enabled", text="Live IK", toggle=True, icon="CON_KINEMATIC")
+    _toggle(layout, rig, "kinema_ik_enabled", "Live IK")
 
 
 def _auto_configuration(layout, _context, rig) -> None:
-    layout.prop(rig, "kinema_auto_configuration", text="Auto Config", toggle=True, icon="AUTO")
+    _toggle(layout, rig, "kinema_auto_configuration", "Auto Config")
+
+
+def _toggle(layout, rig, name: str, text: str) -> None:
+    """A switch that plays: Play while it is off, to start it, and Pause while on."""
+    on = bool(getattr(rig, name))
+    layout.prop(rig, name, text=text, toggle=True, icon="PAUSE" if on else "PLAY")
 
 
 def _snap_to_tool(layout, _context, rig) -> None:

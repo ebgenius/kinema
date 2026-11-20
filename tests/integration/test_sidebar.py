@@ -178,6 +178,29 @@ class TestQuickBar:
         bpy.context.view_layer.update()
         assert texts() == [fresh.split("/")[0]]
 
+    def test_the_switches_play_while_off_and_pause_while_on(self, panel, arm6, addon):
+        """Live IK and Auto Config: Play to start them, Pause to stop them."""
+        import bpy
+
+        quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+
+        def icon(key):
+            calls = []
+            quick_bar.BUTTONS[key].draw(_Layout(calls), bpy.context, arm6)
+            (prop,) = [kwargs for name, _, kwargs in calls if name == "prop"]
+            return prop["icon"]
+
+        for key, name in (
+            ("LIVE_IK", "kinema_ik_enabled"),
+            ("AUTO_CONFIG", "kinema_auto_configuration"),
+        ):
+            setattr(arm6, name, False)
+            assert icon(key) == "PLAY", key
+            setattr(arm6, name, True)
+            assert icon(key) == "PAUSE", key
+        arm6.kinema_ik_enabled = False
+
     def test_live_ik_offers_an_ik_target_where_there_is_none(self, panel, arm6):
         import bpy
 
@@ -349,9 +372,11 @@ class TestSnapToTool:
             calls = []
             quick_bar.BUTTONS["SNAP_IK"].draw(_Settings(calls), bpy.context, arm6)
             assert ("operator", ("kinema.snap_ik",)) in [(n, a[:1]) for n, a, _ in calls]
-            return [value for name, (attr, value), _ in (
-                c for c in calls if c[0] == "set"
-            ) if attr == "enabled"] == [True]
+            return [
+                value
+                for name, (attr, value), _ in (c for c in calls if c[0] == "set")
+                if attr == "enabled"
+            ] == [True]
 
         assert not ik_ops.goal_off_tool(arm6), "no IK target: nothing to snap"
         assert "FINISHED" in bpy.ops.kinema.add_ik()
@@ -362,7 +387,6 @@ class TestSnapToTool:
         assert ik_ops.goal_off_tool(arm6) and enabled(), "5 m out of reach"
         assert "FINISHED" in bpy.ops.kinema.snap_ik()
         assert not ik_ops.goal_off_tool(arm6) and not enabled()
-
 
     def test_a_turned_target_on_a_scaled_robot_is_off_the_tool(self, panel, arm6, addon):
         """Root scaled by 2 scales the matrices compared: their rotation is compared
