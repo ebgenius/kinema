@@ -53,6 +53,8 @@ def version_owed(recorded: str, now: str) -> str | None:
     old_version = ast.literal_eval(old[0].split("=", 1)[1].strip())
     new_version = ast.literal_eval(new[0].split("=", 1)[1].strip())
     gone, added = set(old[1:]) - set(new[1:]), set(new[1:]) - set(old[1:])
+    if new_version < old_version:
+        return f"VERSION can't go back from {old_version}"
     if gone and new_version[0] <= old_version[0]:
         return f"something changed or went: the major number must grow past {old_version}"
     if added and new_version <= old_version:
@@ -75,20 +77,28 @@ def test_the_surface_is_as_recorded():
     )
 
 
+#: The record the cases below are written over: version 1.0, one function.
+BEFORE = "VERSION = (1, 0)\ndef a(x)\n"
+
+
 @pytest.mark.parametrize(
-    "now, owed",
+    "recorded, now, owed",
     [
-        ("VERSION = (1, 0)\ndef a(x)\n", None),
-        ("VERSION = (1, 0)\ndef a(x)\ndef b()\n", "something was added"),
-        ("VERSION = (1, 1)\ndef a(x)\ndef b()\n", None),
-        ("VERSION = (1, 1)\ndef a(x, y)\n", "the major number must grow"),
-        ("VERSION = (2, 0)\ndef a(x, y)\n", None),
-        ("VERSION = (1, 1)\n", "the major number must grow"),
+        (BEFORE, "VERSION = (1, 0)\ndef a(x)\n", None),
+        (BEFORE, "VERSION = (1, 0)\ndef a(x)\ndef b()\n", "something was added"),
+        (BEFORE, "VERSION = (1, 1)\ndef a(x)\ndef b()\n", None),
+        (BEFORE, "VERSION = (1, 1)\ndef a(x, y)\n", "the major number must grow"),
+        (BEFORE, "VERSION = (2, 0)\ndef a(x, y)\n", None),
+        (BEFORE, "VERSION = (1, 1)\n", "the major number must grow"),
+        ("VERSION = (1, 2)\ndef a(x)\n", BEFORE, "can't go back"),
     ],
-    ids=["unchanged", "added-unbumped", "added-minor", "changed-minor", "changed-major", "gone"],
+    ids=[
+        "unchanged", "added-unbumped", "added-minor", "changed-minor", "changed-major", "gone",
+        "lowered",
+    ],
 )
-def test_writing_it_again_needs_the_version_to_say_what_changed(now, owed):
-    found = version_owed("VERSION = (1, 0)\ndef a(x)\n", now)
+def test_writing_it_again_needs_the_version_to_say_what_changed(recorded, now, owed):
+    found = version_owed(recorded, now)
     assert found is None if owed is None else owed in (found or "")
 
 
