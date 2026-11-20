@@ -829,7 +829,7 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
         else:
             layout.template_list(
                 "KINEMA_UL_motions", "", rig, "kinema_motions",
-                rig, "kinema_active_motion", rows=4,
+                rig, "kinema_active_motion", **whole_list(len(rig.kinema_motions)),
             )
             index = rig.kinema_active_motion
             if 0 <= index < len(rig.kinema_motions):

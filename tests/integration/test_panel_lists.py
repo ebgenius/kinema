@@ -102,3 +102,17 @@ def test_the_waypoints_list_shows_every_waypoint(arm6, modules):
 
     (waypoints,) = _lists(panel.KINEMA_PT_waypoints, bpy.context)
     assert waypoints["rows"] == waypoints["maxrows"] == len(arm6.kinema_waypoints)
+
+
+def test_the_motions_list_shows_every_motion(arm6, modules):
+    import bpy
+
+    panel, api = modules("ui.panel"), modules("api")
+    for index in range(6):
+        api.add_waypoint(arm6, f"P{index}", HOME + 0.1 * index)
+    for index in range(5):
+        api.add_motion(arm6, f"P{index}", f"P{index + 1}", 1 + 10 * index, 11 + 10 * index)
+    assert len(arm6.kinema_motions) > 4, "precondition: more motions than it used to show"
+
+    (motions,) = _lists(panel.KINEMA_PT_motions, bpy.context)
+    assert motions["rows"] == motions["maxrows"] == len(arm6.kinema_motions)
