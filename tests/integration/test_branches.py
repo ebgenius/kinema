@@ -396,7 +396,7 @@ class TestAutoConfiguration:
         bpy.context.view_layer.update()
         assert search == [ik_ops.AUTO_SEEDS]
         assert not ik_ops.goal_off_tool(arm6), "the tool on the target"
-        assert ik_ops.switched_recently(arm6), "for the quick bar to say so"
+        assert ik_ops.switched_since_recorded(arm6), "for the quick bar to say so"
         assert ik_ops.solution_count(arm6) > 0, "what was found, to step through"
         stored = ik_ops._read_solutions(arm6)
         np.testing.assert_allclose(

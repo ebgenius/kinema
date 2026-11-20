@@ -204,8 +204,13 @@ def status(context, rig) -> list[tuple[str, str]]:
             ("The tool can't reach the target", "ERROR"),
             ("Try Config or Auto Config, or Snap to Tool", "BLANK1"),
         ]
-    if auto and ik_ops.switched_recently(rig):
-        return [("The configuration changed", "INFO")]
+    if ik_ops.switched_since_recorded(rig):
+        # Kept until the next waypoint is recorded: a linear move from the last one
+        # can't cross the switch, and Generate would refuse it.
+        return [
+            ("The configuration changed", "ERROR"),
+            ("A linear move from the last waypoint can't cross it", "BLANK1"),
+        ]
     return [("Following the target", "CHECKMARK")]
 
 

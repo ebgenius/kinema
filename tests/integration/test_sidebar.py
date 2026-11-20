@@ -469,10 +469,14 @@ class TestQuickBarBox:
 
         assert "FINISHED" in bpy.ops.kinema.snap_ik()
         ik_ops.forget_auto_search(arm6.name)
-        import time
-
-        ik_ops._auto_switched[arm6.name] = time.perf_counter()  # as a switch records it
-        assert self._said(panel)[1] == ["The configuration changed"]
-        ik_ops._auto_switched[arm6.name] -= ik_ops.SWITCH_NOTE_SECONDS
-        assert self._said(panel)[1] == ["Following the target"], "said for a few seconds"
+        ik_ops._auto_switched.add(arm6.name)  # as a switch records it
+        said = [
+            "The configuration changed",
+            "A linear move from the last waypoint can't cross it",
+        ]
+        assert self._said(panel)[1] == said
+        assert self._said(panel)[1] == said, "kept, not for a while"
+        api = importlib.import_module(f"{addon.__name__}.api")
+        api.add_waypoint(arm6, "after the switch")
+        assert self._said(panel)[1] == ["Following the target"], "until one is recorded"
         arm6.kinema_ik_enabled = False

@@ -803,6 +803,10 @@ def new_waypoint(rig, name: str = "", reference=None, values=None):
         return None, error
     waypoint.marker = _make_marker(rig, waypoint, _unflatten(waypoint.pose), reference)
     rig.kinema_active_waypoint = len(rig.kinema_waypoints) - 1
+    from . import ik as ik_ops
+
+    # Taught in the configuration the arm is in: a switch before it is behind it.
+    ik_ops.forget_switch(rig.name)
     return waypoint, None
 
 

@@ -250,10 +250,10 @@ AUTO_TURN = np.radians(5.0)
 AUTO_INTERVAL = 0.5
 #: rig name -> (the goal last searched for and found nothing at, when).
 _auto_searched: dict[str, tuple[np.ndarray, float]] = {}
-#: rig name -> when Auto Configuration last switched its configuration.
-_auto_switched: dict[str, float] = {}
-#: How long the quick bar says the configuration changed, in seconds.
-SWITCH_NOTE_SECONDS = 3.0
+#: Rigs Auto Configuration has switched to another configuration since a
+#: waypoint was last recorded on them: a linear move from that waypoint can't
+#: cross the switch, so the quick bar says so until the next is recorded.
+_auto_switched: set[str] = set()
 
 
 def forget_auto_search(rig_name: str | None = None) -> None:
@@ -271,12 +271,15 @@ def auto_found_nothing(rig) -> bool:
     return rig.name in _auto_searched
 
 
-def switched_recently(rig) -> bool:
-    """Whether Auto Configuration switched the configuration in the last few seconds."""
-    import time
+def switched_since_recorded(rig) -> bool:
+    """Whether Auto Configuration has switched ``rig``'s configuration since a
+    waypoint was last recorded on it."""
+    return rig.name in _auto_switched
 
-    when = _auto_switched.get(rig.name)
-    return when is not None and time.perf_counter() - when < SWITCH_NOTE_SECONDS
+
+def forget_switch(rig_name: str) -> None:
+    """A waypoint was recorded: taught in the configuration the arm is in now."""
+    _auto_switched.discard(rig_name)
 
 
 def _moved_on(last: np.ndarray, goal: np.ndarray) -> bool:
@@ -317,7 +320,7 @@ def reconfigure(rig, solver) -> bool:
     # among them, and the quick bar says which this is.
     _store_solutions(rig, solver, found)
     rig.kinema_active_solution = index
-    _auto_switched[rig.name] = time.perf_counter()
+    _auto_switched.add(rig.name)
     return True
 
 

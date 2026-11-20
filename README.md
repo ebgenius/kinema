@@ -55,7 +55,8 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
   about it: that the robot shown isn't the one selected, that Live IK is paused, that the
   tool can't reach the target (and what to try), that the target is out of reach (once
   Auto Config has searched and found no configuration that reaches it), that Auto Config
-  just changed the configuration, or that it is following the target. With no robot, the quick
+  changed the configuration -- kept until the next waypoint is recorded, since a linear
+  move from the last one can't cross the change -- or that it is following the target. With no robot, the quick
   bar offers to import one.
 - **Joints (FK)**, **Inverse Kinematics**, **Waypoints**, **Motions** and **Motion Check**,
   the panels used most, each on its own: drag one by its grip to put it elsewhere, collapse
