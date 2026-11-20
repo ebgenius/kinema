@@ -65,6 +65,9 @@ BEFORE, AFTER = "Before", "After"
 #: Marks an action as a rig's job (its value is the rig's name), and as a bake.
 PROP_JOB = "kinema_job"
 PROP_BAKED = "kinema_baked"
+#: On the job's action: the identifier of the slot its strips show, which is the
+#: rig's. A track showing another slot of the same action is someone else's.
+PROP_SLOT = "kinema_job_slot"
 
 
 def enabled(context=None) -> bool:
@@ -82,10 +85,14 @@ def _job_tracks(rig) -> list:
     anim = rig.animation_data
     if job is None or anim is None:
         return []
-    return [
-        t for t in anim.nla_tracks
-        if len(t.strips) and all(s.action == job for s in t.strips)
-    ]
+    slot = job.get(PROP_SLOT)
+
+    def shows_job(strip) -> bool:
+        if strip.action != job:
+            return False
+        return slot is None or getattr(strip.action_slot, "identifier", None) == slot
+
+    return [t for t in anim.nla_tracks if len(t.strips) and all(map(shows_job, t.strips))]
 
 
 def _plays(anim, track) -> bool:
@@ -413,6 +420,11 @@ def _tile(rig, spans, slot) -> None:
     ):
         strip = _new_strip(motions[index % 2], name, a, b, job, slot)
         strip.extrapolation = "NOTHING"
+    shown = getattr(base.strips[0].action_slot, "identifier", None)
+    if shown:
+        job[PROP_SLOT] = shown
+    elif PROP_SLOT in job:
+        del job[PROP_SLOT]
     anim.use_nla = True
 
 

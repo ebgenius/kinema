@@ -178,6 +178,34 @@ class TestLayout:
         assert after == before and len(arm6.animation_data.nla_tracks) == count
 
 
+    def test_a_track_showing_another_slot_of_the_job_is_left(
+        self, arm6, builder, strips, prefs
+    ):
+        """One action can hold several slots. A track of the user's showing the job's
+        action through another slot isn't the job's: regenerating, and putting the
+        job back in the active action, leave it alone."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        job = arm6.kinema_job_action
+        other = job.slots.new("OBJECT", "Other")
+        mine = arm6.animation_data.nla_tracks.new()
+        mine.name = "Mine"
+        strips._new_strip(mine, "mine", 300.0, 320.0, job, other)
+
+        def kept():
+            # Looked up each time: a track removed under a reference to it
+            # would crash Blender rather than fail.
+            return [[s.name for s in t.strips] for t in _track(arm6, "Mine")]
+
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert kept() == [["mine"]]
+        prefs.job_as_strips = False
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert kept() == [["mine"]]
+
     def test_put_back_leaves_the_nla_switch(self, arm6, builder, prefs):
         """The active action plays with the NLA off too, so putting the job back
         there leaves the switch as the user set it."""
