@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`kinema.api`, for scripts and other add-ons** (#102). A versioned module that won't change
   under them: the rigs in a scene, their joints and limits, the tool and where it is,
-  and joint values read and set. The README's *Scripting Kinema* says how another
-  extension finds it.
+  and joint values read and set; a tool pose solved for, its clearance from the
+  obstacles, and whether it is reachable, within limits and clear, all without moving
+  the rig; capsules, and obstacles read, added and removed. The README's *Scripting
+  Kinema* says how another extension finds it.
 - **A robot's description kept relative to the .blend** (#92). Where the description is in
   the .blend's folder or under it, saving keeps its path relative to the .blend as well, so a
   project folder copied or moved as a whole, to another machine too, reads the description
@@ -203,6 +205,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The NumPy solver stopped short of a turn it had to make** (#102). With a goal read off
+  Blender's float32 matrices, a turn of 0.02° (4e-4 rad) could read as none, and a solve
+  that left the tool turned that far was reported as converged. The angle is now taken
+  from its sine and cosine both.
 - **An axis on the tool measures its offset from the current TCP, as the dialog says**
   (#77). The TCP was placed at the offset from the axis's own frame, which the base moves,
   so a 50 mm base moved the TCP 50 mm, and a turned one turned it, with the offset at zero.

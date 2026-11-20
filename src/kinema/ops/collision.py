@@ -501,9 +501,12 @@ def capsules_of(rig) -> list[geometry.Capsule]:
     ]
 
 
-def capsule_ends(rig, capsules) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def capsule_ends(rig, capsules, matrices=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Each capsule in world space, as the rig stands now: its ends, two (C, 3)
     arrays, and its radius, (C,).
+
+    ``matrices`` stands the rig otherwise: each bone's matrix in armature space,
+    by name, as ``pose.bone_matrices`` gives them for a pose it isn't in.
 
     The radius scaled as the ends are: by the rig's scale, and its parents'. A
     scale that stretches one way more than another makes an ellipse of the
@@ -514,13 +517,31 @@ def capsule_ends(rig, capsules) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     placed, stretch = {}, {}
     for capsule in capsules:
         if capsule.bone not in placed:
-            matrix = np.array(rig.matrix_world @ rig.pose.bones[capsule.bone].matrix)
+            bone = (
+                rig.pose.bones[capsule.bone].matrix if matrices is None
+                else matrices[capsule.bone]
+            )
+            matrix = np.array(rig.matrix_world) @ np.array(bone)
             placed[capsule.bone] = matrix
             stretch[capsule.bone] = float(np.linalg.norm(matrix[:3, :3], 2))
     a = np.array([placed[c.bone][:3, :3] @ c.a + placed[c.bone][:3, 3] for c in capsules])
     b = np.array([placed[c.bone][:3, :3] @ c.b + placed[c.bone][:3, 3] for c in capsules])
     radii = np.array([c.radius * stretch[c.bone] for c in capsules])
     return a, b, radii
+
+
+def least_clearance(rig, found: list, matrices=None) -> tuple[float, str, str] | None:
+    """The rig's closest approach to ``found``, the obstacles: how far, in metres,
+    negative where a capsule reaches into one, and which bone and obstacle. As it
+    stands now, or as ``matrices`` stand it (see :func:`capsule_ends`). None with
+    no capsules or no obstacles to measure."""
+    capsules = capsules_of(rig)
+    if not capsules or not found:
+        return None
+    a, b, radii = capsule_ends(rig, capsules, matrices)
+    distances = geometry.clearances(a, b, radii, found)
+    which = np.unravel_index(int(np.argmin(distances)), distances.shape)
+    return float(distances[which]), capsules[which[0]].bone, found[which[1]].name
 
 
 def collision_state(rig, scene) -> str:
@@ -973,7 +994,9 @@ def obstacles(context) -> list[geometry.Obstacle]:
 
 def obstacle_of(obj) -> geometry.Obstacle:
     """``obj`` as the shape its Obstacle setting makes it."""
-    kind = getattr(obj, "kinema_obstacle_shape", geometry.KIND_BOX)
+    # Off the object itself, not an evaluated copy: a shape set from a script
+    # reaches the copy only on the next update that tags the object.
+    kind = getattr(getattr(obj, "original", obj), "kinema_obstacle_shape", geometry.KIND_BOX)
     world = obj.matrix_world
     location, rotation, _ = world.decompose()
     linear = np.array(world.to_3x3())
@@ -1049,6 +1072,34 @@ def _vector(values):
     return Vector(tuple(float(v) for v in values))
 
 
+def add_obstacles(scene, objects) -> list:
+    """Make ``objects`` obstacles in ``scene``: those that aren't already, nor a
+    robot or on one. Returns those added."""
+    collection = obstacle_collection(scene, create=True)
+    added = [
+        obj for obj in objects if not on_a_robot(obj) and obj.name not in collection.objects
+    ]
+    for obj in added:
+        collection.objects.link(obj)
+    return added
+
+
+def remove_obstacles(scene, objects) -> list:
+    """Stop ``objects`` being obstacles in ``scene``, keeping them in it. Returns
+    those removed."""
+    collection = obstacle_collection(scene)
+    if collection is None:
+        return []
+    removed = [obj for obj in objects if obj.name in collection.objects]
+    for obj in removed:
+        collection.objects.unlink(obj)
+        # Kept in this scene: an object only in its obstacles would leave it.
+        # Its other collections may be another scene's.
+        if obj.name not in scene.objects:
+            scene.collection.objects.link(obj)
+    return removed
+
+
 def _candidates(context) -> list:
     """Selected objects that could stand in the robot's way: not a rig, nor anything on one."""
     return [obj for obj in context.selected_objects if not on_a_robot(obj)]
@@ -1067,10 +1118,7 @@ class KINEMA_OT_add_obstacles(Operator):
         return bool(_candidates(context))
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        collection = obstacle_collection(context.scene, create=True)
-        added = [obj for obj in _candidates(context) if obj.name not in collection.objects]
-        for obj in added:
-            collection.objects.link(obj)
+        added = add_obstacles(context.scene, _candidates(context))
         _redraw(context)
         self.report({"INFO"}, f"{len(added)} obstacle{'s' if len(added) != 1 else ''} added")
         return {"FINISHED"}
@@ -1090,15 +1138,7 @@ class KINEMA_OT_remove_obstacles(Operator):
         )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        collection = obstacle_collection(context.scene)
-        scene = context.scene
-        removed = [obj for obj in context.selected_objects if obj.name in collection.objects]
-        for obj in removed:
-            collection.objects.unlink(obj)
-            # Kept in this scene: an object only in its obstacles would leave it.
-            # Its other collections may be another scene's.
-            if obj.name not in scene.objects:
-                scene.collection.objects.link(obj)
+        removed = remove_obstacles(context.scene, context.selected_objects)
         _redraw(context)
         self.report({"INFO"}, f"{len(removed)} obstacle{'s' if len(removed) != 1 else ''} removed")
         return {"FINISHED"}

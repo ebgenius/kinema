@@ -99,6 +99,22 @@ class TestPoseError:
         error = chain_mod.pose_error(np.eye(4), target)
         assert np.linalg.norm(error[3:]) == pytest.approx(angle, abs=1e-9)
 
+    def test_a_small_turn_off_a_float32_frame_is_measured(self):
+        """A goal read off Blender's float32 matrices is orthonormal to ~1e-7, which
+        can push the trace past 3: taken from its arccos, a turn of 4e-4 rad read 0,
+        and the NumPy solver stopped there, reporting it had converged."""
+        turn = 4e-4
+        frame = np.eye(4)
+        c, s = np.cos(0.7), np.sin(0.7)
+        frame[:3, :3] = [[c, -s, 0], [s, c, 0], [0, 0, 1]]
+        noisy = frame.astype(np.float32).astype(float)
+        noisy[:3, :3] *= 1.0 + 2e-7  # the most a float32 frame is off by, about
+        twist = np.eye(4)
+        c, s = np.cos(turn), np.sin(turn)
+        twist[:3, :3] = [[1, 0, 0], [0, c, -s], [0, s, c]]
+        error = chain_mod.pose_error(frame @ twist, noisy)
+        assert np.linalg.norm(error[3:]) == pytest.approx(turn, rel=0.01)
+
     def test_near_180_degrees_does_not_blow_up(self):
         """The usual axis-angle formula divides by sin(angle); guard the pole."""
         target = np.eye(4)
