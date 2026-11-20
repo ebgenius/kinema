@@ -571,10 +571,20 @@ def _as_waypoint(rig, waypoint) -> Waypoint:
     from .rig import builder
 
     reference = references.reference_of(rig, waypoint)
+    marker = waypoint.marker
+    unparented = marker is not None and marker.parent is None
+    if unparented and waypoint.pose_space is not None:
+        # Its marker's parent cleared by hand: at the base, where the marker is.
+        reference, here = None, np.linalg.inv(_np4(rig.matrix_world)) @ _np4(marker.matrix_world)
+    elif reference is None and any(waypoint.taught) and (marker is None or unparented):
+        # Its object deleted: back where its joints were taught, at the base.
+        here = _np4(references.taught_pose(waypoint))
+    else:
+        here = _np4(job.pose_of(waypoint))
     return Waypoint(
         name=waypoint.name,
         values=np.array(waypoint.q[: waypoint.dof], dtype=float),
-        pose=_np4(rig.matrix_world) @ _np4(job.pose_of(waypoint)) @ _np4(builder.BONE_TO_TOOL),
+        pose=_np4(rig.matrix_world) @ here @ _np4(builder.BONE_TO_TOOL),
         reference=reference.name if reference is not None else None,
     )
 
@@ -590,11 +600,25 @@ def add_waypoint(rig, name: str | None = None, values=None, reference=None) -> W
     now -- without moving it -- relative to ``reference``, an object it then moves
     with, or the robot's base. A name another waypoint has is numbered, as Blender
     names a copy. With its marker."""
+    import bpy
+
     from .ops import references
     from .ops import waypoints as job
 
     rig = _job(rig)
     values = None if values is None else _values(rig, values)
+    if values is not None:
+        # Taught as given, where playback would show them limited: refused instead.
+        for joint, value in zip(joints(rig), values, strict=True):
+            low = -np.inf if joint.lower is None else joint.lower - _LIMIT_TOLERANCE
+            high = np.inf if joint.upper is None else joint.upper + _LIMIT_TOLERANCE
+            if not low <= value <= high:
+                ends = (
+                    "none" if end is None else f"{end:.4g}" for end in (joint.lower, joint.upper)
+                )
+                raise Error(
+                    f"{joint.name!r} at {value:.4g} is outside its range, {' to '.join(ends)}"
+                )
     if reference is not None and (
         references.PROP_WAYPOINT in reference
         or not references.in_robots_scene(rig, reference)
@@ -604,6 +628,9 @@ def add_waypoint(rig, name: str | None = None, values=None, reference=None) -> W
             f"{reference.name!r} can't hold a waypoint: it is the robot, rides on it, "
             f"is a waypoint's marker, or is in no scene the robot is in"
         )
+    # Where everything stands after the script's last change: the reference
+    # object's transform among it.
+    bpy.context.view_layer.update()
     waypoint, error = job.new_waypoint(rig, name or "", reference, values)
     if error is not None:
         raise Error(error)
@@ -651,6 +678,8 @@ def add_motion(
     """A motion on ``rig`` from waypoint ``start`` to ``end``, by name, leaving on
     ``frame_start`` and arriving on ``frame_end``; named ``name``, or after ``end``.
     Motions that overlap are found when the job is generated or checked."""
+    import bpy
+
     from .ops import waypoints as job
     from .rig.waypoints import MOVE_TYPES
 
@@ -659,6 +688,13 @@ def add_motion(
         raise Error(f"a move is one of {', '.join(MOVE_TYPES)}, not {move!r}")
     if int(frame_end) <= int(frame_start):
         raise Error(f"a motion ends after it starts: frames {frame_start}-{frame_end}")
+    frames = bpy.types.Scene.bl_rna.properties["frame_current"]
+    if int(frame_start) - 1 < frames.hard_min or int(frame_end) + 1 > frames.hard_max:
+        raise Error(
+            f"frames {frame_start}-{frame_end} reach past Blender's, "
+            f"{frames.hard_min + 1} to {frames.hard_max - 1} for a motion: a check plays "
+            f"a frame either side"
+        )
     motion = job.new_motion(
         rig,
         _waypoint_named(rig, start),
@@ -695,6 +731,11 @@ def add_ik_target(rig) -> None:
     rig = _rig(rig)
     if job.ik_bone_name(rig) is not None:
         return
+    if rig.name not in bpy.context.view_layer.objects:
+        raise Error(
+            f"{rig.name!r} isn't in the view layer, where its bones are edited: "
+            f"include its collection, or switch to a view layer that has it"
+        )
     outcome = ik.add_ik_target(bpy.context, rig)
     if not outcome.done:
         raise Error(outcome.message)
@@ -712,7 +753,12 @@ def _report(outcome) -> Report:
 def generate(rig) -> Report:
     """Key ``rig`` through its motions in frame order, and check the job: Generate
     Motion. Refused with why -- motions that overlap, a linear move with no IK
-    target -- it writes nothing."""
+    target -- it keys nothing.
+
+    As Generate Motion does, it first catches the job up, refused or not: a rig
+    saved before motions is given them, and a waypoint whose object is gone goes
+    back to the base, where its joints were taught.
+    """
     import bpy
 
     from .ops import waypoints as job
@@ -722,7 +768,10 @@ def generate(rig) -> Report:
 
 def check(rig) -> Report:
     """Play ``rig``'s job through once, solving as playback does, and check each
-    move -- its line, limits, speeds and clearance: Check Motion."""
+    move -- its line, limits, speeds and clearance: Check Motion. The findings are
+    kept on the rig, for the panel. Where the job can't be measured -- a rig with
+    no TCP -- those from before are cleared, so none reads as current; the job is
+    caught up as :func:`generate` says."""
     import bpy
 
     from .ops import waypoints as job

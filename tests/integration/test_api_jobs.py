@@ -192,3 +192,80 @@ class TestJobs:
             report = action(arm6)
             assert (report.done, report.level) == (False, "WARNING"), report
             assert "Nothing was generated or checked" in report.message
+
+
+class TestReviewed:
+    def test_a_waypoint_whose_object_is_gone_is_where_it_was_taught(self, api, arm6):
+        """Read without writing: the panel's catch-up is left to the next action."""
+        import bpy
+
+        table = bpy.data.objects.new("Table", None)
+        table.location = (1.0, 0.0, 0.0)
+        bpy.context.scene.collection.objects.link(table)
+        bpy.context.view_layer.update()
+        taught = api.add_waypoint(arm6, "on table", AWAY, reference=table)
+        stored = list(arm6.kinema_waypoints[0].taught)
+        bpy.data.objects.remove(table)
+        bpy.context.view_layer.update()
+        (read,) = api.waypoints(arm6)
+        assert read.reference is None
+        np.testing.assert_allclose(read.pose, taught.pose, atol=1e-6)
+        assert list(arm6.kinema_waypoints[0].taught) == stored, "nothing written"
+
+    def test_a_reference_moved_just_before_teaching(self, api, arm6):
+        """No update in between, as a script goes: the waypoint is where the tool is."""
+        import bpy
+
+        table = bpy.data.objects.new("Table", None)
+        bpy.context.scene.collection.objects.link(table)
+        bpy.context.view_layer.update()
+        table.location = (0.3, 0.0, 0.0)
+        api.add_waypoint(arm6, "on table", AWAY, reference=table)
+        api.set_joint_values(arm6, AWAY)  # which updates the view layer
+        (read,) = api.waypoints(arm6)
+        np.testing.assert_allclose(read.pose, api.tool_frame(arm6), atol=1e-5)
+
+    def test_values_outside_a_range_are_refused(self, api, arm6):
+        shoulder = api.joints(arm6)[1]
+        values = list(AWAY)
+        values[1] = shoulder.upper + 0.3
+        with pytest.raises(api.Error, match="'joint2' at 2.8 is outside its range, -2.5 to 2.5"):
+            api.add_waypoint(arm6, "too far", values)
+        assert api.waypoints(arm6) == []
+
+    def test_frames_a_check_cant_play_are_refused(self, api, arm6):
+        import bpy
+
+        last = bpy.types.Scene.bl_rna.properties["frame_current"].hard_max
+        api.add_waypoint(arm6, "home", HOME)
+        api.add_waypoint(arm6, "away", AWAY)
+        with pytest.raises(api.Error, match="reach past Blender's"):
+            api.add_motion(arm6, "home", "away", last - 2, last)
+        assert api.add_motion(arm6, "home", "away", last - 2, last - 1).frame_end == last - 1
+
+    def test_a_rig_outside_the_view_layer_is_refused_an_ik_target(self, api, arm6):
+        import bpy
+
+        def layer_of(collection, layer):
+            if layer.collection == collection:
+                return layer
+            return next(
+                (found for child in layer.children if (found := layer_of(collection, child))),
+                None,
+            )
+
+        root = bpy.context.view_layer.layer_collection
+        layers = [layer_of(c, root) for c in arm6.users_collection]
+        assert all(layers), "precondition: every collection holding the rig is in the layer"
+        for layer in layers:
+            layer.exclude = True
+        bpy.context.view_layer.update()
+        try:
+            assert arm6.name not in bpy.context.view_layer.objects, "precondition: excluded"
+            with pytest.raises(api.Error, match="isn't in the view layer"):
+                api.add_ik_target(arm6)
+            assert "kinema_ik_bone" not in arm6
+        finally:
+            for layer in layers:
+                layer.exclude = False
+            bpy.context.view_layer.update()
