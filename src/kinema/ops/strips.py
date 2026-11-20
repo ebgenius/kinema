@@ -531,9 +531,10 @@ def _moved(strip) -> bool:
     )
 
 
-def catch_up(rig) -> list:
-    """Take the frames of motions whose strips were moved or scaled in the NLA
-    editor into the Motions list. Returns a line for each, for a report.
+def catch_up(rig) -> tuple[list, list]:
+    """The frames motions take from strips moved or scaled in the NLA editor, as
+    ``(notes, retimes)``: a line each for a report, and ``(motion, frames)`` to
+    write. Nothing is written here, so a job refused with them changes nothing.
 
     A motion's strip is the one showing the frames of the action the motion was
     laid out at. Where the strip now plays other frames, and the motion's own
@@ -544,12 +545,17 @@ def catch_up(rig) -> list:
     """
     anim = rig.animation_data
     if anim is None or anim.use_tweak_mode or rig.library is not None:
-        return []
+        return [], []
     tracks = _job_tracks(rig)
     if not tracks:
-        return []
-    motions = {_laid(motion): motion for motion in getattr(rig, "kinema_motions", ())}
-    notes = []
+        return [], []
+    # Motions laid out with the strips first: one added in the list since has
+    # no frames laid out, and its own stand in only where no laid one matches.
+    laid, unlaid = {}, {}
+    for motion in getattr(rig, "kinema_motions", ()):
+        kept = tuple(int(v) for v in motion.laid_frames)
+        (laid if kept[1] > kept[0] else unlaid).setdefault(_laid(motion), []).append(motion)
+    notes, retimes = [], []
     every = sorted((s for t in tracks for s in t.strips), key=lambda s: s.frame_start)
     showing = {}
     for strip in every:
@@ -559,7 +565,16 @@ def catch_up(rig) -> list:
     for strip in every:
         shown = (round(strip.action_frame_start), round(strip.action_frame_end))
         plays = (round(strip.frame_start), round(strip.frame_end))
-        motion = motions.get(shown)
+        candidates = laid.get(shown) or unlaid.get(shown) or []
+        if len(candidates) > 1:
+            if shown not in noted:
+                noted.add(shown)
+                notes.append(
+                    f"{len(candidates)} motions have frames {shown[0]}-{shown[1]}, so the "
+                    f"NLA strip there retimes none of them"
+                )
+            continue
+        motion = candidates[0] if candidates else None
         if motion is None:
             if _moved(strip):
                 notes.append(
@@ -589,13 +604,31 @@ def catch_up(rig) -> list:
             )
             continue
         start, end = plays[0], max(plays[1], plays[0] + 1)
-        motion.frame_start, motion.frame_end = start, end
-        motion.synced_frames = (start, end)
+        retimes.append((motion, (start, end)))
         notes.append(
             f"'{motion.name}' retimed in the NLA editor, to frames {start}-{end}: "
             f"Generate Motion lays the job out there"
         )
-    return notes
+    return notes, retimes
+
+
+class Retimed:
+    """A motion as it reads with the frames its strip was moved to, for planning
+    the job before they are written."""
+
+    def __init__(self, motion, frames):
+        self._motion = motion
+        self.frame_start, self.frame_end = frames
+
+    def __getattr__(self, name):
+        return getattr(self._motion, name)
+
+
+def retime(retimes) -> None:
+    """Write what :func:`catch_up` found into the Motions list."""
+    for motion, frames in retimes:
+        motion.frame_start, motion.frame_end = frames
+        motion.synced_frames = frames
 
 
 def _laid(motion, name="laid_frames") -> tuple:

@@ -542,6 +542,37 @@ class TestRetime:
         back = _motion(arm6, "back")
         assert (back.frame_start, back.frame_end) == (71, 91)
 
+    def test_a_motion_added_since_doesnt_take_anothers_strip(
+        self, arm6, builder, strips, prefs
+    ):
+        """A motion added in the list with the frames of one laid out has none laid
+        out itself, so the strip there is still the laid-out one's."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        added = arm6.kinema_motions.add()
+        added.name, added.frame_start, added.frame_end = "added", 61, 81
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        _, retimes = strips.catch_up(arm6)
+        assert [(m.name, frames) for m, frames in retimes] == [("back", (71, 91))]
+
+    def test_a_refused_retime_changes_nothing(self, arm6, builder, strips, prefs):
+        """A strip moved onto another motion's frames: the job is refused for the
+        overlap, and the Motions list keeps its frames -- a cancelled operator
+        leaves no undo step to take a change back."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        _strip(strips, arm6, "back").frame_start_ui = 35
+        assert bpy.ops.kinema.generate_motion() == {"CANCELLED"}
+        back = _motion(arm6, "back")
+        assert (back.frame_start, back.frame_end) == (61, 81)
+        assert tuple(back.synced_frames) == (61, 81)
+
     def test_a_copied_strip_retimes_nothing(self, arm6, builder, strips, prefs):
         """A strip duplicated in the NLA editor shows what the motion's does, so which
         one is the motion's can't be told: neither retimes it."""

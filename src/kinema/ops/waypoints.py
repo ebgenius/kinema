@@ -447,11 +447,21 @@ def job_plan(rig):
             f"This job, saved before motions, couldn't be made into motions: "
             f"{rig.kinema_unconverted}. Add its motions in the Motions list"
         )
-    if rig.library is None:
-        # A motion's strip moved or scaled in the NLA editor retimes it.
-        notes += strips.catch_up(rig)
-    job = plan_motions(rig.kinema_motions, rig.kinema_waypoints)
-    job.notes[:0] = notes
+    # A motion's strip moved or scaled in the NLA editor retimes it -- written
+    # once the job plans with the new frames, so a refusal changes nothing.
+    retimed, retimes = strips.catch_up(rig)
+    motions = list(rig.kinema_motions)
+    for motion, frames in retimes:
+        motions[motions.index(motion)] = strips.Retimed(motion, frames)
+    try:
+        job = plan_motions(motions, rig.kinema_waypoints)
+    except WaypointError as exc:
+        if not retimes:
+            raise
+        moved = ", ".join(f"'{m.name}' to {a}-{b}" for m, (a, b) in retimes)
+        raise type(exc)(f"{exc}, with {moved} as its NLA strip was moved") from exc
+    strips.retime(retimes)
+    job.notes[:0] = notes + retimed
     return job
 
 
