@@ -211,7 +211,8 @@ def status(context, rig) -> list[tuple[str, str]]:
             ("The configuration changed", "ERROR"),
             ("A linear move from the last waypoint can't cross it", "BLANK1"),
         ]
-    return [("Following the target", "CHECKMARK")]
+    # All well: nothing to say.
+    return []
 
 
 def draw(layout, context, rig, keys) -> None:

@@ -290,20 +290,27 @@ class TestQuickBarPreferences:
 
 
 class TestJointsHeader:
-    def test_rest_pose_graph_editor_and_key_all_sit_in_its_header(self, panel, arm6):
-        """Here whether the quick bar has them or not; the panel's body has the joints."""
-        import types
+    def test_it_has_no_buttons_of_its_own(self, panel):
+        """Rest Pose and Graph Editor are in the quick bar, and Key All can be."""
+        assert not hasattr(panel.KINEMA_PT_joints, "draw_header_preset")
 
+
+class TestMeshes:
+    def test_reset_meshes_and_file_origin_are_under_import(self, panel, arm6):
+        """Where the import put the robot's meshes: put back, or where the file has them."""
         import bpy
 
-        calls = []
-        panel.KINEMA_PT_joints.draw_header_preset(
-            types.SimpleNamespace(layout=_Layout(calls)), bpy.context
-        )
-        operators = [args[0] for name, args, _ in calls if name == "operator"]
-        assert operators == ["kinema.reset_pose", "kinema.graph_editor", "kinema.key_joints"]
-        body = _drawn(panel.KINEMA_PT_joints, bpy.context)
-        assert ("operator", "kinema.reset_pose") not in body
+        drawn = _drawn(panel.KINEMA_PT_import, bpy.context)
+        assert ("operator", "kinema.reset_link_meshes") in drawn
+        assert ("prop", "kinema_meshes_at_file_origin") in drawn
+        joints = _drawn(panel.KINEMA_PT_joints, bpy.context)
+        assert ("operator", "kinema.reset_link_meshes") not in joints
+
+    def test_not_with_no_robot(self, panel, clean_scene):
+        import bpy
+
+        drawn = _drawn(panel.KINEMA_PT_import, bpy.context)
+        assert ("operator", "kinema.reset_link_meshes") not in drawn
 
 
 class TestRobotNamed:
@@ -444,7 +451,7 @@ class TestQuickBarBox:
         assert self._said(panel)[1] == ["Live IK paused: pose the joints, or turn it on"]
         arm6.kinema_ik_enabled = True
         bpy.context.view_layer.update()
-        assert self._said(panel)[1] == ["Following the target"]
+        assert self._said(panel)[1] == []
 
         ik_ops = importlib.import_module(f"{addon.__name__}.ops.ik")
         assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=12)
@@ -453,7 +460,7 @@ class TestQuickBarBox:
         bpy.context.view_layer.update()
         handlers.solve_rig(arm6, force=True, live=True)  # as the handler would
         bpy.context.view_layer.update()
-        assert self._said(panel)[1] == ["Following the target"], "a moved target isn't news"
+        assert self._said(panel)[1] == [], "a moved target isn't news"
 
         goal.location += Vector((0.0, 0.0, 5.0))
         bpy.context.view_layer.update()
@@ -478,5 +485,5 @@ class TestQuickBarBox:
         assert self._said(panel)[1] == said, "kept, not for a while"
         api = importlib.import_module(f"{addon.__name__}.api")
         api.add_waypoint(arm6, "after the switch")
-        assert self._said(panel)[1] == ["Following the target"], "until one is recorded"
+        assert self._said(panel)[1] == [], "until one is recorded"
         arm6.kinema_ik_enabled = False

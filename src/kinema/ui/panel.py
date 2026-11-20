@@ -338,6 +338,18 @@ class KINEMA_PT_import(KinemaPanelBase, Panel):
             for name in SETTING_NAMES:
                 body.prop(context.scene.kinema, name)
 
+        # The robot's meshes, where the import put them: put back on their links,
+        # or moved to where the file has them. Only with meshes to move, so it
+        # doesn't suggest a rig has meshes when it has none.
+        rig = active_rig(context)
+        if rig is not None and builder.link_meshes(rig):
+            column = layout.column(align=True)
+            column.operator("kinema.reset_link_meshes", text="Reset Meshes", icon="LOOP_BACK")
+            column.prop(rig, "kinema_meshes_at_file_origin", icon="EXPORT")
+            if rig.kinema_meshes_at_file_origin:
+                # Warned loudly: the meshes no longer move with the rig.
+                layout.label(text="Meshes are off the rig", icon="ERROR")
+
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_joints"
@@ -348,14 +360,6 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
     def poll(cls, context: bpy.types.Context) -> bool:
         return active_rig(context) is not None
 
-    def draw_header_preset(self, context: bpy.types.Context) -> None:
-        """Rest Pose, the Graph Editor -- where the keys made here are shaped -- and
-        Key All, at the header's right: here whether the quick bar has them or not."""
-        row = self.layout.row(align=True)
-        row.operator("kinema.reset_pose", text="", icon="LOOP_BACK", emboss=False)
-        row.operator("kinema.graph_editor", text="", icon="GRAPH", emboss=False)
-        row.operator("kinema.key_joints", text="", icon="DECORATE_KEYFRAME", emboss=False)
-
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         rig = active_rig(context)
@@ -364,21 +368,6 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
         if not joints:
             layout.label(text="This rig has no movable joints", icon="INFO")
             return
-
-        # Beside Rest Pose because it answers the same question -- "put the
-        # robot back" -- for the half Rest Pose cannot reach. Only shown when
-        # there is something to reset, so it does not imply the rig has meshes
-        # when it has none.
-        if builder.link_meshes(rig):
-            layout.operator(
-                "kinema.reset_link_meshes", text="Reset Meshes", icon="LOOP_BACK"
-            )
-            # Not a pose control, but it lives with the other "where is the
-            # geometry" answers, and it warns loudly rather than sitting quiet
-            # in a panel the user has scrolled past.
-            layout.prop(rig, "kinema_meshes_at_file_origin", icon="EXPORT")
-            if rig.kinema_meshes_at_file_origin:
-                layout.label(text="Meshes are off the rig", icon="ERROR")
 
         from ..ops import velocity
 
