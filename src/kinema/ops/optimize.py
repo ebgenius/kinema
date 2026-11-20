@@ -137,11 +137,18 @@ def prepare(context, rig) -> Job:
     Writes nothing.
     """
     try:
-        plan = wp.job_plan(rig).spans
+        job_plan = wp.job_plan(rig)
     except MotionsOverlap as exc:
         raise Overlapping(f"{exc}. Nothing was optimized") from exc
     except WaypointError as exc:
         raise Refused(str(exc)) from exc
+    plan = job_plan.spans
+    if job_plan.retimes:
+        # The keys are still at the frames the strips were laid out at.
+        raise Refused(
+            "A motion's strip was moved or scaled in the NLA editor: Generate Motion "
+            "to lay the job out there, then optimize"
+        )
     signature = wp.job_signature(rig)
     if not rig.kinema_generated_job:
         raise Refused("Generate Motion first: there's no job to optimize yet")

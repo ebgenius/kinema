@@ -606,6 +606,34 @@ class TestRetime:
         assert (back.frame_start, back.frame_end) == (61, 81)
         assert tuple(back.synced_frames) == (61, 81)
 
+    def test_a_retime_waits_for_the_operator_to_go_ahead(
+        self, addon, arm6, builder, strips, prefs
+    ):
+        """Refused after the job is planned -- Generate for want of an IK target,
+        Optimize for keys not at the new frames yet -- the Motions list keeps its
+        frames: a cancelled operator leaves no undo step."""
+        import bpy
+
+        optimize = importlib.import_module(f"{addon.__name__}.ops.optimize")
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        back = _motion(arm6, "back")
+        with pytest.raises(optimize.Refused, match="NLA editor"):
+            optimize.prepare(bpy.context, arm6)
+        assert (back.frame_start, back.frame_end) == (61, 81)
+        ik_name = arm6[builder.PROP_IK_BONE]
+        del arm6[builder.PROP_IK_BONE]
+        try:
+            with pytest.raises(RuntimeError, match="IK target"):
+                bpy.ops.kinema.generate_motion()
+        finally:
+            arm6[builder.PROP_IK_BONE] = ik_name
+        assert (back.frame_start, back.frame_end) == (61, 81)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert (back.frame_start, back.frame_end) == (71, 91)
+
     def test_a_copied_strip_retimes_nothing(self, arm6, builder, strips, prefs):
         """A strip duplicated in the NLA editor shows what the motion's does, so which
         one is the motion's can't be told: neither retimes it."""

@@ -447,8 +447,9 @@ def job_plan(rig):
             f"This job, saved before motions, couldn't be made into motions: "
             f"{rig.kinema_unconverted}. Add its motions in the Motions list"
         )
-    # A motion's strip moved or scaled in the NLA editor retimes it -- written
-    # once the job plans with the new frames, so a refusal changes nothing.
+    # A motion's strip moved or scaled in the NLA editor retimes it. The job is
+    # planned at the new frames, and the operator writes them once nothing will
+    # refuse it: a cancelled operator leaves no undo step to take them back.
     retimed, retimes = strips.catch_up(rig)
     motions = list(rig.kinema_motions)
     for motion, frames, _ in retimes:
@@ -460,9 +461,8 @@ def job_plan(rig):
             raise
         moved = ", ".join(f"'{m.name}' to {a}-{b}" for m, (a, b), _ in retimes)
         raise type(exc)(f"{exc}, with {moved} as its NLA strip was moved") from exc
-    strips.retime(retimes)
     job.notes[:0] = notes + retimed
-    return job
+    return replace(job, retimes=retimes)
 
 
 def refusal(rig, waypoint) -> str | None:
@@ -1013,6 +1013,7 @@ class KINEMA_OT_generate_motion(KinemaWaypointOperator):
             return {"CANCELLED"}
         # Only now, with nothing refused: a cancelled operator leaves no undo
         # step, so a change made before a refusal could not be taken back.
+        strips.retime(job.retimes)
         # Stored as Update stores a pose, so the waypoint *is* where its marker
         # is: Go To restores it there, and the next generation starts from it.
         for waypoint, values in followed:
@@ -1969,6 +1970,9 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
         samples = play_job(context, rig, plan)
         checks = check_job(context, rig, plan, samples=samples)
         estimate_frames_needed(context, rig, checks, samples)
+        if checks is not None:
+            # Written before the check is stored, which fingerprints the job.
+            strips.retime(job.retimes)
         flagged = store_check(rig, checks)
         if checks is None:
             self.report(
