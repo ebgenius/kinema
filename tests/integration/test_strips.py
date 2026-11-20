@@ -685,6 +685,31 @@ class TestRetime:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert (back.frame_start, back.frame_end) == (76, 96)
 
+    def test_a_retimed_job_gets_no_frames_needed_estimate(
+        self, addon, arm6, builder, strips, prefs, monkeypatch
+    ):
+        """The estimates of frames needed are for the job Optimize wrote. Retimed in
+        the NLA editor, it isn't that job any more, on the first Check as on the
+        next."""
+        import bpy
+
+        wp = importlib.import_module(f"{addon.__name__}.ops.waypoints")
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        calls = []
+        monkeypatch.setattr(
+            wp.motion_check, "frames_needed", lambda *args: calls.append(args) or 0
+        )
+        # As Optimize leaves it: the job it wrote, fingerprinted.
+        arm6.kinema_optimized_job = wp.job_signature(arm6)
+        bpy.ops.kinema.check_motion()
+        assert calls, "precondition: estimated for the job Optimize wrote"
+        calls.clear()
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        bpy.ops.kinema.check_motion()
+        assert calls == []
+
     def test_a_copied_strip_retimes_nothing(self, arm6, builder, strips, prefs):
         """A strip duplicated in the NLA editor shows what the motion's does, so which
         one is the motion's can't be told: neither retimes it."""

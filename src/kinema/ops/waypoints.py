@@ -1969,10 +1969,11 @@ class KINEMA_OT_check_motion(KinemaWaypointOperator):
         plan = job.spans
         samples = play_job(context, rig, plan)
         checks = check_job(context, rig, plan, samples=samples)
-        estimate_frames_needed(context, rig, checks, samples)
         if checks is not None:
-            # Written before the check is stored, which fingerprints the job.
+            # Written before anything reads the job's fingerprint: the estimates
+            # of frames needed, and the check stored with it.
             strips.retime(job.retimes)
+        estimate_frames_needed(context, rig, checks, samples)
         flagged = store_check(rig, checks)
         if checks is None:
             self.report(
