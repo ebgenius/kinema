@@ -1470,8 +1470,23 @@ def _iter_fcurve_containers(action, slot_handle=None):
         yield legacy
 
 
+class KINEMA_OT_dismiss_config_change(KinemaRigOperator):
+    bl_idname = "kinema.dismiss_config_change"
+    bl_label = "Dismiss"
+    bl_description = (
+        "Seen: stop warning that Auto Config changed the configuration. A linear "
+        "move from the last waypoint still can't cross the change"
+    )
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        forget_switch(active_rig(context).name)
+        return {"FINISHED"}
+
+
 classes = (
     KINEMA_OT_add_ik,
+    KINEMA_OT_dismiss_config_change,
     KINEMA_OT_remove_ik,
     KINEMA_OT_snap_ik,
     KINEMA_OT_set_ik_tip,

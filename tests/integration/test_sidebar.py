@@ -566,6 +566,39 @@ class TestStatusLine:
         assert quick_bar.status(bpy.context, arm6)[0]
 
 
+class TestDismiss:
+    def test_the_config_change_can_be_dismissed_for_the_usual_line(self, panel, arm6, addon):
+        """Seen and let be: the x on its line, and Following the target again."""
+        import types
+
+        import bpy
+
+        ik_ops = importlib.import_module(f"{addon.__name__}.ops.ik")
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = True
+        bpy.context.view_layer.update()
+
+        def drawn():
+            calls = []
+            panel.KINEMA_PT_quick_bar.draw(
+                types.SimpleNamespace(layout=_Layout(calls)), bpy.context
+            )
+            labels = [kwargs.get("text") for name, _, kwargs in calls if name == "label"]
+            operators = [args[0] for name, args, _ in calls if name == "operator"]
+            return labels, operators
+
+        labels, operators = drawn()
+        assert labels == ["Following the target"]
+        assert "kinema.dismiss_config_change" not in operators, "nothing to dismiss"
+        ik_ops._auto_switched.add(arm6.name)
+        labels, operators = drawn()
+        assert labels == ["Config changed: linear move can't cross it"]
+        assert "kinema.dismiss_config_change" in operators
+        assert "FINISHED" in bpy.ops.kinema.dismiss_config_change()
+        assert drawn()[0] == ["Following the target"]
+        arm6.kinema_ik_enabled = False
+
+
 class TestJointsBox:
     def test_the_joints_sit_in_a_box(self, panel, arm6):
         import types

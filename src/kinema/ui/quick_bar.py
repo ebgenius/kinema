@@ -178,10 +178,11 @@ def rows(keys) -> list[list[str]]:
     return first + [rest[index : index + 2] for index in range(0, len(rest), 2)]
 
 
-def status(context, rig) -> tuple[str, str]:
-    """What to say under the buttons, as (text, icon): the one thing most worth
-    knowing about the robot shown, and what to do about it. Always one line, so
-    the panels under the bar don't move as it changes."""
+def status(context, rig) -> tuple[str, str, str]:
+    """What to say under the buttons, as (text, icon, dismiss): the one thing most
+    worth knowing about the robot shown, and what to do about it, and the operator
+    that dismisses it, where it can be. Always one line, so the panels under the
+    bar don't move as it changes."""
     from ..ops import ik as ik_ops
     from ..ops.waypoints import ik_bone_name
     from .panel import is_selected
@@ -189,23 +190,27 @@ def status(context, rig) -> tuple[str, str]:
     if not is_selected(context, rig):
         # Kept while something else is selected: said here, above every panel,
         # so none is read as the selected object's.
-        return ("Not selected: the robot last shown", "RESTRICT_SELECT_ON")
+        return ("Not selected: the robot last shown", "RESTRICT_SELECT_ON", "")
     if ik_bone_name(rig) is None:
-        return ("Add an IK target to pose the tool by it", "INFO")
+        return ("Add an IK target to pose the tool by it", "INFO", "")
     if not rig.kinema_ik_enabled:
-        return ("Live IK paused: pose the joints, or turn it on", "INFO")
+        return ("Live IK paused: pose the joints, or turn it on", "INFO", "")
     if ik_ops.goal_off_tool(rig):
         if rig.kinema_auto_configuration and ik_ops.auto_found_nothing(rig):
             # Searched, and no configuration reaches it: out of the robot's reach.
-            return ("The target is out of reach", "ERROR")
+            return ("The target is out of reach", "ERROR", "")
         if rig.kinema_auto_configuration:
-            return ("The tool can't reach the target", "ERROR")
-        return ("Can't reach the target: try Config or Snap to Tool", "ERROR")
+            return ("The tool can't reach the target", "ERROR", "")
+        return ("Can't reach the target: try Config or Snap to Tool", "ERROR", "")
     if ik_ops.switched_since_recorded(rig):
-        # Kept until the next waypoint is recorded: a linear move from the last one
-        # can't cross the switch, and Generate would refuse it.
-        return ("Config changed: linear move can't cross it", "ERROR")
-    return ("Following the target", "CHECKMARK")
+        # Kept until the next waypoint is recorded, or dismissed: a linear move from
+        # the last one can't cross the switch, and Generate would refuse it.
+        return (
+            "Config changed: linear move can't cross it",
+            "ERROR",
+            "kinema.dismiss_config_change",
+        )
+    return ("Following the target", "CHECKMARK", "")
 
 
 def draw(layout, context, rig, keys) -> None:
@@ -226,5 +231,9 @@ def draw(layout, context, rig, keys) -> None:
         halves = column.split(factor=0.5)
         for key in row_keys:
             BUTTONS[key].draw(halves.column(), context, rig)
-    text, icon = status(context, rig)
-    box.label(text=text, icon=icon)
+    text, icon, dismiss = status(context, rig)
+    row = box.row()
+    row.label(text=text, icon=icon)
+    if dismiss:
+        # Seen, and let be: the usual line comes back.
+        row.operator(dismiss, text="", icon="X", emboss=False)

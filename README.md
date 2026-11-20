@@ -56,7 +56,8 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
   tool can't reach the target (and what to try), that the target is out of reach (once
   Auto Config has searched and found no configuration that reaches it), that Auto Config
   changed the configuration -- kept until the next waypoint is recorded, since a linear
-  move from the last one can't cross the change -- or that it is following the target. It
+  move from the last one can't cross the change, or dismissed with its x -- or that it is
+  following the target. It
   is always one line, so the panels under it stay put. With no robot, the quick
   bar offers to import one.
 - **Joints (FK)**, **Target (IK)**, **Waypoints**, **Motions** and **Motion Check**,
