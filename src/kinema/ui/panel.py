@@ -262,6 +262,10 @@ class KINEMA_PT_quick_bar(KinemaPanelBase, Panel):
         sub = row.row()
         sub.alignment = "RIGHT"
         sub.label(text=f"{len(builder.joint_bones(rig))} DoF")
+        if not is_selected(context, rig):
+            # Kept while something else is selected: said here, above every
+            # panel, so none is read as the selected object's.
+            layout.label(text="Not selected: the robot last shown", icon="RESTRICT_SELECT_ON")
         from ..prefs import get_prefs, quick_button_keys
 
         quick_bar.draw(layout, context, rig, quick_button_keys(get_prefs(context)))
@@ -290,16 +294,7 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
             box.label(text="Import one, or select an existing rig.")
             return
 
-        row = layout.row()
-        row.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
-        count = len(builder.joint_bones(rig))
-        sub = row.row()
-        sub.alignment = "RIGHT"
-        sub.label(text=f"{count} DoF")
-        if not is_selected(context, rig):
-            # Kept while something else is selected: say so, so the panels
-            # aren't read as the selected object's.
-            layout.label(text="Not selected: the robot last shown", icon="RESTRICT_SELECT_ON")
+        layout.label(text=f"{len(builder.joint_bones(rig))} joints", icon="ARMATURE_DATA")
         from ..ops import locate
 
         if locate.description_missing(rig):

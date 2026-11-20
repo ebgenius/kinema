@@ -223,3 +223,30 @@ class TestJointsHeader:
         assert operators == ["kinema.reset_pose", "kinema.graph_editor", "kinema.key_joints"]
         body = _drawn(panel.KINEMA_PT_joints, bpy.context)
         assert ("operator", "kinema.reset_pose") not in body
+
+
+class TestRobotNamed:
+    def test_the_quick_bar_names_the_robot_and_says_when_it_isnt_selected(self, panel, arm6):
+        import bpy
+
+        def labels():
+            calls = []
+            panel.KINEMA_PT_quick_bar.draw(
+                __import__("types").SimpleNamespace(layout=_Layout(calls)), bpy.context
+            )
+            return [kwargs.get("text") for name, _, kwargs in calls if name == "label"]
+
+        assert labels()[:2] == ["arm6", "6 DoF"]
+        assert "Not selected: the robot last shown" not in labels()
+        arm6.select_set(False)
+        bpy.context.view_layer.objects.active = None
+        assert "Not selected: the robot last shown" in labels()
+
+    def test_robot_settings_names_it_in_its_header(self, panel, arm6):
+        import types
+
+        import bpy
+
+        calls = []
+        panel.KINEMA_PT_main.draw_header(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
+        assert [kwargs.get("text") for name, _, kwargs in calls if name == "label"] == ["arm6"]
