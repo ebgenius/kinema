@@ -169,16 +169,10 @@ class RigSolver:
             # all, not at its channel value -- see chain.displayed_configuration.
             seed = chain_mod.displayed_configuration(rig, self.chain, seed, only=held)
 
-        result = None
-        if mode == MODE_PYROKI:
-            solver = self.pyroki(rig, build=not (live and self.rig_name in _deferred))
-            if solver is not None:
-                result = self._solve_pyroki(
-                    solver, seed, goal, elbow=self.elbow_goal(rig, solver), held=held
-                )
-
-        if result is None:
-            result = numpy_backend.solve(self.chain, seed, goal, held=held)
+        result = self.solve_for(
+            rig, goal, seed, mode, held=held,
+            build=not (live and self.rig_name in _deferred), swivel=True,
+        )
 
         # Held joints are not written back. They are the animator's input, and
         # writing the displayed value over a channel dragged past its limit would
@@ -186,6 +180,31 @@ class RigSolver:
         chain_mod.write_configuration(rig, self.chain, result.q, skip=held)
         self.last_result = result
         self.solve_count += 1
+        return result
+
+    def solve_for(
+        self, rig, goal: np.ndarray, seed: np.ndarray, mode: str = MODE_PYROKI, *,
+        held: np.ndarray | None = None, build: bool = True, swivel: bool = False,
+    ) -> SolveResult:
+        """The chain's joint values that put the tip at ``goal``, from ``seed``,
+        written nowhere: the rig is left as it was.
+
+        ``goal`` is the tip bone's matrix in the solvers' frame (see
+        :func:`solver_goal`); ``held`` the joints that stay at their seed.
+        ``swivel`` steers the elbow by the rig's swivel, which is read off its IK
+        goal: only for a solve of that goal. PyRoki in its mode, where it can be
+        built, else NumPy; OFF solves on PyRoki, as a search does.
+        """
+        if held is None:
+            held = np.zeros(self.chain.dof, dtype=bool)
+        result = None
+        if mode in (MODE_PYROKI, MODE_OFF):
+            solver = self.pyroki(rig, build=build)
+            if solver is not None:
+                elbow = self.elbow_goal(rig, solver) if swivel else None
+                result = self._solve_pyroki(solver, seed, goal, elbow=elbow, held=held)
+        if result is None:
+            result = numpy_backend.solve(self.chain, seed, goal, held=held)
         return result
 
     def compile(self, rig) -> bool:

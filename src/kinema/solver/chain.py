@@ -27,7 +27,7 @@ import numpy as np
 LOCAL_AXIS = np.array([0.0, 1.0, 0.0])
 
 
-def _rotation_about_y(angle: float) -> np.ndarray:
+def rotation_about_y(angle: float) -> np.ndarray:
     cos, sin = np.cos(angle), np.sin(angle)
     matrix = np.eye(4)
     matrix[0, 0] = cos
@@ -37,7 +37,7 @@ def _rotation_about_y(angle: float) -> np.ndarray:
     return matrix
 
 
-def _translation_along_y(distance: float) -> np.ndarray:
+def translation_along_y(distance: float) -> np.ndarray:
     matrix = np.eye(4)
     matrix[1, 3] = distance
     return matrix
@@ -68,8 +68,8 @@ class Chain:
         """Per-joint local motion matrices for configuration ``q``."""
         return np.stack(
             [
-                _rotation_about_y(float(value)) if revolute
-                else _translation_along_y(float(value))
+                rotation_about_y(float(value)) if revolute
+                else translation_along_y(float(value))
                 for value, revolute in zip(q, self.is_revolute, strict=True)
             ]
         )
@@ -126,11 +126,22 @@ def pose_error(current: np.ndarray, target: np.ndarray) -> np.ndarray:
     error[:3] = target[:3, 3] - current[:3, 3]
 
     relative = target[:3, :3] @ current[:3, :3].T
-    # Axis-angle from a rotation matrix, guarding the degenerate cases where
-    # the usual formula divides by zero.
-    cos_angle = np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0)
-    angle = float(np.arccos(cos_angle))
-    if angle < 1e-9:
+    # Axis-angle from a rotation matrix. The angle from both its sine (the skew
+    # part's length) and cosine (the trace), not the cosine alone: near zero an
+    # arccos of the trace is only as good as the square root of the matrix's
+    # error, and a goal read off Blender's float32 matrices pushed it past 1,
+    # reading a turn of 4e-4 rad as none.
+    skew = 0.5 * np.array(
+        [
+            relative[2, 1] - relative[1, 2],
+            relative[0, 2] - relative[2, 0],
+            relative[1, 0] - relative[0, 1],
+        ]
+    )
+    sin_angle = float(np.linalg.norm(skew))
+    cos_angle = float((np.trace(relative) - 1.0) * 0.5)
+    angle = float(np.arctan2(sin_angle, cos_angle))
+    if angle < 1e-12:
         error[3:] = 0.0
         return error
     if angle > np.pi - 1e-6:
@@ -144,14 +155,7 @@ def pose_error(current: np.ndarray, target: np.ndarray) -> np.ndarray:
         error[3:] = axis * angle
         return error
 
-    axis = np.array(
-        [
-            relative[2, 1] - relative[1, 2],
-            relative[0, 2] - relative[2, 0],
-            relative[1, 0] - relative[0, 1],
-        ]
-    ) / (2.0 * np.sin(angle))
-    error[3:] = axis * angle
+    error[3:] = skew / sin_angle * angle
     return error
 
 

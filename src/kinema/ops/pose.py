@@ -33,6 +33,40 @@ def apply_joint_values(rig, values) -> None:
             pose_bone.rotation_euler[1] = float(value)
 
 
+def bone_matrices(rig, values) -> dict:
+    """Every pose bone's matrix, in armature space, with the joints at ``values``
+    (one per joint bone) and the rest as they are posed now -- without moving the
+    rig.
+
+    Each joint bone turns about, or slides along, its own Y, as its channel does.
+    Constraints aren't applied: these are the values given, as a solve gives them.
+    """
+    import numpy as np
+
+    from ..solver.chain import rotation_about_y, translation_along_y
+
+    joints = {
+        bone.name: float(value)
+        for bone, value in zip(builder.joint_bones(rig), values, strict=False)
+    }
+    found = {}
+    # Pose bones come parents first: each parent is found before its children.
+    for pose_bone in rig.pose.bones:
+        bone = pose_bone.bone
+        rest = np.array(bone.matrix_local)
+        parent_rest = np.array(bone.parent.matrix_local) if bone.parent is not None else None
+        local = rest if parent_rest is None else np.linalg.inv(parent_rest) @ rest
+        if pose_bone.name in joints:
+            value = joints[pose_bone.name]
+            prismatic = bone.get(builder.PROP_JOINT_TYPE, "revolute") == "prismatic"
+            motion = translation_along_y(value) if prismatic else rotation_about_y(value)
+        else:
+            motion = np.array(pose_bone.matrix_basis)
+        parent = found[bone.parent.name] if bone.parent is not None else np.eye(4)
+        found[pose_bone.name] = parent @ local @ motion
+    return found
+
+
 def set_joint_values(rig, values) -> None:
     """Stand the rig's joints at ``values``, and put its IK goal on the bone IK aims
     with, so live IK leaves them there rather than dragging the arm back to the

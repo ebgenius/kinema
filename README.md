@@ -828,6 +828,11 @@ metres), and small frozen dataclasses. A call that can't be done raises
 | `joints(rig)` | Each moving joint: its name, bone, type, and the limits the rig holds |
 | `joint_values(rig)`, `set_joint_values(rig, values)` | Where the joints stand. Setting them moves the IK goal to the tool, so live IK leaves them there |
 | `tools(rig)`, `tool_frame(rig, tool=None)` | The tool centre point, the link it's measured from with its offset, and where it is now, its Z out of the tool |
+| `solve(rig, pose, seed=None, tool=None)` | Joint values that stand the tool at a world-space pose, and whether they reach it, without moving the rig. Joints the rig holds stay at their seed |
+| `capsules(rig)` | The capsules fitted to the rig, each on its bone |
+| `obstacles(scene=None)`, `add_obstacle(obj, shape=None)`, `remove_obstacle(obj)` | What the robots are kept clear of: a box, a sphere or a floor |
+| `clearance(rig, values=None)` | The closest approach to an obstacle, at the joint values given or where the rig stands, and which bone and obstacle |
+| `reachable(rig, pose, seed=None, tool=None, keep_clear=0.0)` | Whether the tool can stand at a pose: reached, every joint in its range, and clear by `keep_clear` metres. `.ok` is all three |
 
 ## Requirements
 
