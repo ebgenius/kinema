@@ -235,16 +235,30 @@ class KinemaPanelBase:
 
 
 class KINEMA_PT_quick_bar(KinemaPanelBase, Panel):
-    """The robot shown, and the buttons used all the time, above every panel.
+    """The buttons used all the time, above every panel, under a header naming
+    the robot shown and its joints.
 
-    Header-less, so it stays first: there is nothing to drag or collapse it by.
-    With no robot, it offers to import one.
+    A panel like the others, first to begin with: dragged, collapsed or pinned
+    as they are. Blender outlines a panel with no header just the same, so a
+    header costs nothing and says whose buttons they are. With no robot, it
+    offers to import one.
     """
 
     bl_idname = "KINEMA_PT_quick_bar"
-    bl_label = "Quick Bar"
-    bl_options = {"HIDE_HEADER"}
+    bl_label = ""
     bl_order = ORDER_QUICK_BAR
+
+    def draw_header(self, context: bpy.types.Context) -> None:
+        rig = active_rig(context)
+        if rig is None:
+            self.layout.label(text="No robot", icon="ARMATURE_DATA")
+            return
+        self.layout.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
+
+    def draw_header_preset(self, context: bpy.types.Context) -> None:
+        rig = active_rig(context)
+        if rig is not None:
+            self.layout.label(text=f"{len(builder.joint_bones(rig))} DoF")
 
     def draw(self, context: bpy.types.Context) -> None:
         from . import quick_bar
@@ -257,11 +271,6 @@ class KINEMA_PT_quick_bar(KinemaPanelBase, Panel):
             row.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
             return
 
-        row = layout.row()
-        row.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
-        sub = row.row()
-        sub.alignment = "RIGHT"
-        sub.label(text=f"{len(builder.joint_bones(rig))} DoF")
         if not is_selected(context, rig):
             # Kept while something else is selected: said here, above every
             # panel, so none is read as the selected object's.

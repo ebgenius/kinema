@@ -242,6 +242,10 @@ class TestJointsHeader:
 
 
 class TestRobotNamed:
+    def test_the_quick_bar_has_a_header_to_drag_collapse_and_pin_it_by(self, panel):
+        """Header-less, Blender outlined it as a panel all the same."""
+        assert "HIDE_HEADER" not in getattr(panel.KINEMA_PT_quick_bar, "bl_options", set())
+
     def test_the_quick_bar_names_the_robot_and_says_when_it_isnt_selected(self, panel, arm6):
         import bpy
 
@@ -252,7 +256,15 @@ class TestRobotNamed:
             )
             return [kwargs.get("text") for name, _, kwargs in calls if name == "label"]
 
-        assert labels()[:2] == ["arm6", "6 DoF"]
+        header, preset = [], []
+        panel.KINEMA_PT_quick_bar.draw_header(
+            __import__("types").SimpleNamespace(layout=_Layout(header)), bpy.context
+        )
+        panel.KINEMA_PT_quick_bar.draw_header_preset(
+            __import__("types").SimpleNamespace(layout=_Layout(preset)), bpy.context
+        )
+        assert [kwargs.get("text") for name, _, kwargs in header if name == "label"] == ["arm6"]
+        assert [kwargs.get("text") for name, _, kwargs in preset if name == "label"] == ["6 DoF"]
         assert "Not selected: the robot last shown" not in labels()
         arm6.select_set(False)
         bpy.context.view_layer.objects.active = None
