@@ -138,10 +138,18 @@ def rows(keys) -> list[list[str]]:
 
 
 def draw(layout, context, rig, keys) -> None:
-    """The quick bar for ``rig``, with the buttons ``keys`` names."""
-    column = layout.column(align=True)
+    """The quick bar for ``rig``, with the buttons ``keys`` names.
+
+    Each button in a column of its own, the two of a row split down the middle,
+    apart: an aligned row shares its width out by what each button holds, so one
+    with arrows took more than its half, and pressed against its neighbour.
+    """
+    column = layout.column()
     column.scale_y = 1.2
     for row_keys in rows(keys):
-        row = column.row(align=True)
+        if len(row_keys) == 1:
+            BUTTONS[row_keys[0]].draw(column.row(), context, rig)
+            continue
+        halves = column.split(factor=0.5)
         for key in row_keys:
-            BUTTONS[key].draw(row, context, rig)
+            BUTTONS[key].draw(halves.column(), context, rig)

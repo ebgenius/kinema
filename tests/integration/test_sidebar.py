@@ -129,6 +129,22 @@ class TestQuickBar:
             ("operator", "kinema.check_motion"),
         ]
 
+    def test_two_of_a_row_get_half_the_bar_each(self, panel, arm6):
+        """Split down the middle, each in its own column: an aligned row shared its
+        width by content, and Configurations' arrows took more than their half."""
+        import types
+
+        import bpy
+
+        calls = []
+        panel.KINEMA_PT_quick_bar.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
+        names = [name for name, _, _ in calls]
+        splits = [kwargs for name, _, kwargs in calls if name == "split"]
+        assert splits == [{"factor": 0.5}, {"factor": 0.5}], "two pairs, after Live IK alone"
+        first_split = names.index("split")
+        assert "operator" not in names[first_split:names.index("column", first_split)]
+        assert names.count("column") >= 5, "the bar's, and one for each half"
+
     def test_live_ik_offers_an_ik_target_where_there_is_none(self, panel, arm6):
         import bpy
 
