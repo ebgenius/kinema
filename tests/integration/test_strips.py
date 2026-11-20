@@ -507,6 +507,24 @@ class TestRetime:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert (back.frame_start, back.frame_end) == (76, 96)
 
+    def test_a_strip_moved_back_where_it_was_laid_out_retimes(
+        self, arm6, builder, strips, prefs
+    ):
+        """Caught up, then moved back to the frames it was laid out at: the strip
+        plays what its action shows again, and that is a move too."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        bpy.ops.kinema.check_motion()
+        back = _motion(arm6, "back")
+        assert (back.frame_start, back.frame_end) == (71, 91), "precondition: caught up"
+        _strip(strips, arm6, "back").frame_start_ui = 61
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert (back.frame_start, back.frame_end) == (61, 81)
+
     def test_a_file_laid_out_before_retiming_still_retimes(
         self, arm6, builder, strips, prefs
     ):

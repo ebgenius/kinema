@@ -555,29 +555,34 @@ def catch_up(rig) -> list:
     for strip in every:
         shown = (round(strip.action_frame_start), round(strip.action_frame_end))
         showing.setdefault(shown, []).append(strip)
+    noted = set()
     for strip in every:
-        if not _moved(strip):
-            continue
         shown = (round(strip.action_frame_start), round(strip.action_frame_end))
         plays = (round(strip.frame_start), round(strip.frame_end))
         motion = motions.get(shown)
         if motion is None:
-            notes.append(
-                f"The NLA strip '{strip.name}' isn't a motion's, so it follows the "
-                f"motions around it: the next Generate puts it back"
-            )
+            if _moved(strip):
+                notes.append(
+                    f"The NLA strip '{strip.name}' isn't a motion's, so it follows the "
+                    f"motions around it: the next Generate puts it back"
+                )
             continue
         if len(showing[shown]) > 1:
             # A strip duplicated in the NLA editor shows what the motion's does.
-            notes.append(
-                f"{len(showing[shown])} strips show '{motion.name}', so it isn't "
-                f"retimed: delete the copies, and the next Generate lays it out again"
-            )
+            if shown not in noted:
+                noted.add(shown)
+                notes.append(
+                    f"{len(showing[shown])} strips show '{motion.name}', so it isn't "
+                    f"retimed: delete the copies, and the next Generate lays it out again"
+                )
             continue
-        current = (motion.frame_start, motion.frame_end)
-        if current == plays:
+        # Against the frames the motion last had in step with its strip, not the
+        # ones it was laid out at: a strip moved, caught up, and moved back to
+        # where it was laid out has moved again.
+        current, synced = (motion.frame_start, motion.frame_end), _laid(motion, "synced_frames")
+        if plays == synced or current == plays:
             continue
-        if current != _laid(motion, "synced_frames"):
+        if current != synced:
             notes.append(
                 f"'{motion.name}' was retimed in the Motions list and in the NLA editor: "
                 f"the Motions list's frames {current[0]}-{current[1]} are kept"
