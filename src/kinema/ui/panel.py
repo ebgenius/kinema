@@ -271,10 +271,6 @@ class KINEMA_PT_quick_bar(KinemaPanelBase, Panel):
             row.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
             return
 
-        if not is_selected(context, rig):
-            # Kept while something else is selected: said here, above every
-            # panel, so none is read as the selected object's.
-            layout.label(text="Not selected: the robot last shown", icon="RESTRICT_SELECT_ON")
         from ..prefs import get_prefs, quick_button_keys
 
         quick_bar.draw(layout, context, rig, quick_button_keys(get_prefs(context)))

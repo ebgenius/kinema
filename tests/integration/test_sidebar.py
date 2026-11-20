@@ -406,3 +406,63 @@ class TestSnapToTool:
         goal.rotation_euler = Euler((0.1, 0.0, 0.0))
         bpy.context.view_layer.update()
         assert ik_ops.goal_off_tool(arm6)
+
+
+class TestQuickBarBox:
+    """The buttons in a box, and under them what most needs saying."""
+
+    def _said(self, panel):
+        import types
+
+        import bpy
+
+        calls = []
+        panel.KINEMA_PT_quick_bar.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
+        return calls, [kwargs.get("text") for name, _, kwargs in calls if name == "label"]
+
+    def test_the_buttons_sit_in_a_box(self, panel, arm6):
+        calls, _ = self._said(panel)
+        names = [name for name, _, _ in calls]
+        assert names.index("box") < names.index("operator")
+
+    def test_what_it_says_as_the_robot_goes(self, panel, arm6, addon):
+        import bpy
+        from mathutils import Vector
+
+        handlers = importlib.import_module(f"{addon.__name__}.handlers")
+
+        assert self._said(panel)[1] == ["Add an IK target to pose the tool by it"]
+        # Bent, so a short move of the target is in reach: at rest arm6 is straight out.
+        builder = importlib.import_module(f"{addon.__name__}.rig.builder")
+        for bone, value in zip(
+            builder.joint_bones(arm6), [0.4, -0.7, 1.1, 0.2, 0.5, 0.0], strict=True
+        ):
+            bone.rotation_euler[1] = value
+        bpy.context.view_layer.update()
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = False
+        assert self._said(panel)[1] == ["Live IK paused: pose the joints, or press Play"]
+        arm6.kinema_ik_enabled = True
+        bpy.context.view_layer.update()
+        assert self._said(panel)[1] == ["Following the target"]
+
+        assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=12)
+        goal = arm6.pose.bones[arm6["kinema_ik_bone"]]
+        goal.location += Vector((0.0, 0.0, 0.01))
+        bpy.context.view_layer.update()
+        handlers.solve_rig(arm6, force=True, live=True)  # as the handler would
+        bpy.context.view_layer.update()
+        assert self._said(panel)[1] == ["The target moved: Config searches again"]
+
+        goal.location += Vector((0.0, 0.0, 5.0))
+        bpy.context.view_layer.update()
+        assert self._said(panel)[1] == [
+            "The tool can't reach the target",
+            "Try Config or Auto Config, or Snap to Tool",
+        ]
+        arm6.kinema_auto_configuration = True
+        assert self._said(panel)[1] == [
+            "The target is out of reach",
+            "Snap to Tool brings it back",
+        ]
+        arm6.kinema_ik_enabled = False

@@ -51,7 +51,11 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
   tool and pressable once it is left off it; and **Motion Check** beside **Graph Editor**. Which buttons, and their order, is yours to choose in the add-on's preferences,
   under **Quick Bar**: move them up or down, remove them, add others (Key All, Record
   Waypoint, Generate, Optimize, Bake IK), or Reset. Two sit to a row; with an odd number,
-  the first spans the bar. With no robot, the quick bar offers to import one.
+  the first spans the bar. Under them, the bar says what most needs knowing and what to do
+  about it: that the robot shown isn't the one selected, that Live IK is paused, that the
+  tool can't reach the target (and what to try), that the target moved since the
+  configurations were found, or that it is following the target. With no robot, the quick
+  bar offers to import one.
 - **Joints (FK)**, **Inverse Kinematics**, **Waypoints**, **Motions** and **Motion Check**,
   the panels used most, each on its own: drag one by its grip to put it elsewhere, collapse
   it, or Shift-click its header to pin it on every tab, as Blender's own sidebar panels go.
