@@ -1335,16 +1335,17 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             body.label(text="An arm reaches a pose several ways.", icon="BLANK1")
             return
 
+        stale = ik_ops.solutions_are_stale(rig)
+        current = min(int(rig.kinema_active_solution) + 1, count)
         row = body.row(align=True)
         row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
-        current = int(rig.kinema_active_solution)
-        row.label(text=f"Solution {min(current + 1, count)} of {count}")
+        row.label(text=f"Solution {current}" if stale else f"Solution {current} of {count}")
         row.operator("kinema.apply_solution", text="", icon="TRIA_RIGHT").step = 1
 
-        if ik_ops.solutions_are_stale(rig):
-            # They describe how to reach one pose. The target has moved, so
-            # they describe nothing -- better said than silently offered.
-            body.label(text="The target moved; search again", icon="ERROR")
+        if stale:
+            # Found for a pose the target has left: the one picked is named, and
+            # the arrows find them again for this one before stepping.
+            body.label(text="The target moved: the arrows search again", icon="INFO")
 
     @staticmethod
     def _draw_swivel(layout, rig) -> None:

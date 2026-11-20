@@ -23,7 +23,8 @@ def panel(addon):
 
 def _kinema_panels(panel):
     return [
-        cls for cls in panel.classes
+        cls
+        for cls in panel.classes
         if isinstance(cls, type) and getattr(cls, "bl_category", None) == panel.CATEGORY
     ]
 
@@ -48,7 +49,8 @@ class TestLayout:
     def test_robot_settings_holds_what_is_set_once(self, panel):
         assert panel.KINEMA_PT_main.bl_label == "Robot Settings"
         under = [
-            cls for cls in _kinema_panels(panel)
+            cls
+            for cls in _kinema_panels(panel)
             if getattr(cls, "bl_parent_id", "") == "KINEMA_PT_main"
         ]
         assert _in_order(under) == [
@@ -142,8 +144,37 @@ class TestQuickBar:
         splits = [kwargs for name, _, kwargs in calls if name == "split"]
         assert splits == [{"factor": 0.5}, {"factor": 0.5}], "two pairs, after Live IK alone"
         first_split = names.index("split")
-        assert "operator" not in names[first_split:names.index("column", first_split)]
+        assert "operator" not in names[first_split : names.index("column", first_split)]
         assert names.count("column") >= 5, "the bar's, and one for each half"
+
+    def test_configurations_say_the_one_picked_once_the_target_moved(self, panel, arm6):
+        """n/m while they are for this pose; n alone once it moved, and nothing red."""
+        import types
+
+        import bpy
+        from mathutils import Vector
+
+        def texts():
+            calls = []
+            panel.KINEMA_PT_quick_bar.draw(
+                types.SimpleNamespace(layout=_Layout(calls)), bpy.context
+            )
+            return [
+                kwargs.get("text")
+                for name, args, kwargs in calls
+                if name == "operator" and args[0] == "kinema.find_solutions"
+            ]
+
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = False
+        assert texts() == ["Configurations"]
+        assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=20)
+        (fresh,) = texts()
+        assert fresh.startswith("Config ") and "/" in fresh
+        goal = arm6.pose.bones[arm6["kinema_ik_bone"]]
+        goal.matrix.translation = goal.matrix.translation + Vector((0.0, 0.05, 0.0))
+        bpy.context.view_layer.update()
+        assert texts() == [fresh.split("/")[0]]
 
     def test_live_ik_offers_an_ik_target_where_there_is_none(self, panel, arm6):
         import bpy
@@ -195,10 +226,15 @@ class TestQuickBarPreferences:
         assert "FINISHED" in bpy.ops.kinema.quick_button_remove(index=4)
         assert "FINISHED" in bpy.ops.kinema.quick_button_add(button="KEY_JOINTS")
         assert prefs.quick_button_keys() == [
-            "REST_POSE", "LIVE_IK", "GRAPH_EDITOR", "CONFIGURATIONS", "KEY_JOINTS"
+            "REST_POSE",
+            "LIVE_IK",
+            "GRAPH_EDITOR",
+            "CONFIGURATIONS",
+            "KEY_JOINTS",
         ]
         assert _drawn(panel.KINEMA_PT_quick_bar, bpy.context)[0] == (
-            "operator", "kinema.reset_pose"
+            "operator",
+            "kinema.reset_pose",
         ), "the panel draws them"
         assert "FINISHED" in bpy.ops.kinema.quick_button_reset()
         assert prefs.quick_button_keys() == list(quick_bar.DEFAULT)

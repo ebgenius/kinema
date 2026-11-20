@@ -314,7 +314,8 @@ class KINEMA_OT_find_solutions(KinemaRigOperator):
     bl_label = "Find Solutions"
     bl_description = (
         "Search for other arm configurations that reach the same tool pose, "
-        "so you can pick the one that reads best on camera"
+        "so you can pick the one that reads best on camera. The robot stays where "
+        "it stands"
     )
 
     seeds: IntProperty(
@@ -327,52 +328,66 @@ class KINEMA_OT_find_solutions(KinemaRigOperator):
     )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        rig = active_rig(context)
-        ik_name = rig.get(builder.PROP_IK_BONE)
-        if not ik_name or ik_name not in rig.pose.bones:
-            self.report({"ERROR"}, "This rig has no IK target to search around")
-            return {"CANCELLED"}
+        return reported(self, search_solutions(context, active_rig(context), self.seeds))
 
-        solver = manager.get_solver(rig, ik_name)
-        if solver is None:
-            self.report({"ERROR"}, "Could not prepare a solver for this rig")
-            return {"CANCELLED"}
 
-        context.view_layer.update()
-        before = chain.read_configuration(rig, solver.chain)
-        context.window.cursor_set("WAIT")
-        # Suspended for the same reason baking suspends: the search writes
-        # nothing, but it runs many solves and the live handler would interleave
-        # its own with them.
-        try:
-            with handlers.suspended():
-                found = manager.find_solutions(rig, solver, seeds=self.seeds)
-        finally:
-            context.window.cursor_set("DEFAULT")
+def search_solutions(context, rig, seeds: int = 0) -> Outcome:
+    """Find the configurations that reach ``rig``'s goal, leaving the arm as it
+    stands, and select the one it stands in: what Find Solutions does."""
+    ik_name = rig.get(builder.PROP_IK_BONE)
+    if not ik_name or ik_name not in rig.pose.bones:
+        return Outcome(False, "ERROR", "This rig has no IK target to search around")
 
-        _store_solutions(rig, solver, found)
-        # Put the arm back: searching is not a way to lose the pose you had.
-        chain.write_configuration(rig, solver.chain, before)
-        context.view_layer.update()
+    solver = manager.get_solver(rig, ik_name)
+    if solver is None:
+        return Outcome(False, "ERROR", "Could not prepare a solver for this rig")
 
-        if not found:
-            self.report(
-                {"WARNING"},
-                "No configuration reached that pose. It may be out of reach",
-            )
-            return {"CANCELLED"}
-        self.report(
-            {"INFO"},
-            f"Found {len(found)} configuration{'s' if len(found) != 1 else ''} "
-            f"(from {self.seeds or 40} seeds; more seeds may find more)",
+    context.view_layer.update()
+    before = chain.read_configuration(rig, solver.chain)
+    window = getattr(context, "window", None)
+    if window is not None:
+        window.cursor_set("WAIT")
+    # Suspended for the same reason baking suspends: the search writes
+    # nothing, but it runs many solves and the live handler would interleave
+    # its own with them.
+    try:
+        with handlers.suspended():
+            found = manager.find_solutions(rig, solver, seeds=seeds)
+    finally:
+        if window is not None:
+            window.cursor_set("DEFAULT")
+
+    _store_solutions(rig, solver, found)
+    if found:
+        # The one the arm stands in: searching again is not a way to be moved
+        # on to another, and the arrows step from where the arm is.
+        rig.kinema_active_solution = int(
+            np.argmin([np.max(np.abs(np.asarray(s.q) - before)) for s in found])
         )
-        return {"FINISHED"}
+    # Put the arm back: searching is not a way to lose the pose you had.
+    chain.write_configuration(rig, solver.chain, before)
+    context.view_layer.update()
+
+    if not found:
+        return Outcome(
+            False, "WARNING", "No configuration reached that pose. It may be out of reach"
+        )
+    return Outcome(
+        True,
+        "INFO",
+        f"Found {len(found)} configuration{'s' if len(found) != 1 else ''} "
+        f"(from {seeds or 40} seeds; more seeds may find more)",
+    )
 
 
 class KINEMA_OT_apply_solution(KinemaRigOperator):
     bl_idname = "kinema.apply_solution"
     bl_label = "Apply Solution"
-    bl_description = "Pose the robot in this configuration"
+    bl_description = (
+        "Pose the robot in the next or previous configuration. Where the target "
+        "has moved since they were found, they are found again first, from where "
+        "the arm stands"
+    )
 
     #: Index into the stored solutions. -1 steps by ``step`` instead.
     index: IntProperty(name="Index", default=-1, options={"SKIP_SAVE"})
@@ -380,6 +395,12 @@ class KINEMA_OT_apply_solution(KinemaRigOperator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
+        if self.index < 0 and (not solution_count(rig) or solutions_are_stale(rig)):
+            # Found for a goal since moved, or not yet: found again for this one,
+            # from where the arm stands, and the step taken from there.
+            searched = search_solutions(context, rig)
+            if not searched.done:
+                return reported(self, searched)
         stored = _read_solutions(rig)
         if not stored:
             self.report({"ERROR"}, "No solutions found yet")

@@ -220,6 +220,66 @@ class TestFindingSolutions:
         bpy.context.view_layer.update()
         assert ik_ops.solutions_are_stale(arm6)
 
+    def test_a_search_selects_the_configuration_the_arm_stands_in(
+        self, arm6, builder, ik_ops
+    ):
+        """Searching again isn't a way to be moved on to another one."""
+        import bpy
+
+        _set_q(builder, arm6, REACHABLE)
+        bpy.ops.kinema.snap_ik()
+        assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=30)
+        stored = ik_ops._read_solutions(arm6)
+        assert len(stored) > 1, "precondition: more than one to choose from"
+        chosen = np.array(stored[arm6.kinema_active_solution])
+        np.testing.assert_allclose(chosen, REACHABLE, atol=1e-3)
+        np.testing.assert_allclose(_q(builder, arm6), REACHABLE, atol=1e-6)
+
+    def _moved(self, arm6, builder):
+        """The target moved 5 cm off the tool, the arm left where it was."""
+        import bpy
+        from mathutils import Vector
+
+        goal = arm6.pose.bones[arm6.get(builder.PROP_IK_BONE)]
+        goal.matrix.translation = goal.matrix.translation + Vector((0.0, 0.05, 0.0))
+        bpy.context.view_layer.update()
+
+    def test_searching_again_once_the_target_moved_leaves_the_arm(
+        self, arm6, builder, ik_ops
+    ):
+        import bpy
+
+        _set_q(builder, arm6, REACHABLE)
+        bpy.ops.kinema.snap_ik()
+        bpy.ops.kinema.find_solutions(seeds=30)
+        self._moved(arm6, builder)
+        assert ik_ops.solutions_are_stale(arm6), "precondition: stale"
+        before = _q(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.find_solutions(seeds=30)
+        assert not ik_ops.solutions_are_stale(arm6)
+        np.testing.assert_allclose(_q(builder, arm6), before, atol=1e-6)
+
+    def test_an_arrow_once_the_target_moved_searches_again_then_steps(
+        self, arm6, builder, ik_ops
+    ):
+        """Found again for the goal as it is, from where the arm stands: the step is
+        from the configuration nearest it."""
+        import bpy
+
+        _set_q(builder, arm6, REACHABLE)
+        bpy.ops.kinema.snap_ik()
+        bpy.ops.kinema.find_solutions(seeds=30)
+        self._moved(arm6, builder)
+        before = _q(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.apply_solution(step=1)
+        assert not ik_ops.solutions_are_stale(arm6), "found again for the moved target"
+        stored = [np.array(q) for q in ik_ops._read_solutions(arm6)]
+        assert len(stored) > 1, "precondition: more than one to step between"
+        index = arm6.kinema_active_solution
+        nearest = int(np.argmin([np.max(np.abs(q - before)) for q in stored]))
+        assert index == (nearest + 1) % len(stored)
+        np.testing.assert_allclose(_q(builder, arm6), stored[index], atol=1e-5)
+
     def test_live_ik_stays_on_the_chosen_configuration(self, arm6, builder, ik_ops):
         """Otherwise picking one would be undone by the next viewport update."""
         import bpy

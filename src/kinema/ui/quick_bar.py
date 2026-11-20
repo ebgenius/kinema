@@ -46,18 +46,23 @@ def _live_ik(layout, _context, rig) -> None:
 
 
 def _configurations(layout, _context, rig) -> None:
-    """Step through the configurations found for this pose, or find them."""
+    """Step through the configurations found for this pose, or find them.
+
+    Once the target has moved, they were found for a pose it has left: the one
+    picked is still named, without how many there were, and the middle searches
+    again from where the arm stands, the arrows search again and step.
+    """
     from ..ops import ik as ik_ops
 
     count = ik_ops.solution_count(rig)
     if not count:
         layout.operator("kinema.find_solutions", text="Configurations", icon="VIEWZOOM")
         return
-    row = layout.row(align=True)
-    row.alert = ik_ops.solutions_are_stale(rig)
-    row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
     current = min(int(rig.kinema_active_solution) + 1, count)
-    row.operator("kinema.find_solutions", text=f"Config {current}/{count}")
+    text = f"Config {current}" if ik_ops.solutions_are_stale(rig) else f"Config {current}/{count}"
+    row = layout.row(align=True)
+    row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
+    row.operator("kinema.find_solutions", text=text)
     row.operator("kinema.apply_solution", text="", icon="TRIA_RIGHT").step = 1
 
 
