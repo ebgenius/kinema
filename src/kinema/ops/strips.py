@@ -65,8 +65,9 @@ BEFORE, AFTER = "Before", "After"
 #: Marks an action as a rig's job (its value is the rig's name), and as a bake.
 PROP_JOB = "kinema_job"
 PROP_BAKED = "kinema_baked"
-#: On the job's action: the identifier of the slot its strips show, which is the
-#: rig's. A track showing another slot of the same action is someone else's.
+#: On the rig: the handle of the slot its job's strips show. A track showing
+#: another slot of the same action is someone else's -- another rig's, sharing
+#: the action. The handle, not the identifier: renaming a slot changes that.
 PROP_SLOT = "kinema_job_slot"
 
 
@@ -85,12 +86,12 @@ def _job_tracks(rig) -> list:
     anim = rig.animation_data
     if job is None or anim is None:
         return []
-    slot = job.get(PROP_SLOT)
+    slot = rig.get(PROP_SLOT)
 
     def shows_job(strip) -> bool:
         if strip.action != job:
             return False
-        return slot is None or getattr(strip.action_slot, "identifier", None) == slot
+        return slot is None or getattr(strip.action_slot, "handle", None) == slot
 
     return [t for t in anim.nla_tracks if len(t.strips) and all(map(shows_job, t.strips))]
 
@@ -420,11 +421,11 @@ def _tile(rig, spans, slot) -> None:
     ):
         strip = _new_strip(motions[index % 2], name, a, b, job, slot)
         strip.extrapolation = "NOTHING"
-    shown = getattr(base.strips[0].action_slot, "identifier", None)
-    if shown:
-        job[PROP_SLOT] = shown
-    elif PROP_SLOT in job:
-        del job[PROP_SLOT]
+    shown = getattr(base.strips[0].action_slot, "handle", None)
+    if shown is not None:
+        rig[PROP_SLOT] = int(shown)
+    elif PROP_SLOT in rig:
+        del rig[PROP_SLOT]
     anim.use_nla = True
 
 
@@ -578,7 +579,10 @@ def catch_up(rig) -> tuple[list, list]:
     for strip in every:
         shown = (round(strip.action_frame_start), round(strip.action_frame_end))
         plays = (round(strip.frame_start), round(strip.frame_end))
-        candidates = laid.get(shown) or unlaid.get(shown) or []
+        # A motion's own frames stand in only in a file laid out before motions
+        # kept theirs, where none has any: with one laid out, a motion without is
+        # one added since, and has no strip -- a pause's moved strip isn't its.
+        candidates = laid.get(shown) or ([] if laid else unlaid.get(shown)) or []
         if len(candidates) > 1:
             if shown not in noted:
                 noted.add(shown)
@@ -608,7 +612,12 @@ def catch_up(rig) -> tuple[list, list]:
         # ones it was laid out at: a strip moved, caught up, and moved back to
         # where it was laid out has moved again.
         current, synced = (motion.frame_start, motion.frame_end), _laid(motion, "synced_frames")
-        if plays == synced or current == plays:
+        if plays == synced:
+            continue
+        if current == plays:
+            # Retimed to the same frames in both places: in step again, and kept
+            # so, or a later move of the strip would read as a list edit.
+            retimes.append((motion, plays, shown))
             continue
         if current != synced:
             notes.append(

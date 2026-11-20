@@ -634,6 +634,57 @@ class TestRetime:
         assert "FINISHED" in bpy.ops.kinema.generate_motion()
         assert (back.frame_start, back.frame_end) == (71, 91)
 
+    def test_a_renamed_slot_keeps_the_jobs_tracks(self, arm6, builder, strips, prefs):
+        """The job's slot is kept on the rig by its handle, which a rename leaves
+        alone: generating again finds the same tracks, and makes none."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        job = arm6.kinema_job_action
+        assert strips.PROP_SLOT not in job, "on the rig: an action can be shared"
+        slot = strips._job_tracks(arm6)[0].strips[0].action_slot
+        assert arm6[strips.PROP_SLOT] == slot.handle
+        count = len(arm6.animation_data.nla_tracks)
+        slot.name_display = "Renamed"
+        assert len(strips._job_tracks(arm6)) == count, "precondition: still found"
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert len(arm6.animation_data.nla_tracks) == count
+
+    def test_a_moved_pause_isnt_a_new_motions(self, arm6, builder, strips, prefs):
+        """A motion added in the list since has no strip. A pause's strip moved onto
+        its frames is still the pause's, and retimes nothing."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        at_b = next(m for m in arm6.kinema_motions if m.name == "b").end
+        added = arm6.kinema_motions.add()
+        added.name, added.start, added.end = "added", at_b, at_b
+        added.frame_start, added.frame_end = 41, 61
+        _strip(strips, arm6, "hold at b").frame_start_ui = 46
+        _, retimes = strips.catch_up(arm6)
+        assert retimes == []
+
+    def test_retimed_alike_in_both_places_is_in_step(self, arm6, builder, strips, prefs):
+        """The Motions list and the strip both moved to the same frames: in step,
+        and kept so, so a later move of the strip still retimes the motion."""
+        import bpy
+
+        prefs.job_as_strips = True
+        _job(builder, arm6)
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        back = _motion(arm6, "back")
+        back.frame_start, back.frame_end = 71, 91
+        _strip(strips, arm6, "back").frame_start_ui = 71
+        bpy.ops.kinema.check_motion()
+        assert tuple(back.synced_frames) == (71, 91)
+        _strip(strips, arm6, "back").frame_start_ui = 76
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        assert (back.frame_start, back.frame_end) == (76, 96)
+
     def test_a_copied_strip_retimes_nothing(self, arm6, builder, strips, prefs):
         """A strip duplicated in the NLA editor shows what the motion's does, so which
         one is the motion's can't be told: neither retimes it."""
