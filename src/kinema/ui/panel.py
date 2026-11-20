@@ -1328,6 +1328,7 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             return
 
         count = ik_ops.solution_count(rig)
+        body.prop(rig, "kinema_auto_configuration", text="Auto Configuration")
         body.operator(
             "kinema.find_solutions", text="Find Solutions", icon="VIEWZOOM"
         )
@@ -1684,6 +1685,16 @@ def register_props() -> None:
     )
     # Which of the found configurations is showing. An index rather than the
     # values themselves, so the arrows can cycle and the list can highlight.
+    bpy.types.Object.kinema_auto_configuration = BoolProperty(
+        name="Auto Configuration",
+        description=(
+            "While live IK tracks the target, find another configuration when the arm "
+            "can't reach it in the one it is in -- the wrist would have to flip, a joint "
+            "is at its limit -- and switch to the nearest. A target out of reach is "
+            "left as it is"
+        ),
+        default=False,
+    )
     bpy.types.Object.kinema_active_solution = IntProperty(
         name="Solution",
         description="Which of the configurations found is currently applied",
@@ -1759,6 +1770,7 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_active_bone_index
     del bpy.types.Object.kinema_meshes_at_file_origin
     del bpy.types.Object.kinema_active_solution
+    del bpy.types.Object.kinema_auto_configuration
     del bpy.types.Object.kinema_elbow_strength
     del bpy.types.PoseBone.kinema_ik_hold
     del bpy.types.Object.kinema_tcp_parent

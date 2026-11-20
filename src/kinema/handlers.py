@@ -199,6 +199,16 @@ def solve_rig(rig: bpy.types.Object, *, force: bool = False, live: bool = False)
     if result is None:
         return False
 
+    if live and getattr(rig, "kinema_auto_configuration", False):
+        from .ops import ik as ik_ops
+
+        if result.converged:
+            ik_ops.forget_auto_search(rig.name)
+        elif ik_ops.reconfigure(rig, solver):
+            # Solved once more from the configuration found, which reaches the
+            # goal: what the panel reports is the solve the arm now stands in.
+            solver.solve(rig, getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI), live=live)
+
     # Record the goal we actually solved for, not the one we may have been
     # asked for a moment ago, so the next update compares against reality.
     _last_target[rig.name] = (tip, target, elbow, held)
@@ -298,6 +308,9 @@ def on_load_post(_dummy=None) -> None:
     _last_target.clear()
     _last_duration.clear()
     _skipped.clear()
+    from .ops import ik as ik_ops
+
+    ik_ops.forget_auto_search()
     manager.invalidate()
     velocity.forget()
     external_axes.forget()

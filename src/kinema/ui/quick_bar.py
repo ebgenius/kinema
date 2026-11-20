@@ -45,6 +45,10 @@ def _live_ik(layout, _context, rig) -> None:
     layout.prop(rig, "kinema_ik_enabled", text="Live IK", toggle=True, icon="CON_KINEMATIC")
 
 
+def _auto_configuration(layout, _context, rig) -> None:
+    layout.prop(rig, "kinema_auto_configuration", text="Auto Config", toggle=True, icon="AUTO")
+
+
 def _snap_to_tool(layout, _context, rig) -> None:
     """Put the IK target back on the tool: only to be pressed while it is off it."""
     from ..ops import ik as ik_ops
@@ -126,6 +130,12 @@ BUTTONS: dict[str, Button] = {
         "Solve the generated job within the robot's limits",
         "IPO_EASE_IN_OUT",
         _operator("kinema.optimize_motion", "Optimize", "IPO_EASE_IN_OUT"),
+    ),
+    "AUTO_CONFIG": Button(
+        "Auto Config",
+        "Find another configuration when live IK can't reach the target in this one",
+        "AUTO",
+        _auto_configuration,
     ),
     "SNAP_IK": Button(
         "Snap to Tool",

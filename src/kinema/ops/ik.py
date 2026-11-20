@@ -235,6 +235,69 @@ def goal_off_tool(rig) -> bool:
     return float(np.arccos(np.clip(turn, -1.0, 1.0))) > ON_TOOL_ROTATION
 
 
+#: Auto Configuration's search. Fewer seeds than Find Solutions' 40, since it runs
+#: in the middle of a drag: on arm6, on PyRoki, 8 seeds took 87 ms and found two to
+#: four configurations, 16 took 194 ms.
+AUTO_SEEDS = 12
+#: How far the target moves, and how long goes by, before a search that found
+#: nothing is tried again: out of reach, each drag update would otherwise search.
+AUTO_MOVE = 0.01
+AUTO_TURN = np.radians(5.0)
+AUTO_INTERVAL = 0.5
+#: rig name -> (the goal last searched for and found nothing at, when).
+_auto_searched: dict[str, tuple[np.ndarray, float]] = {}
+
+
+def forget_auto_search(rig_name: str | None = None) -> None:
+    """Search again on the next miss: tracking was regained, or a file opened."""
+    if rig_name is None:
+        _auto_searched.clear()
+    else:
+        _auto_searched.pop(rig_name, None)
+
+
+def _moved_on(last: np.ndarray, goal: np.ndarray) -> bool:
+    if float(np.linalg.norm(goal[:3, 3] - last[:3, 3])) > AUTO_MOVE:
+        return True
+    turn = (float(np.trace(last[:3, :3].T @ goal[:3, :3])) - 1.0) / 2.0
+    return float(np.arccos(np.clip(turn, -1.0, 1.0))) > AUTO_TURN
+
+
+def reconfigure(rig, solver) -> bool:
+    """After a live solve that missed: find the configurations that reach the goal,
+    and stand the arm in the one nearest where it is. Returns whether it did.
+
+    A miss is either the goal out of reach, where no configuration reaches it and
+    nothing changes, or the arm unable to get there from the configuration it is
+    in -- the wrist would have to flip, a joint is at its limit -- where another
+    configuration reaches it. Searching tells the two apart. One that found nothing
+    is not tried again until the goal has moved on, or half a second has gone by:
+    out of reach, every drag update would search.
+    """
+    import time
+
+    goal = _np4(rig.pose.bones[solver.ik_bone].matrix)
+    last = _auto_searched.get(rig.name)
+    now = time.perf_counter()
+    if last is not None and (now - last[1] < AUTO_INTERVAL or not _moved_on(last[0], goal)):
+        return False
+    found = manager.find_solutions(rig, solver, seeds=AUTO_SEEDS)
+    if not found:
+        _auto_searched[rig.name] = (goal, now)
+        return False
+    forget_auto_search(rig.name)
+    current = chain.read_configuration(rig, solver.chain)
+    index = int(np.argmin([np.max(np.abs(np.asarray(s.q) - current)) for s in found]))
+    chain.write_configuration(
+        rig, solver.chain, np.asarray(found[index].q), skip=manager.held_mask(rig, solver.chain)
+    )
+    # The configurations found, as Find Solutions keeps them: the arrows step
+    # among them, and the quick bar says which this is.
+    _store_solutions(rig, solver, found)
+    rig.kinema_active_solution = index
+    return True
+
+
 class KINEMA_OT_set_ik_tip(KinemaRigOperator):
     bl_idname = "kinema.set_ik_tip"
     bl_label = "Set IK Target Bone"

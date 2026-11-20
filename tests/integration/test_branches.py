@@ -307,3 +307,136 @@ class TestFindingSolutions:
         )
 
 
+
+
+#: Away from REACHABLE, reachable: where the target goes for a configuration switch.
+ELSEWHERE = [-1.2, -0.3, 1.6, -0.8, 1.1, 0.6]
+
+
+class TestAutoConfiguration:
+    """Live IK that can't reach the target from the configuration it is in finds
+    another that does; a target out of reach is left as it is (#103)."""
+
+    @pytest.fixture
+    def handlers(self, addon):
+        return importlib.import_module(f"{addon.__name__}.handlers")
+
+    @pytest.fixture
+    def search(self, manager, monkeypatch):
+        """manager.find_solutions, counted."""
+        calls = []
+        real = manager.find_solutions
+
+        def counted(*args, **kwargs):
+            calls.append(kwargs.get("seeds"))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(manager, "find_solutions", counted)
+        return calls
+
+    def _miss_once(self, manager, monkeypatch):
+        """The next live solve misses and writes nothing, as tracking lost leaves the
+        arm: stuck in the configuration it was in."""
+        from importlib import import_module
+
+        base = import_module(manager.__name__.rsplit(".", 1)[0] + ".base")
+        real = manager.RigSolver.solve
+        state = {"missed": False}
+
+        def solve(self, rig, mode=manager.MODE_PYROKI, live=False):
+            if not state["missed"]:
+                state["missed"] = True
+                q = np.zeros(self.chain.dof)
+                return base.SolveResult(q, False, 0.03, 0.8, 100, "test")
+            return real(self, rig, mode, live)
+
+        monkeypatch.setattr(manager.RigSolver, "solve", solve)
+
+    def _target_at(self, builder, rig, q):
+        """The IK target where the tool is with the joints at ``q``; the arm left
+        where it was."""
+        import bpy
+
+        before = _q(builder, rig)
+        _set_q(builder, rig, q)
+        tip = rig.pose.bones[rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE]
+        goal = tip.matrix.copy()
+        _set_q(builder, rig, before)
+        rig.pose.bones[rig.get(builder.PROP_IK_BONE)].matrix = goal
+        bpy.context.view_layer.update()
+
+    def test_a_miss_the_arm_could_reach_another_way_switches_configuration(
+        self, arm6, builder, manager, ik_ops, handlers, search, monkeypatch
+    ):
+        import bpy
+
+        _set_q(builder, arm6, REACHABLE)
+        self._target_at(builder, arm6, ELSEWHERE)
+        assert ik_ops.goal_off_tool(arm6), "precondition: the target elsewhere"
+        arm6.kinema_auto_configuration = True
+        self._miss_once(manager, monkeypatch)
+        handlers.solve_rig(arm6, force=True, live=True)
+        bpy.context.view_layer.update()
+        assert search == [ik_ops.AUTO_SEEDS]
+        assert not ik_ops.goal_off_tool(arm6), "the tool on the target"
+        assert ik_ops.solution_count(arm6) > 0, "what was found, to step through"
+        stored = ik_ops._read_solutions(arm6)
+        np.testing.assert_allclose(
+            stored[arm6.kinema_active_solution], _q(builder, arm6), atol=1e-3
+        )
+
+    def test_off_it_leaves_the_miss_alone(
+        self, arm6, builder, manager, ik_ops, handlers, search, monkeypatch
+    ):
+        import bpy
+
+        _set_q(builder, arm6, REACHABLE)
+        self._target_at(builder, arm6, ELSEWHERE)
+        self._miss_once(manager, monkeypatch)
+        handlers.solve_rig(arm6, force=True, live=True)
+        bpy.context.view_layer.update()
+        assert search == []
+        assert ik_ops.goal_off_tool(arm6)
+        np.testing.assert_allclose(_q(builder, arm6), REACHABLE, atol=1e-6)
+
+    def test_not_while_playing_or_rendering(
+        self, arm6, builder, manager, ik_ops, handlers, search, monkeypatch
+    ):
+        """Frames play as they were keyed: a search is for a drag."""
+        _set_q(builder, arm6, REACHABLE)
+        self._target_at(builder, arm6, ELSEWHERE)
+        arm6.kinema_auto_configuration = True
+        self._miss_once(manager, monkeypatch)
+        handlers.solve_rig(arm6, force=True, live=False)
+        assert search == []
+
+    def test_out_of_reach_nothing_changes_and_it_waits_to_search_again(
+        self, arm6, builder, manager, ik_ops, handlers, search, monkeypatch
+    ):
+        """No configuration reaches it: the arm stays as live IK left it, and a
+        target that hasn't moved on isn't searched for again."""
+        import bpy
+        from mathutils import Vector
+
+        _set_q(builder, arm6, REACHABLE)
+        bpy.ops.kinema.snap_ik()
+        arm6.kinema_auto_configuration = True
+        arm6.kinema_solver_mode = manager.MODE_NUMPY
+        goal = arm6.pose.bones[arm6.get(builder.PROP_IK_BONE)]
+        goal.location += Vector((0.0, 0.0, 5.0))
+        bpy.context.view_layer.update()
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert search == [ik_ops.AUTO_SEEDS]
+        stood = _q(builder, arm6)
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert search == [ik_ops.AUTO_SEEDS], "the same miss isn't searched twice"
+        # Live IK edges on toward it each solve; no other configuration was taken.
+        np.testing.assert_allclose(_q(builder, arm6), stood, atol=0.01)
+
+        monkeypatch.setattr(ik_ops, "AUTO_INTERVAL", 0.0)
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert len(search) == 1, "nor once the time is up, while it hasn't moved"
+        goal.location += Vector((0.0, 0.02, 0.0))
+        bpy.context.view_layer.update()
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert len(search) == 2, "moved on 2 cm: searched again"
