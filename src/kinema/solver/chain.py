@@ -246,6 +246,22 @@ def chain_bones(armature_object, tip_bone_name: str) -> list:
     return [b for b in ancestry if builder.PROP_JOINT_NAME in b]
 
 
+def _enforced(pose_bone) -> tuple[float, float]:
+    """The range ``pose_bone``'s limit constraint holds its joint to: its recorded
+    limits where it has the constraint, unbounded where it doesn't -- a rig imported
+    with Enforce Joint Limits off, or the constraint since switched off."""
+    from ..rig import builder
+
+    constraint = pose_bone.constraints.get(builder.LIMIT_CONSTRAINT)
+    if constraint is None or not getattr(constraint, "enabled", True):
+        return -np.inf, np.inf
+    bone = pose_bone.bone
+    return (
+        float(bone.get(builder.PROP_LOWER, -np.inf)),
+        float(bone.get(builder.PROP_UPPER, np.inf)),
+    )
+
+
 def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
     """Extract the chain of joint bones from the root down to ``tip_bone_name``.
 
@@ -309,12 +325,12 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
             if source is not None:
                 prismatic = source.bone.get(builder.PROP_JOINT_TYPE) == "prismatic"
                 value = float(source.location[1] if prismatic else source.rotation_euler[1])
-                # Where the leader stands, through its limit, as the driver reads it.
-                value = min(
-                    max(value, float(source.bone.get(builder.PROP_LOWER, -np.inf))),
-                    float(source.bone.get(builder.PROP_UPPER, np.inf)),
-                )
-                fixed = multiplier * value + offset
+                # Where the leader stands, through its limit where it has one, as
+                # the driver reads it: imported with limits off, it has none.
+                lower, upper = _enforced(source)
+                fixed = multiplier * min(max(value, lower), upper) + offset
+        # Held at its own limits only where its constraint holds it.
+        own_lower, own_upper = _enforced(armature_object.pose.bones[bone.name])
         mimics.append(
             MimicLink(
                 after=after,
@@ -324,8 +340,8 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
                 multiplier=multiplier,
                 offset=offset,
                 fixed=fixed,
-                lower=float(bone.get(builder.PROP_LOWER, -np.inf)),
-                upper=float(bone.get(builder.PROP_UPPER, np.inf)),
+                lower=own_lower,
+                upper=own_upper,
             )
         )
 

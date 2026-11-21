@@ -452,6 +452,16 @@ def _setup_pose_bones(
         source = mimics[joint_name]
         pose_bone = pose.bones[bone_name]
         limits = (joint.lower, joint.upper) if joint.has_limits else None
+        leader = joint_by_name[source.joint]
+        if options.enforce_limits and limits is not None:
+            # Its offset, or what its leader's rest gives where that is limited
+            # off zero too.
+            leader_rest = (
+                min(max(0.0, leader.lower), leader.upper) if leader.has_limits else 0.0
+            )
+            _warn_if_zero_is_forbidden(
+                joint, result, rest=source.multiplier * leader_rest + source.offset
+            )
         configure_joint_bone(
             pose_bone, revolute=joint.is_revolute,
             limits=limits if options.enforce_limits else None,
@@ -470,7 +480,6 @@ def _setup_pose_bones(
             effort=joint.effort,
             mimic=source,
         )
-        leader = joint_by_name[source.joint]
         drive_mimic(
             armature_object, pose_bone,
             leader=result.joint_bones[source.joint], leader_revolute=leader.is_revolute,
@@ -580,8 +589,13 @@ def write_joint_props(
     bone[PROP_LINK_CORRECTION] = [float(v) for v in correction.flatten()]
 
 
-def _warn_if_zero_is_forbidden(joint: JointSpec, result: RigBuildResult) -> None:
+def _warn_if_zero_is_forbidden(
+    joint: JointSpec, result: RigBuildResult, rest: float = 0.0
+) -> None:
     """Say so when the URDF's own zero configuration breaks a joint's limits.
+
+    ``rest`` is where the joint stands in that configuration: zero for a joint
+    the user moves, and for a mimic what its driver gives with its leader at rest.
 
     Real robots have axes that cannot reach zero -- a KUKA quantec's A2 is
     limited to [-140 deg, -5 deg] -- and a URDF records that faithfully. Kinema
@@ -592,11 +606,11 @@ def _warn_if_zero_is_forbidden(joint: JointSpec, result: RigBuildResult) -> None
     does not stand where the description says it does, and Rest Pose cannot
     make it.
     """
-    if joint.lower <= 0.0 <= joint.upper:
+    if joint.lower <= rest <= joint.upper:
         return
-    nearest = joint.lower if joint.lower > 0.0 else joint.upper
+    nearest = joint.lower if joint.lower > rest else joint.upper
     result.warnings.append(
-        f"{joint.name}: the URDF's zero pose is outside its limits "
+        f"{joint.name}: the URDF's zero pose puts it at {rest:.4g}, outside its limits "
         f"[{joint.lower:.4g}, {joint.upper:.4g}], so the rig rests at "
         f"{nearest:.4g} instead. Import with \"Enforce Joint Limits\" off to "
         f"see the URDF's own zero pose."

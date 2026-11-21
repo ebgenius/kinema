@@ -284,3 +284,64 @@ class TestLimitsAndNames:
         assert gripper.data.bones[axis].get("kinema_joint") == "grip", "precondition"
         joints = {j.name: j for j in rig_model.model_from_rig(gripper).joints}
         assert joints["grip_mirror"].mimic_joint == "grip_control"
+
+
+def _built(addon, fixture_dir, name, **options):
+    """``name`` built straight from its model, with ``options``: the result's
+    warnings, and the rig."""
+    import yourdfpy
+
+    builder = importlib.import_module(f"{addon.__name__}.rig.builder")
+    kin = importlib.import_module(f"{addon.__name__}.rig.kinematics")
+    model = kin.model_from_urdf(yourdfpy.URDF.load(str(fixture_dir / name)))
+    result = builder.build_rig(model, builder.RigBuildOptions(**options))
+    return result, result.armature_object
+
+
+class TestLimitsAsTheRigHasThem:
+    """NumPy's chain holds a mimic, and an off-chain leader, to their limits only
+    where the rig does: imported with Enforce Joint Limits off, it doesn't."""
+
+    @pytest.mark.parametrize("enforce", [True, False])
+    def test_a_chain_aimed_at_a_fingertip_stands_where_the_rig_does(
+        self, addon, fixture_dir, clean_scene, enforce
+    ):
+        import bpy
+
+        chain_mod = importlib.import_module(f"{addon.__name__}.solver.chain")
+        _, rig = _built(addon, fixture_dir, "gripper_mimic.urdf", enforce_limits=enforce)
+        _set(rig, grip=0.06)  # past grip's 0.04
+        chain = chain_mod.chain_from_rig(rig, "grip_tip")
+        assert chain.bone_names == ["lift"]
+        mirror = chain.mimics[0]
+        assert mirror.leader == -1, "grip is off this chain"
+        assert mirror.fixed == pytest.approx(-0.04 if enforce else -0.06)
+        assert (mirror.lower, mirror.upper) == (
+            (-0.04, 0.0) if enforce else (-np.inf, np.inf)
+        )
+        bpy.context.view_layer.update()
+        np.testing.assert_allclose(
+            chain.forward(np.zeros(1)), np.array(rig.pose.bones["grip_tip"].matrix), atol=1e-5
+        )
+
+
+class TestRestOutsideItsLimits:
+    def test_a_mimic_that_rests_outside_its_limits_is_said_at_import(
+        self, addon, fixture_dir, clean_scene, tmp_path
+    ):
+        """knuckle = 0.5 * lift + 0.1 rests at 0.1; limited to [-0.05, 0.05] it is
+        held off its rest pose, which is said, as for a joint the user moves."""
+        text = (fixture_dir / "gripper_mimic.urdf").read_text(encoding="utf-8")
+        text = text.replace(
+            '<limit lower="-1" upper="1" effort="5" velocity="1"/>\n'
+            '    <mimic joint="lift"',
+            '<limit lower="-0.05" upper="0.05" effort="5" velocity="1"/>\n'
+            '    <mimic joint="lift"',
+        )
+        assert text.count('lower="-0.05"') == 1, "precondition: knuckle's limits narrowed"
+        (tmp_path / "narrow.urdf").write_text(text, encoding="utf-8")
+        result, _ = _built(addon, tmp_path, "narrow.urdf")
+        said = [w for w in result.warnings if w.startswith("knuckle:")]
+        assert said and "0.1" in said[0], result.warnings
+        result, _ = _built(addon, fixture_dir, "gripper_mimic.urdf")
+        assert not [w for w in result.warnings if w.startswith("knuckle:")]
