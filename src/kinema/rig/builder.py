@@ -301,6 +301,11 @@ def _create_bones(
     owner_of_link = model.nearest_actuated_ancestor(mimics=True)
     joint_by_name = {j.name: j for j in model.joints}
     mimics = model.mimic_sources()
+    for name, leader in model.unresolved_mimics().items():
+        result.warnings.append(
+            f"{name}: its <mimic> follows '{leader}', which leads to no joint that "
+            f"moves, so it has no bone and its link stays where it is"
+        )
     length = options.bone_length or _auto_bone_length(model)
 
     _activate(armature_object)
@@ -470,6 +475,10 @@ def _setup_pose_bones(
             armature_object, pose_bone,
             leader=result.joint_bones[source.joint], leader_revolute=leader.is_revolute,
             revolute=joint.is_revolute, multiplier=source.multiplier, offset=source.offset,
+            leader_limits=(
+                (leader.lower, leader.upper)
+                if options.enforce_limits and leader.has_limits else None
+            ),
         )
 
     if ROOT_BONE in pose.bones:
@@ -1053,10 +1062,15 @@ def channel_of(revolute: bool) -> str:
 
 def drive_mimic(
     armature_object, pose_bone, *, leader: str, leader_revolute: bool, revolute: bool,
-    multiplier: float, offset: float,
+    multiplier: float, offset: float, leader_limits=None,
 ) -> None:
     """Move ``pose_bone``'s joint channel by a driver on the ``leader`` bone's:
     ``multiplier * value + offset``, as URDF's <mimic> says.
+
+    The value is the leader's channel clamped to ``leader_limits``, its limit
+    constraint's range: where the leader stands, not where it was dragged to. Read
+    off the channel rather than the evaluated transform, so a continuous joint
+    wound past half a turn keeps its turns.
 
     A driver, not Kinema code: Blender keeps it right in FK, IK, playback, a bake
     and a render, with nothing of Kinema's running. Its expression is one Blender
@@ -1082,7 +1096,11 @@ def drive_mimic(
         f'pose.bones["{bpy.utils.escape_identifier(leader)}"]'
         f".{channel_of(leader_revolute)}[1]"
     )
-    driver.expression = f"{float(multiplier)!r} * q + {float(offset)!r}"
+    value = "q"
+    if leader_limits is not None:
+        lower, upper = (float(v) for v in leader_limits)
+        value = f"min(max(q, {lower!r}), {upper!r})"
+    driver.expression = f"{float(multiplier)!r} * {value} + {float(offset)!r}"
 
 
 def mimic_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:

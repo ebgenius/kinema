@@ -129,11 +129,13 @@ def records_from_rig(rig) -> list[BoneRecord]:
     def moves(bone) -> bool:
         return builder.PROP_JOINT_NAME in bone or builder.PROP_MIMIC_JOINT in bone
 
-    # A mimic bone records the URDF joint it follows; its record, the bone.
+    # A mimic bone records the URDF joint it follows; its record, the bone. Among
+    # the robot's own joints only: an external axis is never a mimic's leader, and
+    # one added later can be called what a renamed joint was.
     bone_of_joint = {
         str(bone[builder.PROP_JOINT_NAME]): bone.name
         for bone in rig.data.bones
-        if builder.PROP_JOINT_NAME in bone
+        if builder.PROP_JOINT_NAME in bone and builder.PROP_EXTERNAL not in bone
     }
 
     def matrix(values) -> np.ndarray:

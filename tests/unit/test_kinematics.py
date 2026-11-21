@@ -264,6 +264,7 @@ class TestMimicSources:
         )
         assert model.mimic_sources() == {}
         assert model.boned_joints == []
+        assert model.unresolved_mimics() == {"lost": "nowhere", "one": "two", "two": "one"}
 
     def test_the_links_a_mimic_moves_are_its_own_only_when_asked(self, gripper):
         """A description is compared on what it actuates; the rig hangs a mimic's

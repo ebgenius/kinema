@@ -181,6 +181,18 @@ class RobotModel:
             sources[joint.name] = MimicSource(leader.name, multiplier, offset)
         return sources
 
+    def unresolved_mimics(self) -> dict[str, str]:
+        """Each moving mimic joint left without a bone, by name: what it follows,
+        which ends at no actuated joint."""
+        sources = self.mimic_sources()
+        return {
+            joint.name: str(joint.mimic_joint)
+            for joint in self.joints
+            if joint.mimic_joint is not None
+            and joint.joint_type in ACTUATED_TYPES
+            and joint.name not in sources
+        }
+
     @property
     def boned_joints(self) -> list[JointSpec]:
         """The joints the rig has a bone for: the actuated ones, and the mimics

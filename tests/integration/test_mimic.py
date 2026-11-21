@@ -173,3 +173,114 @@ class TestUnderAnAxis:
         )
         assert rig.data.bones["grip_mirror"].parent.name == axis
         assert rig.data.bones["grip"].parent.name == axis
+
+
+class TestFollowsWhereTheLeaderStands:
+    def test_a_leader_dragged_past_its_limit_leads_from_the_limit(self, gripper):
+        """lift is limited to 1.5: dragged to 2.0 it stands at 1.5, and knuckle
+        follows that, 0.5 * 1.5 + 0.1, not 0.5 * 2.0 + 0.1 (clamped to 1.0)."""
+        _set(gripper, lift=2.0)
+        assert _value(gripper, "knuckle") == pytest.approx(0.85)
+        _set(gripper, lift=0.4)
+        assert _value(gripper, "knuckle") == pytest.approx(0.3)
+
+
+class TestUnresolved:
+    def test_a_mimic_of_a_joint_that_isnt_there_is_said_at_import(self, addon, clean_scene):
+        """Its sibling now moves, so its standing still has to be explained."""
+        import numpy as np
+
+        builder = importlib.import_module(f"{addon.__name__}.rig.builder")
+        kin = importlib.import_module(f"{addon.__name__}.rig.kinematics")
+        joint = kin.JointSpec(
+            name="finger", joint_type="prismatic", parent_link="base", child_link="tip",
+            origin=np.eye(4), axis=np.array([1.0, 0.0, 0.0]), mimic_joint="typo",
+        )
+        model = kin.RobotModel(
+            name="lost", links={n: kin.LinkSpec(n) for n in ("base", "tip")},
+            joints=[joint], root_link="base",
+        )
+        result = builder.build_rig(model, builder.RigBuildOptions())
+        assert any("finger" in w and "'typo'" in w for w in result.warnings), result.warnings
+
+
+class TestNumpyChain:
+    """A mimic between actuated joints: the palletizer's parallelogram. NumPy's
+    chain moves it by its leader, so its FK is the rig's and its IK lands."""
+
+    @pytest.fixture
+    def palletizer(self, addon, fixture_dir, clean_scene):
+        import bpy
+
+        assert "FINISHED" in bpy.ops.kinema.build_robot(
+            filepath=str(fixture_dir / "palletizer_mimic.urdf")
+        )
+        rig = bpy.context.view_layer.objects.active
+        rig.kinema_solver_mode = "NUMPY"
+        return rig
+
+    def test_its_forward_kinematics_are_the_rigs(self, palletizer, addon, builder):
+        chain_mod = importlib.import_module(f"{addon.__name__}.solver.chain")
+        tool = builder.tool_bone_name(palletizer)
+        chain = chain_mod.chain_from_rig(palletizer, tool)
+        assert chain.bone_names == ["swing", "shoulder", "reach", "twist"]
+        assert [m.leader for m in chain.mimics] == [1], "level, following shoulder"
+        for q in ([0.0, 0.0, 0.0, 0.0], [0.5, 0.7, 0.2, -1.0], [-1.2, -0.9, 0.4, 2.0]):
+            _set(palletizer, swing=q[0], shoulder=q[1], reach=q[2], twist=q[3])
+            shown = np.array(palletizer.pose.bones[tool].matrix)
+            np.testing.assert_allclose(chain.forward(np.array(q)), shown, atol=1e-5)
+
+    def test_numpy_ik_reaches_a_pose_through_the_parallelogram(self, palletizer, builder):
+        import bpy
+
+        tool = builder.tool_bone_name(palletizer)
+        _set(palletizer, swing=0.4, shoulder=0.6, reach=0.3, twist=0.5)
+        goal = palletizer.pose.bones[tool].matrix.copy()
+        _set(palletizer, swing=0.0, shoulder=0.0, reach=0.1, twist=0.0)
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        ik = palletizer.pose.bones[palletizer.get(builder.PROP_IK_BONE)]
+        ik.matrix = goal
+        bpy.context.view_layer.update()
+        handlers = importlib.import_module(
+            f"{builder.__name__.rsplit('.', 2)[0]}.handlers"
+        )
+        handlers.solve_rig(palletizer, force=True)
+        bpy.context.view_layer.update()
+        reached = np.array(palletizer.pose.bones[tool].matrix)
+        np.testing.assert_allclose(reached[:3, 3], np.array(goal)[:3, 3], atol=1e-4)
+
+
+class TestLimitsAndNames:
+    def test_load_joint_limits_reaches_a_mimic(self, gripper, builder, tmp_path):
+        import bpy
+
+        path = tmp_path / "joint_limits.yaml"
+        path.write_text(
+            "joint_limits:\n"
+            "  grip_mirror:\n"
+            "    has_velocity_limits: true\n"
+            "    max_velocity: 0.25\n"
+            "    has_acceleration_limits: true\n"
+            "    max_acceleration: 2.0\n",
+            encoding="utf-8",
+        )
+        assert "FINISHED" in bpy.ops.kinema.load_joint_limits(filepath=str(path))
+        bone = gripper.data.bones["grip_mirror"]
+        assert bone[builder.PROP_VELOCITY] == pytest.approx(0.25)
+        assert bone[builder.PROP_ACCELERATION] == pytest.approx(2.0)
+
+    def test_an_axis_named_as_a_renamed_leader_was_doesnt_take_its_place(
+        self, gripper, addon
+    ):
+        """The grip bone renamed, then an axis on the tool called grip: both record
+        the joint name grip, and the mimic still follows the robot's own."""
+        ops = importlib.import_module(f"{addon.__name__}.ops.external_axes")
+        ext = importlib.import_module(f"{addon.__name__}.rig.external_axes")
+        rig_model = importlib.import_module(f"{addon.__name__}.solver.rig_model")
+        gripper.data.bones["grip"].name = "grip_control"
+        axis = ops.add_axis(
+            gripper, ext.AxisSpec(name="grip", mount="AFTER", kind="ROTARY", direction="Z")
+        )
+        assert gripper.data.bones[axis].get("kinema_joint") == "grip", "precondition"
+        joints = {j.name: j for j in rig_model.model_from_rig(gripper).joints}
+        assert joints["grip_mirror"].mimic_joint == "grip_control"
