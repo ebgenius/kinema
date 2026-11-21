@@ -451,3 +451,50 @@ class TestWideLeaders:
         _set(rig, lift=angle)
         stands = min(max(angle, lower), upper)
         assert _value(rig, "knuckle") == pytest.approx(0.5 * stands + 0.1, abs=1e-5)
+
+
+WRAPPED = """<?xml version="1.0"?>
+<robot name="wrapped">
+  <link name="base"/><link name="la"/><link name="lm"/><link name="ln"/>
+  <joint name="a" type="continuous">
+    <parent link="base"/><child link="la"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/><axis xyz="0 0 1"/>
+  </joint>
+  <joint name="m" type="revolute">
+    <parent link="la"/><child link="lm"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+    <mimic joint="a" multiplier="1.0" offset="0.0"/>
+  </joint>
+  <joint name="n" type="continuous">
+    <parent link="lm"/><child link="ln"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <mimic joint="m" multiplier="0.5" offset="0.0"/>
+  </joint>
+</robot>
+"""
+
+
+class TestWrappedReading:
+    def test_the_chain_reads_a_limited_mimics_turn_as_its_driver_does(
+        self, addon, clean_scene, tmp_path
+    ):
+        """A continuous leader past half a turn, a limited mimic of it, and a mimic
+        of that at half: n's driver reads m's turn off its matrix, and so does the
+        chain, so both put n at 0.1."""
+        import bpy
+
+        (tmp_path / "wrapped.urdf").write_text(WRAPPED, encoding="utf-8")
+        _, rig = _built(addon, tmp_path, "wrapped.urdf")
+        chain_mod = importlib.import_module(f"{addon.__name__}.solver.chain")
+        _set(rig, a=2 * np.pi + 0.2)
+        assert _value(rig, "n") == pytest.approx(0.1, abs=1e-5)
+        chain = chain_mod.chain_from_rig(rig, "n")
+        assert chain.bone_names == ["a"]
+        assert [step.wraps for step in chain.mimics[-1].steps] == [False, True]
+        bpy.context.view_layer.update()
+        np.testing.assert_allclose(
+            chain.forward(np.array([2 * np.pi + 0.2])),
+            np.array(rig.pose.bones["n"].matrix),
+            atol=1e-5,
+        )

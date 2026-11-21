@@ -455,8 +455,12 @@ def _setup_pose_bones(
         the limits the rig enforces: a mimic at what its leader's rest gives."""
         value = 0.0
         if joint.mimic_joint is not None:
-            value = joint.mimic_multiplier * rest_of(joint_by_name[joint.mimic_joint])
-            value += joint.mimic_offset
+            leader = joint_by_name[joint.mimic_joint]
+            read = rest_of(leader)
+            if _read_as_a_turn(leader, options):
+                # Its driver reads a turn off a matrix: wrapped, as drive_mimic says.
+                read = (read + math.pi) % (2.0 * math.pi) - math.pi
+            value = joint.mimic_multiplier * read + joint.mimic_offset
         if options.enforce_limits and joint.has_limits:
             value = min(max(value, joint.lower), joint.upper)
         return value
@@ -1086,6 +1090,18 @@ def is_kinema_rig(obj: bpy.types.Object | None) -> bool:
 def channel_of(revolute: bool) -> str:
     """The pose channel a joint bone moves on, at index 1: its Y, the joint axis."""
     return "rotation_euler" if revolute else "location"
+
+
+def _read_as_a_turn(leader: JointSpec, options: RigBuildOptions) -> bool:
+    """Whether a mimic's driver reads ``leader`` off its evaluated transform -- a
+    turn wrapped to half a turn either way -- as :func:`drive_mimic` decides."""
+    return (
+        options.enforce_limits
+        and leader.has_limits
+        and leader.is_revolute
+        and -math.pi <= leader.lower
+        and leader.upper <= math.pi
+    )
 
 
 def drive_mimic(

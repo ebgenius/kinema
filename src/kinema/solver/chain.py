@@ -78,8 +78,13 @@ class MimicStep:
     is_revolute: bool
     lower: float = -np.inf
     upper: float = np.inf
+    #: Whether its driver reads its leader's turn off a matrix, which wraps it to
+    #: half a turn either way: a leader limited within that.
+    wraps: bool = False
 
     def __call__(self, value: float) -> float:
+        if self.wraps:
+            value = _wrap(value)
         value = self.multiplier * value + self.offset
         if self.is_revolute:
             return clamp_angle(value, self.lower, self.upper)
@@ -87,7 +92,8 @@ class MimicStep:
 
     def holds(self, value: float) -> bool:
         """Whether its limit holds it here, so it doesn't move with its leader."""
-        return not np.isclose(self(value), self.multiplier * value + self.offset, atol=1e-12)
+        free = self.multiplier * (_wrap(value) if self.wraps else value) + self.offset
+        return not np.isclose(self(value), free, atol=1e-12)
 
 
 @dataclass(frozen=True)
@@ -320,6 +326,26 @@ def _enforced(pose_bone) -> tuple[float, float]:
     )
 
 
+def _reads_a_wrapped_turn(armature_object, bone) -> bool:
+    """Whether the driver on a mimic bone reads its leader's turn off a matrix --
+    wrapped to half a turn either way -- rather than off its channel. Asked of the
+    driver itself, so the chain reads its leader as the rig does."""
+    from ..rig import builder
+
+    animation = armature_object.animation_data
+    if animation is None:
+        return False
+    revolute = bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic"
+    import bpy
+
+    path = f'pose.bones["{bpy.utils.escape_identifier(bone.name)}"].{builder.channel_of(revolute)}'
+    fcurve = animation.drivers.find(path, index=1)
+    if fcurve is None or not len(fcurve.driver.variables):
+        return False
+    variable = fcurve.driver.variables[0]
+    return variable.type == "TRANSFORMS" and variable.targets[0].transform_type.startswith("ROT")
+
+
 def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
     """Extract the chain of joint bones from the root down to ``tip_bone_name``.
 
@@ -378,6 +404,7 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
                     is_revolute=bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic",
                     lower=lower,
                     upper=upper,
+                    wraps=_reads_a_wrapped_turn(armature_object, bone),
                 )
             )
             bone = bones.get(bone_of_joint.get(str(bone.get(builder.PROP_MIMIC_OF, ""))))

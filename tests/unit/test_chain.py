@@ -290,3 +290,18 @@ class TestClampAngle:
         got = chain_mod.clamp_angle(angle, lower, upper)
         assert np.cos(got) == pytest.approx(np.cos(held))
         assert np.sin(got) == pytest.approx(np.sin(held))
+
+
+class TestWrappedReading:
+    def test_a_step_reading_a_limited_leaders_turn_reads_it_wrapped(self):
+        """A continuous A at 2 pi + 0.2; M = A, limited to [-1, 1]; N = 0.5 * M.
+        M's limit holds a turn around the circle, so M stands at 2 pi + 0.2 -- a
+        turn of 0.2 -- and N's driver reads that turn off M's matrix: 0.1, not
+        pi + 0.1."""
+        Step = chain_mod.MimicStep
+        n = chain_mod.MimicLink(
+            after=0, rest_relative=np.eye(4), is_revolute=True, leader=0,
+            steps=(Step(1.0, 0.0, True, -1.0, 1.0), Step(0.5, 0.0, True, wraps=True)),
+        )
+        assert n.value(np.array([2 * np.pi + 0.2])) == pytest.approx(0.1)
+        assert n.gain(np.array([2 * np.pi + 0.2])) == pytest.approx(0.5)
