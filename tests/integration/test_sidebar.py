@@ -793,3 +793,37 @@ class TestMotionsBox:
         assert texts["kinema.check_motion"] == "Check Again"
         labels = [kwargs.get("text", "") for name, _, kwargs in calls if name == "label"]
         assert any(label.startswith("Move 1: ") for label in labels)
+
+
+class TestEveryButtonHasAHome:
+    def test_a_button_taken_off_the_quick_bar_is_still_in_a_panel(self, panel, arm6, addon):
+        """The quick bar is a shortcut: whatever a button does, a panel does too, so
+        removing it in the preferences takes nothing away."""
+        import types
+
+        import bpy
+
+        quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        arm6.kinema_ik_enabled = False
+        props = bpy.context.scene.kinema
+        for name in SECTIONS:
+            setattr(props, name, True)
+
+        def controls(calls):
+            return {
+                args[0] if name == "operator" else args[1]
+                for name, args, _ in calls
+                if name in ("operator", "prop")
+            }
+
+        in_panels = controls(_ik_drawn(panel))
+        for cls in (panel.KINEMA_PT_joints, panel.KINEMA_PT_waypoints, panel.KINEMA_PT_motions):
+            calls = []
+            cls.draw(types.SimpleNamespace(layout=_Open(calls)), bpy.context)
+            in_panels |= controls(calls)
+
+        for key, button in quick_bar.BUTTONS.items():
+            calls = []
+            button.draw(_Layout(calls), bpy.context, arm6)
+            assert controls(calls) <= in_panels, key
