@@ -171,3 +171,84 @@ class TestNumpySolver:
         target = chain.forward(goal_q)
         near = numpy_backend.solve(chain, goal_q + 0.01, target)
         assert np.abs(near.q - goal_q).max() < 0.2
+
+
+def _mimic(after, leader, *, revolute=True, multiplier=1.0, offset=0.0, x=0.3, **kw):
+    rest = np.eye(4)
+    rest[0, 3] = x
+    return chain_mod.MimicLink(
+        after=after, rest_relative=rest, is_revolute=revolute, leader=leader,
+        multiplier=multiplier, offset=offset, **kw,
+    )
+
+
+class TestMimicInTheChain:
+    """A mimic joint's bone between two joints (#104): it moves the joints below
+    it by its leader's value, without being a degree of freedom of its own."""
+
+    def _sliders(self):
+        """A -> M -> B, all sliding along Y; M follows A one for one."""
+        rest = np.stack([np.eye(4), np.eye(4)])
+        return chain_mod.Chain(
+            bone_names=["a", "b"],
+            is_revolute=np.array([False, False]),
+            rest_relative=rest,
+            tool_offset=np.eye(4),
+            lower=np.full(2, -1.0),
+            upper=np.full(2, 1.0),
+            limited=np.array([True, True]),
+            mimics=(_mimic(0, 0, revolute=False, x=0.0),),
+        )
+
+    def test_a_collinear_mimic_doubles_its_leaders_slide(self):
+        """The review's example: A = 0.02 with B = 0 moves B 0.04, not 0.02."""
+        chain = self._sliders()
+        assert chain.dof == 2
+        tool = chain.forward(np.array([0.02, 0.0]))
+        assert tool[1, 3] == pytest.approx(0.04)
+
+    def test_its_column_adds_to_its_leaders(self):
+        chain = self._sliders()
+        jacobian = chain.jacobian(np.array([0.02, 0.0]))
+        np.testing.assert_allclose(jacobian[:3, 0], [0.0, 2.0, 0.0])
+        np.testing.assert_allclose(jacobian[:3, 1], [0.0, 1.0, 0.0])
+
+    @pytest.mark.parametrize("after", [-1, 0, 1, 2])
+    def test_the_jacobian_matches_finite_differences(self, after):
+        """A turning mimic of j0, halved and offset, wherever it sits in the arm."""
+        base = make_chain()
+        chain = chain_mod.Chain(
+            **{**base.__dict__, "mimics": (_mimic(after, 0, multiplier=0.5, offset=0.1),)}
+        )
+        q = np.array([0.3, -0.4, 0.5])
+        analytic = chain.jacobian(q)
+        step = 1e-6
+        for index in range(3):
+            dq = np.zeros(3)
+            dq[index] = step
+            ahead, behind = chain.forward(q + dq), chain.forward(q - dq)
+            np.testing.assert_allclose(
+                analytic[:3, index], (ahead[:3, 3] - behind[:3, 3]) / (2 * step), atol=1e-6
+            )
+
+    def test_a_mimic_off_the_chain_is_held_where_it_is(self):
+        """Its leader isn't solved for: it stands at ``fixed`` whatever q is, bending
+        the arm there, and adds nothing to any column."""
+        base = make_chain()
+        held = _mimic(1, -1, fixed=0.4, x=0.0)
+        chain = chain_mod.Chain(**{**base.__dict__, "mimics": (held,)})
+        q = np.array([0.3, -0.4, 0.5])
+        bent = base.forward(np.array([0.3, -0.4 + 0.4, 0.5]))
+        np.testing.assert_allclose(chain.forward(q), bent, atol=1e-12)
+        step = 1e-6
+        for index in range(3):
+            dq = np.zeros(3)
+            dq[index] = step
+            numeric = (chain.forward(q + dq)[:3, 3] - chain.forward(q - dq)[:3, 3]) / (2 * step)
+            np.testing.assert_allclose(chain.jacobian(q)[:3, index], numeric, atol=1e-6)
+
+    def test_held_at_its_own_limit_it_stops_moving(self):
+        mimic = _mimic(0, 0, multiplier=1.0, upper=0.2)
+        assert mimic.value(np.array([0.5])) == pytest.approx(0.2)
+        assert not mimic.moving(np.array([0.5]))
+        assert mimic.moving(np.array([0.1]))

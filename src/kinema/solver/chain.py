@@ -43,6 +43,47 @@ def translation_along_y(distance: float) -> np.ndarray:
     return matrix
 
 
+@dataclass(frozen=True)
+class MimicLink:
+    """A mimic joint's bone on the way to the tool: it moves, but by a driver from
+    another joint rather than as a degree of freedom of its own.
+
+    A parallelogram in a palletizer is one: the wrist below it is carried by a
+    joint whose value follows another's. Leaving it out would solve a mechanism
+    the rig doesn't have.
+    """
+
+    #: The chain index of the joint it comes after, -1 before the first.
+    after: int
+    #: Its rest transform relative to the frame before it: that joint's, or the
+    #: mimic's before it in the same gap.
+    rest_relative: np.ndarray
+    is_revolute: bool
+    #: The chain index of the joint it follows, or -1 for one off the chain, whose
+    #: value is ``fixed`` for the solve.
+    leader: int
+    multiplier: float
+    offset: float
+    fixed: float = 0.0
+    lower: float = -np.inf
+    upper: float = np.inf
+
+    def value(self, q: np.ndarray) -> float:
+        raw = self.multiplier * float(q[self.leader]) + self.offset if self.leader >= 0 else self.fixed
+        return float(np.clip(raw, self.lower, self.upper))
+
+    def moving(self, q: np.ndarray) -> bool:
+        """Whether it moves with its leader here, rather than held at a limit."""
+        if self.leader < 0:
+            return False
+        raw = self.multiplier * float(q[self.leader]) + self.offset
+        return self.lower <= raw <= self.upper
+
+    def motion(self, q: np.ndarray) -> np.ndarray:
+        value = self.value(q)
+        return rotation_about_y(value) if self.is_revolute else translation_along_y(value)
+
+
 @dataclass
 class Chain:
     """A root-to-tool chain of 1-DoF joints."""
@@ -59,6 +100,9 @@ class Chain:
     upper: np.ndarray
     #: True where the joint is genuinely bounded (continuous joints are not).
     limited: np.ndarray
+    #: Mimic joints' bones between the joints, in chain order. Not degrees of
+    #: freedom: each moves by its leader's value.
+    mimics: tuple[MimicLink, ...] = ()
 
     @property
     def dof(self) -> int:
@@ -74,16 +118,32 @@ class Chain:
             ]
         )
 
-    def frames(self, q: np.ndarray) -> np.ndarray:
-        """World transform of every joint frame, plus the tool, as (n+1, 4, 4)."""
+    def _walk(self, q: np.ndarray) -> tuple[np.ndarray, list]:
+        """Every joint frame plus the tool, as (n+1, 4, 4), and each mimic's frame."""
         motions = self.joint_motion(q)
         out = np.empty((self.dof + 1, 4, 4))
+        mimic_frames = []
         current = np.eye(4)
+        pending = list(self.mimics)
+
+        def through(after: int, current):
+            while pending and pending[0].after == after:
+                mimic = pending.pop(0)
+                current = current @ mimic.rest_relative @ mimic.motion(q)
+                mimic_frames.append((mimic, current))
+            return current
+
+        current = through(-1, current)
         for index in range(self.dof):
             current = current @ self.rest_relative[index] @ motions[index]
             out[index] = current
+            current = through(index, current)
         out[self.dof] = current @ self.tool_offset
-        return out
+        return out, mimic_frames
+
+    def frames(self, q: np.ndarray) -> np.ndarray:
+        """World transform of every joint frame, plus the tool, as (n+1, 4, 4)."""
+        return self._walk(q)[0]
 
     def forward(self, q: np.ndarray) -> np.ndarray:
         """Tool pose for configuration ``q``."""
@@ -97,18 +157,23 @@ class Chain:
         for a prismatic joint the linear part is the axis and there is no
         angular part.
         """
-        frames = self.frames(q)
+        frames, mimic_frames = self._walk(q)
         tool_position = frames[-1][:3, 3]
-
         jacobian = np.zeros((6, self.dof))
-        for index in range(self.dof):
-            frame = frames[index]
+
+        def column(frame, revolute: bool) -> np.ndarray:
             axis = frame[:3, :3] @ LOCAL_AXIS
-            if self.is_revolute[index]:
-                jacobian[:3, index] = np.cross(axis, tool_position - frame[:3, 3])
-                jacobian[3:, index] = axis
-            else:
-                jacobian[:3, index] = axis
+            if revolute:
+                return np.concatenate([np.cross(axis, tool_position - frame[:3, 3]), axis])
+            return np.concatenate([axis, np.zeros(3)])
+
+        for index in range(self.dof):
+            jacobian[:, index] = column(frames[index], bool(self.is_revolute[index]))
+        # A mimic moves the tool as its leader turns, scaled: its column adds to
+        # the leader's. Held at a limit, it doesn't move.
+        for mimic, frame in mimic_frames:
+            if mimic.moving(q):
+                jacobian[:, mimic.leader] += mimic.multiplier * column(frame, mimic.is_revolute)
         return jacobian
 
     def clamp(self, q: np.ndarray) -> np.ndarray:
@@ -200,14 +265,72 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
     def as_array(matrix) -> np.ndarray:
         return np.array([[matrix[r][c] for c in range(4)] for r in range(4)])
 
-    rest = [as_array(b.matrix_local) for b in joints]
+    # Every bone that moves on the way down, joint or mimic, root first: each
+    # one's rest relative to the one before it, whichever kind that is.
+    ancestry = []
+    node = tip
+    while node is not None:
+        ancestry.append(node)
+        node = node.parent
+    ancestry.reverse()
+    moving = [
+        b for b in ancestry
+        if builder.PROP_JOINT_NAME in b or builder.PROP_MIMIC_JOINT in b
+    ]
+    index_of = {b.name: i for i, b in enumerate(joints)}
+    # A mimic records its leader's URDF joint name; the chain is by bone. An
+    # external axis is never one, and could have taken a renamed joint's name.
+    bone_of_joint = {
+        str(b[builder.PROP_JOINT_NAME]): b.name
+        for b in armature_object.data.bones
+        if builder.PROP_JOINT_NAME in b and builder.PROP_EXTERNAL not in b
+    }
+
     rest_relative = np.empty((len(joints), 4, 4))
-    rest_relative[0] = rest[0]
-    for index in range(1, len(joints)):
-        rest_relative[index] = np.linalg.inv(rest[index - 1]) @ rest[index]
+    mimics = []
+    previous = np.eye(4)
+    after = -1
+    for bone in moving:
+        here = as_array(bone.matrix_local)
+        relative = np.linalg.inv(previous) @ here
+        previous = here
+        if bone.name in index_of:
+            after = index_of[bone.name]
+            rest_relative[after] = relative
+            continue
+        leader_bone = bone_of_joint.get(str(bone.get(builder.PROP_MIMIC_OF, "")))
+        leader = index_of.get(leader_bone, -1)
+        multiplier = float(bone.get(builder.PROP_MIMIC_MULTIPLIER, 1.0))
+        offset = float(bone.get(builder.PROP_MIMIC_OFFSET, 0.0))
+        fixed = 0.0
+        if leader < 0:
+            # Its leader is off the chain, so not solved for: held where it is.
+            source = armature_object.pose.bones.get(leader_bone) if leader_bone else None
+            if source is not None:
+                prismatic = source.bone.get(builder.PROP_JOINT_TYPE) == "prismatic"
+                value = float(source.location[1] if prismatic else source.rotation_euler[1])
+                # Where the leader stands, through its limit, as the driver reads it.
+                value = min(
+                    max(value, float(source.bone.get(builder.PROP_LOWER, -np.inf))),
+                    float(source.bone.get(builder.PROP_UPPER, np.inf)),
+                )
+                fixed = multiplier * value + offset
+        mimics.append(
+            MimicLink(
+                after=after,
+                rest_relative=relative,
+                is_revolute=bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic",
+                leader=leader,
+                multiplier=multiplier,
+                offset=offset,
+                fixed=fixed,
+                lower=float(bone.get(builder.PROP_LOWER, -np.inf)),
+                upper=float(bone.get(builder.PROP_UPPER, np.inf)),
+            )
+        )
 
     tip_matrix = as_array(tip.matrix_local)
-    tool_offset = np.linalg.inv(rest[-1]) @ tip_matrix
+    tool_offset = np.linalg.inv(previous) @ tip_matrix
 
     is_revolute = np.array(
         [b.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic" for b in joints]
@@ -224,6 +347,7 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
         lower=lower,
         upper=upper,
         limited=limited,
+        mimics=tuple(mimics),
     )
 
 
