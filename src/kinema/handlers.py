@@ -202,6 +202,13 @@ def solve_rig(rig: bpy.types.Object, *, force: bool = False, live: bool = False)
     if live and getattr(rig, "kinema_auto_configuration", False):
         from .ops import ik as ik_ops
 
+        previous = _last_target.get(rig.name)
+        if previous is not None and not (
+            previous[3].shape == held.shape and np.allclose(held, previous[3], atol=1e-7)
+        ):
+            # A held joint moved: a search that found nothing was for another
+            # problem than this one. Holding or letting go resets, as below.
+            ik_ops.forget_auto_search(rig.name)
         if result.converged:
             ik_ops.forget_auto_search(rig.name)
         elif ik_ops.reconfigure(rig, solver):
@@ -386,6 +393,11 @@ def reset(rig_name: str | None = None) -> None:
         _last_target.pop(rig_name, None)
         _last_duration.pop(rig_name, None)
         _skipped.pop(rig_name, None)
+        # A problem changed -- a joint held or let go, the tip moved -- so a search
+        # that found nothing was for another one.
+        from .ops import ik as ik_ops
+
+        ik_ops.forget_auto_search(rig_name)
 
 
 #: Order matters within each list: Blender calls handlers in list order, and

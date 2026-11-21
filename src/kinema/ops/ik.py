@@ -261,6 +261,8 @@ _auto_searched: dict[str, tuple[np.ndarray, float]] = {}
 #: waypoint was last recorded on them: a linear move from that waypoint can't
 #: cross the switch, so the quick bar says so until the next is recorded.
 _auto_switched: set[str] = set()
+#: rig name -> the timer running a search the interval put off, once it is up.
+_auto_retry: dict[str, object] = {}
 
 
 def forget_auto_search(rig_name: str | None = None) -> None:
@@ -268,6 +270,8 @@ def forget_auto_search(rig_name: str | None = None) -> None:
     if rig_name is None:
         _auto_searched.clear()
         _auto_switched.clear()
+        # Their timers went with the file: Blender drops a timer that isn't persistent.
+        _auto_retry.clear()
     else:
         _auto_searched.pop(rig_name, None)
 
@@ -295,6 +299,28 @@ def _moved_on(last: np.ndarray, goal: np.ndarray) -> bool:
     return _turn_between(last, goal) > AUTO_TURN
 
 
+def _search_later(rig_name: str, delay: float) -> None:
+    """Solve ``rig_name`` live once more after ``delay`` seconds, which searches if
+    it still misses. One timer per rig: a drag asks on every update."""
+    if rig_name in _auto_retry:
+        return
+
+    def retry():
+        _auto_retry.pop(rig_name, None)
+        rig = bpy.data.objects.get(rig_name)
+        if (
+            rig is not None
+            and builder.is_kinema_rig(rig)
+            and getattr(rig, "kinema_ik_enabled", False)
+            and getattr(rig, "kinema_auto_configuration", False)
+        ):
+            handlers.solve_rig(rig, force=True, live=True)
+        return None
+
+    _auto_retry[rig_name] = retry
+    bpy.app.timers.register(retry, first_interval=max(0.0, delay))
+
+
 def _would_compile(rig, solver) -> bool:
     """Whether a search now would build PyRoki for a rig whose live solves put the
     build off (``manager.defer``): a JAX compile in the middle of a drag, the pause
@@ -313,8 +339,8 @@ def reconfigure(rig, solver) -> bool:
     nothing changes, or the arm unable to get there from the configuration it is
     in -- the wrist would have to flip, a joint is at its limit -- where another
     configuration reaches it. Searching tells the two apart. One that found nothing
-    is not tried again until the goal has moved on, or half a second has gone by:
-    out of reach, every drag update would search.
+    is not tried again until the goal has moved on, and then no sooner than half a
+    second after it: out of reach, every drag update would search.
     """
     import time
 
@@ -323,7 +349,13 @@ def reconfigure(rig, solver) -> bool:
     goal = _np4(rig.pose.bones[solver.ik_bone].matrix)
     last = _auto_searched.get(rig.name)
     now = time.perf_counter()
-    if last is not None and (now - last[1] < AUTO_INTERVAL or not _moved_on(last[0], goal)):
+    if last is not None and not _moved_on(last[0], goal):
+        return False
+    if last is not None and now - last[1] < AUTO_INTERVAL:
+        # Moved on, but too soon after the last search. Searched once the interval
+        # is up, so a target let go of here is still searched for: nothing else
+        # would solve again until it moved.
+        _search_later(rig.name, AUTO_INTERVAL - (now - last[1]))
         return False
     found = manager.find_solutions(rig, solver, seeds=AUTO_SEEDS)
     if not found:

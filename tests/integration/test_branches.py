@@ -488,6 +488,66 @@ class TestAutoConfiguration:
         handlers.solve_rig(arm6, force=True, live=True)
         assert len(search) == 2, "moved on 2 cm: searched again"
 
+    def _out_of_reach(self, arm6, builder, manager, handlers):
+        """A search that found nothing: the target 5 m above where the tool can go."""
+        import bpy
+        from mathutils import Vector
+
+        _set_q(builder, arm6, REACHABLE)
+        bpy.ops.kinema.snap_ik()
+        arm6.kinema_auto_configuration = True
+        arm6.kinema_solver_mode = manager.MODE_NUMPY
+        goal = arm6.pose.bones[arm6.get(builder.PROP_IK_BONE)]
+        goal.location += Vector((0.0, 0.0, 5.0))
+        bpy.context.view_layer.update()
+        handlers.solve_rig(arm6, force=True, live=True)
+        return goal
+
+    def test_holding_a_joint_is_a_new_problem_to_search(
+        self, arm6, builder, manager, ik_ops, handlers, search
+    ):
+        """A search that found nothing was for the joints held as they were: holding
+        another, or moving a held one, is searched for at once, goal unmoved and
+        interval or not."""
+        self._out_of_reach(arm6, builder, manager, handlers)
+        assert search == [ik_ops.AUTO_SEEDS] and ik_ops.auto_found_nothing(arm6)
+        base = builder.joint_bones(arm6)[0]
+        base.kinema_ik_hold = True
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert len(search) == 2, "held"
+        base.rotation_euler[1] += 0.3
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert len(search) == 3, "a held joint moved"
+
+    def test_a_search_put_off_by_the_interval_runs_when_it_is_up(
+        self, arm6, builder, manager, ik_ops, handlers, search, monkeypatch
+    ):
+        """Moved on, but sooner than AUTO_INTERVAL after the last search: searched
+        once the interval is up, though the target is let go of and nothing else
+        would solve again."""
+        import bpy
+        from mathutils import Vector
+
+        arm6.kinema_ik_enabled = True
+        goal = self._out_of_reach(arm6, builder, manager, handlers)
+        goal.location += Vector((0.0, 0.02, 0.0))
+        bpy.context.view_layer.update()
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert len(search) == 1, "too soon"
+        retry = ik_ops._auto_retry.get(arm6.name)
+        assert retry is not None and bpy.app.timers.is_registered(retry)
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert ik_ops._auto_retry[arm6.name] is retry, "one timer, however many updates"
+        try:
+            monkeypatch.setattr(ik_ops, "AUTO_INTERVAL", 0.0)
+            retry()
+            assert len(search) == 2, "searched when the timer ran"
+            assert arm6.name not in ik_ops._auto_retry
+        finally:
+            if bpy.app.timers.is_registered(retry):
+                bpy.app.timers.unregister(retry)
+            arm6.kinema_ik_enabled = False
+
     def test_a_turn_counts_on_a_scaled_robot_too(self, ik_ops):
         """The goal's matrix carries the robot's scale; a turn past AUTO_TURN is one
         at any scale, and a turn short of it isn't."""
