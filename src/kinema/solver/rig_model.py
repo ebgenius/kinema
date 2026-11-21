@@ -19,7 +19,8 @@ joint vector anyway, and the links after the ones each bone records -- so the TC
 link, the elbow's link and every correction the manager already holds still apply.
 
 What is lost is what the rig never had: fixed joints are folded into the links they
-carry, and mimic joints, which get no bone, are left out. Neither moves the tool.
+carry. A mimic joint's bone is written back as a ``<mimic>`` of the joint its driver
+reads, with the multiplier and offset folded down to that joint.
 
 The root link is the armature's origin, which is where the manager expresses every
 goal. Collapsing the robot's own base link into it is exact: nothing moves the base
@@ -60,6 +61,10 @@ class BoneRecord:
     acceleration: float | None = None
     jerk: float | None = None
     effort: float | None = None
+    #: For a mimic joint's bone: the joint bone it follows, and how.
+    mimic_joint: str | None = None
+    mimic_multiplier: float = 1.0
+    mimic_offset: float = 0.0
 
     @property
     def link_frame(self) -> np.ndarray:
@@ -93,6 +98,9 @@ def model_from_records(name: str, records: list[BoneRecord]) -> RobotModel:
                 acceleration=record.acceleration,
                 jerk=record.jerk,
                 effort=record.effort,
+                mimic_joint=record.mimic_joint,
+                mimic_multiplier=record.mimic_multiplier,
+                mimic_offset=record.mimic_offset,
             )
         )
         links[record.child_link] = LinkSpec(record.child_link)
@@ -115,8 +123,18 @@ def has_external_axes(rig) -> bool:
 
 
 def records_from_rig(rig) -> list[BoneRecord]:
-    """One record per joint bone, in rig order."""
+    """One record per joint bone, and per mimic joint's bone, in rig order."""
     from ..rig import builder
+
+    def moves(bone) -> bool:
+        return builder.PROP_JOINT_NAME in bone or builder.PROP_MIMIC_JOINT in bone
+
+    # A mimic bone records the URDF joint it follows; its record, the bone.
+    bone_of_joint = {
+        str(bone[builder.PROP_JOINT_NAME]): bone.name
+        for bone in rig.data.bones
+        if builder.PROP_JOINT_NAME in bone
+    }
 
     def matrix(values) -> np.ndarray:
         return np.array([float(v) for v in values]).reshape(4, 4)
@@ -129,14 +147,17 @@ def records_from_rig(rig) -> list[BoneRecord]:
 
     records = []
     for bone in rig.data.bones:
-        if builder.PROP_JOINT_NAME not in bone:
+        if not moves(bone):
             continue
         stored = bone.get(builder.PROP_LINK_CORRECTION)
         if stored is None or len(stored) != 16:
             raise ValueError(f"'{bone.name}' records no link frame")
         parent = bone.parent
-        while parent is not None and builder.PROP_JOINT_NAME not in parent:
+        while parent is not None and not moves(parent):
             parent = parent.parent
+        leader = bone.get(builder.PROP_MIMIC_OF)
+        if leader is not None and str(leader) not in bone_of_joint:
+            raise ValueError(f"'{bone.name}' follows '{leader}', which the rig has no bone for")
         records.append(
             BoneRecord(
                 name=bone.name,
@@ -151,6 +172,9 @@ def records_from_rig(rig) -> list[BoneRecord]:
                 acceleration=optional(bone, builder.PROP_ACCELERATION),
                 jerk=optional(bone, builder.PROP_JERK),
                 effort=optional(bone, builder.PROP_EFFORT),
+                mimic_joint=bone_of_joint[str(leader)] if leader is not None else None,
+                mimic_multiplier=float(bone.get(builder.PROP_MIMIC_MULTIPLIER, 1.0)),
+                mimic_offset=float(bone.get(builder.PROP_MIMIC_OFFSET, 0.0)),
             )
         )
     return records

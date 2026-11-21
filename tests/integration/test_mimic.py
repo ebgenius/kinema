@@ -1,0 +1,175 @@
+"""Mimic joints that move (#104). Needs a real ``bpy``.
+
+The claims:
+
+* a mimic joint gets a bone, which a driver moves from the actuated joint it
+  follows -- a parallel gripper closes from one slider, a chain of two mimics
+  folds to one, a turning mimic turns -- and its link's mesh goes with it;
+* the bone is no control: locked, out of the joints the user, IK and the API
+  see, and the Tool bone stays on the arm's tool0;
+* the rig writes it back to PyRoki as a <mimic>;
+* the Motion Check measures it against its own limits.
+"""
+
+from __future__ import annotations
+
+import importlib
+
+import numpy as np
+import pytest
+
+from ..conftest import requires_bpy
+
+pytestmark = requires_bpy
+
+
+@pytest.fixture
+def builder(addon):
+    return importlib.import_module(f"{addon.__name__}.rig.builder")
+
+
+@pytest.fixture
+def gripper(addon, fixture_dir, clean_scene):
+    import bpy
+
+    assert "FINISHED" in bpy.ops.kinema.build_robot(
+        filepath=str(fixture_dir / "gripper_mimic.urdf")
+    )
+    return bpy.context.view_layer.objects.active
+
+
+def _set(rig, **values) -> None:
+    """Set joint channels by name, then let the drivers run."""
+    import bpy
+
+    for name, value in values.items():
+        pose_bone = rig.pose.bones[name]
+        prismatic = pose_bone.bone.get("kinema_joint_type") == "prismatic"
+        channel = pose_bone.location if prismatic else pose_bone.rotation_euler
+        channel[1] = value
+    bpy.context.view_layer.update()
+
+
+def _value(rig, name) -> float:
+    pose_bone = rig.pose.bones[name]
+    prismatic = pose_bone.bone.get("kinema_joint_type") == "prismatic"
+    return float((pose_bone.location if prismatic else pose_bone.rotation_euler)[1])
+
+
+class TestDriven:
+    def test_both_fingers_close_from_one_slider(self, gripper):
+        _set(gripper, grip=0.03)
+        assert _value(gripper, "grip_mirror") == pytest.approx(-0.03)
+
+    def test_a_chain_of_two_mimics(self, gripper):
+        """grip_tip follows grip_mirror, which follows grip: 2 * -grip + 0.01."""
+        _set(gripper, grip=0.03)
+        assert _value(gripper, "grip_tip") == pytest.approx(-0.05)
+        _set(gripper, grip=0.0)
+        assert _value(gripper, "grip_tip") == pytest.approx(0.01)
+
+    def test_a_turning_mimic(self, gripper):
+        _set(gripper, lift=0.4)
+        assert _value(gripper, "knuckle") == pytest.approx(0.5 * 0.4 + 0.1)
+
+    def test_the_fingers_mesh_moves_with_it(self, gripper):
+        import bpy
+
+        mesh = next(
+            obj for obj in bpy.data.objects
+            if obj.type == "MESH" and obj.parent is gripper and obj.parent_bone == "grip_mirror"
+        )
+        _set(gripper, grip=0.0)
+        before = np.array(mesh.matrix_world.translation)
+        _set(gripper, grip=0.03)
+        after = np.array(mesh.matrix_world.translation)
+        np.testing.assert_allclose(after - before, [-0.03, 0.0, 0.0], atol=1e-6)
+
+    def test_with_the_driver_running_where_scripts_may_not(self, gripper):
+        """A simple expression: Blender evaluates it without Python."""
+        drivers = {
+            fcurve.data_path.split('"')[1]: fcurve.driver
+            for fcurve in gripper.animation_data.drivers
+        }
+        assert set(drivers) == {"grip_mirror", "grip_tip", "knuckle"}
+        assert all(driver.is_simple_expression for driver in drivers.values())
+        assert all(driver.is_valid for driver in drivers.values())
+
+
+class TestNotAControl:
+    def test_locked_and_out_of_the_joints(self, gripper, builder):
+        assert [b.name for b in builder.joint_bones(gripper)] == ["lift", "grip"]
+        mimics = {b.name: b for b in builder.mimic_bones(gripper)}
+        assert set(mimics) == {"grip_mirror", "grip_tip", "knuckle"}
+        for pose_bone in mimics.values():
+            assert all(pose_bone.lock_location) and all(pose_bone.lock_rotation)
+            assert builder.PROP_JOINT_NAME not in pose_bone.bone
+        tip = mimics["grip_tip"].bone
+        assert tip[builder.PROP_MIMIC_OF] == "grip"
+        assert tip[builder.PROP_MIMIC_MULTIPLIER] == pytest.approx(-2.0)
+        assert tip[builder.PROP_MIMIC_OFFSET] == pytest.approx(0.01)
+
+    def test_in_the_mechanism_collection(self, gripper, builder):
+        collection = gripper.data.collections_all[builder.COLLECTION_MECHANISM]
+        assert {"grip_mirror", "grip_tip", "knuckle"} <= {b.name for b in collection.bones}
+
+    def test_the_api_lists_only_the_joints_set_by_hand(self, gripper, addon):
+        api = importlib.import_module(f"{addon.__name__}.api")
+        assert [joint.name for joint in api.joints(gripper)] == ["lift", "grip"]
+
+    def test_the_tool_stays_on_the_arms_tool0(self, gripper, builder):
+        tool = gripper.pose.bones[builder.tool_bone_name(gripper)]
+        assert tool.parent.name == "lift"
+        np.testing.assert_allclose(np.array(tool.bone.head_local), [0.0, 0.0, 0.4], atol=1e-6)
+
+
+class TestWrittenBack:
+    def test_the_rigs_model_has_the_mimics_again(self, gripper, addon):
+        rig_model = importlib.import_module(f"{addon.__name__}.solver.rig_model")
+        bridge = importlib.import_module(f"{addon.__name__}.solver.urdf_bridge")
+        model = rig_model.model_from_rig(gripper)
+        joints = {j.name: j for j in model.joints}
+        assert joints["grip_mirror"].mimic_joint == "grip"
+        assert joints["grip_mirror"].mimic_multiplier == pytest.approx(-1.0)
+        assert joints["grip_tip"].mimic_joint == "grip"
+        assert joints["grip_tip"].mimic_multiplier == pytest.approx(-2.0)
+        assert joints["grip_tip"].mimic_offset == pytest.approx(0.01)
+        assert [j.name for j in model.actuated_joints] == ["lift", "grip"]
+        assert bridge.urdf_xml(model).count("<mimic ") == 3
+        # As PyRoki is handed it.
+        urdf = bridge.urdf_from_model(model)
+        assert urdf.joint_map["grip_tip"].mimic.joint == "grip"
+        assert urdf.joint_map["grip_tip"].mimic.multiplier == pytest.approx(-2.0)
+
+
+class TestChecked:
+    def test_the_motion_check_measures_mimics_against_their_own_limits(self, gripper, addon):
+        waypoints = importlib.import_module(f"{addon.__name__}.ops.waypoints")
+        joints = {joint.name: joint for joint in waypoints.check_joints(gripper)}
+        assert {"grip_mirror", "grip_tip", "knuckle"} <= set(joints)
+        assert (joints["grip_mirror"].lower, joints["grip_mirror"].upper) == pytest.approx(
+            (-0.04, 0.0)
+        )
+        assert joints["grip_mirror"].velocity == pytest.approx(0.5)
+
+
+class TestUnderAnAxis:
+    def test_a_mimic_on_the_base_rides_a_new_axis_under_the_robot(
+        self, addon, fixture_dir, clean_scene
+    ):
+        """continuous_and_mimic's mirrored finger hangs off the base, so off Root:
+        a track put in under the robot carries it with the joints it stood beside."""
+        import bpy
+
+        ops = importlib.import_module(f"{addon.__name__}.ops.external_axes")
+        ext = importlib.import_module(f"{addon.__name__}.rig.external_axes")
+        assert "FINISHED" in bpy.ops.kinema.build_robot(
+            filepath=str(fixture_dir / "continuous_and_mimic.urdf")
+        )
+        rig = bpy.context.view_layer.objects.active
+        assert rig.data.bones["grip_mirror"].parent.name == "Root", "precondition"
+        axis = ops.add_axis(
+            rig, ext.AxisSpec(name="track", mount="BEFORE", kind="LINEAR", direction="X")
+        )
+        assert rig.data.bones["grip_mirror"].parent.name == axis
+        assert rig.data.bones["grip"].parent.name == axis

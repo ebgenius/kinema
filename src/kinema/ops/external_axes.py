@@ -528,7 +528,8 @@ def add_axis(rig, spec: ext.AxisSpec) -> str:
         # under the robot, or the robot's first joints when there is none.
         to_reparent = [
             child.name for child in bones[parent_name].children
-            if builder.PROP_JOINT_NAME in child and _mount_of(child) != "EXTERNAL"
+            if (builder.PROP_JOINT_NAME in child or builder.PROP_MIMIC_JOINT in child)
+            and _mount_of(child) != "EXTERNAL"
         ]
         # So do the objects on Root that belong to it: the robot's base-link meshes,
         # or the lowest axis's rail or base.

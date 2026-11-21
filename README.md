@@ -64,7 +64,10 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
 - **Joints (FK)**, **Target (IK)**, **Waypoints** and **Motions**, the panels used most,
   each on its own: drag one by its grip to put it elsewhere, collapse it, or Shift-click its
   header to pin it on every tab, as Blender's own sidebar panels go. Joints has **Rest
-  Pose** above its sliders and **Key All** below them. Motions has the job's buttons in a
+  Pose** above its sliders and **Key All** below them. A mimic joint, such as a gripper's
+  second finger, has no slider. Its bone is locked and moved by a driver from the joint it
+  follows, so it is right in FK, IK, playback and render. The Motion Check measures it
+  against its own limits. Motions has the job's buttons in a
   box, in the order they are pressed -- **Generate Motion**, **Check Motion**, **Optimize
   Motion** and **Bake to Keyframes** -- then **Graph Editor**, and under them what the
   last Motion Check found. It is there before any waypoint is recorded, for Bake and
@@ -748,8 +751,8 @@ attach it to the axis bone in the **Bones** panel.
 is handed a model written from the rig's own bones instead of the file. Each joint bone
 already records its type, limits, link and link frame, so the model is exact. It matches
 the description to 1e-5 on the fixtures, and arm6 with a track added is joint-for-joint the
-hand-written `rail6.urdf`. Mimic joints get no bone, so they are left out. They never move
-the tool.
+hand-written `rail6.urdf`. A mimic joint is written back as a `<mimic>` of the joint its
+driver reads, with a chain of mimics folded down to that joint.
 
 ## Where the tool frame sits
 
