@@ -403,6 +403,7 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
         # fixes it.
         flagged = {reading.joint for reading in velocity.warnings(rig, context.scene)}
 
+        layout.operator("kinema.reset_pose", text="Rest Pose", icon="LOOP_BACK")
         # In a box, as the quick bar's buttons are.
         column = layout.box().column(align=True)
         for pose_bone in joints:
@@ -429,6 +430,7 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
             sub = row.row(align=True)
             sub.enabled = limited
             sub.label(text="", icon=icon)
+        layout.operator("kinema.key_joints", text="Key All", icon="DECORATE_KEYFRAME")
 
 
 class KINEMA_PT_motion_limits(KinemaPanelBase, Panel):

@@ -307,8 +307,22 @@ class TestQuickBarPreferences:
 
 class TestJointsHeader:
     def test_it_has_no_buttons_of_its_own(self, panel):
-        """Rest Pose and Graph Editor are in the quick bar, and Key All can be."""
+        """Rest Pose and Key All sit in the panel, by the sliders they set."""
         assert not hasattr(panel.KINEMA_PT_joints, "draw_header_preset")
+
+    def test_rest_pose_above_the_sliders_and_key_all_below(self, panel, arm6):
+        import types
+
+        import bpy
+
+        calls = []
+        panel.KINEMA_PT_joints.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
+        names = [name for name, _, _ in calls]
+        operators = [i for i, name in enumerate(names) if name == "operator"]
+        assert [calls[i][1][0] for i in operators] == ["kinema.reset_pose", "kinema.key_joints"]
+        sliders = [i for i, (name, args, _) in enumerate(calls) if name == "prop"]
+        assert operators[0] < names.index("box") < sliders[0]
+        assert sliders[-1] < operators[1]
 
 
 class TestMeshes:
