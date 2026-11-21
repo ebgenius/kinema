@@ -108,6 +108,7 @@ class KinemaSceneProps(PropertyGroup):
     show_ik_configuration: BoolProperty(name="Configuration", default=False)
     show_ik_swivel: BoolProperty(name="Elbow Swivel", default=False)
     show_ik_statistics: BoolProperty(name="IK Solver Statistics", default=False)
+    show_motion_check: BoolProperty(name="Motion Check", default=True)
     last_import: StringProperty(
         name="Last Import",
         description="Most recently imported robot description",
@@ -228,9 +229,8 @@ ORDER_JOINTS = 1
 ORDER_IK = 2
 ORDER_WAYPOINTS = 3
 ORDER_MOTIONS = 4
-ORDER_MOTION_CHECK = 5
-ORDER_SETTINGS = 6
-ORDER_KINEMA = 7
+ORDER_SETTINGS = 5
+ORDER_KINEMA = 6
 
 
 def section(layout, context, name: str, label: str, icon: str, buttons=None):
@@ -929,22 +929,29 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
                 frames.prop(motion, "frame_end")
                 layout.label(text=f"{motion.duration} frames", icon="TIME")
 
-        column = layout.column()
-        column.enabled = len(rig.kinema_motions) > 0 or (
-            rig.kinema_job_version < 1 and len(rig.kinema_waypoints) > 1
-        )
-        column.scale_y = 1.2
-        column.operator("kinema.generate_motion", text="Generate Motion", icon="TRACKING")
+        # The job's buttons in the order they are pressed, in a box as the quick
+        # bar's are: made, checked, optimized, then baked to keys.
         from ..ops.optimize import optimizing
 
+        checks = rig.kinema_motion_check
+        actions = layout.box().column(align=True)
+        job = actions.column(align=True)
+        job.enabled = len(rig.kinema_motions) > 0 or (
+            rig.kinema_job_version < 1 and len(rig.kinema_waypoints) > 1
+        )
+        job.operator("kinema.generate_motion", text="Generate Motion", icon="TRACKING")
+        job.operator(
+            "kinema.check_motion",
+            text="Check Again" if len(checks) else "Check Motion",
+            icon="VIEWZOOM",
+        )
         if optimizing(rig):
-            column.label(text="Optimizing motion... Esc to cancel", icon="SORTTIME")
+            job.label(text="Optimizing motion... Esc to cancel", icon="SORTTIME")
         else:
-            column.operator(
-                "kinema.optimize_motion", text="Optimize Motion", icon="IPO_EASE_IN_OUT"
-            )
+            job.operator("kinema.optimize_motion", text="Optimize Motion", icon="IPO_EASE_IN_OUT")
         # What live IK plays, as keys: with the job it is made of.
-        layout.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
+        actions.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
+        layout.operator("kinema.graph_editor", text="Graph Editor", icon="GRAPH")
 
         # The same test the operator makes, not a truthier one: a rig whose IK
         # bone was deleted keeps the property, and checking only that would
@@ -953,6 +960,9 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
 
         if wants_ik(rig) and ik_bone_name(rig) is None:
             layout.label(text="Linear moves need an IK target", icon="ERROR")
+
+        if len(checks):
+            _draw_motion_check(layout, context, rig)
 
 
 def motions_note(rig) -> tuple[str, str]:
@@ -996,53 +1006,35 @@ def check_outdated(rig, scene) -> str:
     return ""
 
 
-class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
-    """What the last motion check found, one move per row.
+def _draw_motion_check(layout, context, rig) -> None:
+    """What the last motion check found, one move per row, in a section of its own.
 
     Read from the rig rather than measured here: measuring means playing the job
     through, which is an operator's work, never a redraw's.
     """
+    from ..rig.motion_check import problems
 
-    bl_idname = "KINEMA_PT_motion_check"
-    bl_order = ORDER_MOTION_CHECK
-    bl_label = "Motion Check"
-
-    @classmethod
-    def poll(cls, context: bpy.types.Context) -> bool:
-        rig = active_rig(context)
-        return rig is not None and (len(rig.kinema_motions) > 0 or len(rig.kinema_motion_check) > 0)
-
-    def draw(self, context: bpy.types.Context) -> None:
-        from ..rig.motion_check import problems
-
-        layout = self.layout
-        rig = active_rig(context)
-        checks = rig.kinema_motion_check
-        layout.operator(
-            "kinema.check_motion",
-            text="Check Again" if len(checks) else "Check Motion",
-            icon="VIEWZOOM",
+    checks = rig.kinema_motion_check
+    found = [problems(check) for check in checks]
+    outdated = check_outdated(rig, context.scene)
+    icon = "ERROR" if outdated or any(found) else "CHECKMARK"
+    body = section(layout, context, "show_motion_check", "Motion Check", icon)
+    if body is None:
+        return
+    if outdated:
+        body.label(text=outdated, icon="ERROR")
+    column = body.column(align=True)
+    for check, its in zip(checks, found):
+        kind = "Linear" if check.move == MOVE_LINEAR else "Joint"
+        heading = f"{check.name}: {kind}, {check.start_frame}–{check.end_frame}"
+        column.label(
+            text=heading if its else f"{heading}, ok",
+            icon="ERROR" if its else "CHECKMARK",
         )
-        if not len(checks):
-            layout.label(text="Generate Motion checks the job too", icon="INFO")
-            return
-        outdated = check_outdated(rig, context.scene)
-        if outdated:
-            layout.label(text=outdated, icon="ERROR")
-
-        column = layout.column(align=True)
-        for check in checks:
-            found = problems(check)
-            kind = "Linear" if check.move == MOVE_LINEAR else "Joint"
-            heading = f"{check.name}: {kind}, {check.start_frame}–{check.end_frame}"
-            column.label(
-                text=heading if found else f"{heading}, ok",
-                icon="ERROR" if found else "CHECKMARK",
-            )
-            for problem in found:
-                row = column.row()
-                row.separator(factor=2.0)
-                row.label(text=problem)
+        for problem in its:
+            row = column.row()
+            row.separator(factor=2.0)
+            row.label(text=problem)
 
 
 def _draw_capsule_counts(layout, rig, capsules, meshes) -> None:
@@ -1570,7 +1562,6 @@ classes = (
     KINEMA_PT_ik,
     KINEMA_PT_waypoints,
     KINEMA_PT_motions,
-    KINEMA_PT_motion_check,
     KINEMA_PT_main,
     KINEMA_PT_bones,
     KINEMA_PT_tcp,

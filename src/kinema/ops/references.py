@@ -418,7 +418,7 @@ def _curve(curve) -> tuple:
 
     The keys are read a field at a time, all at once, and digested: a curve
     keyed on every frame of a long job is thousands of keys, and this runs
-    on every redraw of the Motion Check panel.
+    on every redraw of the Motions panel's Motion Check.
     """
     keys, samples = curve.keyframe_points, curve.sampled_points
     # float32, as Blender holds them: any other type is copied a value at a time.

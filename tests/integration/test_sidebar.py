@@ -42,7 +42,6 @@ class TestLayout:
             "KINEMA_PT_ik",
             "KINEMA_PT_waypoints",
             "KINEMA_PT_motions",
-            "KINEMA_PT_motion_check",
             "KINEMA_PT_main",
             "KINEMA_PT_kinema",
         ]
@@ -749,3 +748,48 @@ class TestTargetPanel:
         calls = []
         panel.KINEMA_PT_motions.draw(types.SimpleNamespace(layout=_Layout(calls)), bpy.context)
         assert "kinema.bake_ik" in [args[0] for name, args, _ in calls if name == "operator"]
+
+
+class TestMotionsBox:
+    def _drawn(self, panel):
+        import types
+
+        import bpy
+
+        calls = []
+        panel.KINEMA_PT_motions.draw(types.SimpleNamespace(layout=_Open(calls)), bpy.context)
+        return calls
+
+    def test_the_jobs_buttons_in_a_box_in_the_order_theyre_pressed(self, panel, arm6):
+        """Generate, Check, Optimize and Bake, then the Graph Editor to see the curves."""
+        calls = self._drawn(panel)
+        names = [name for name, _, _ in calls]
+        operators = [
+            (i, args[0]) for i, (name, args, _) in enumerate(calls) if name == "operator"
+        ]
+        job = [(i, op) for i, op in operators if i > names.index("box")]
+        assert [op for _, op in job] == [
+            "kinema.generate_motion",
+            "kinema.check_motion",
+            "kinema.optimize_motion",
+            "kinema.bake_ik",
+            "kinema.graph_editor",
+        ]
+
+    def test_no_panel_of_its_own_for_the_motion_check(self, panel):
+        assert not hasattr(panel, "KINEMA_PT_motion_check")
+
+    def test_what_the_check_found_is_a_section_of_the_motions(self, panel, arm6):
+        """Until a check is made there is nothing to show; once one is, its moves are
+        listed under it, and the button checks again."""
+        assert "show_motion_check" not in [a[1] for n, a, _ in self._drawn(panel) if n == "prop"]
+        check = arm6.kinema_motion_check.add()
+        check.name = "Move 1"
+        calls = self._drawn(panel)
+        assert "show_motion_check" in [a[1] for n, a, _ in calls if n == "prop"]
+        texts = {
+            args[0]: kwargs.get("text") for name, args, kwargs in calls if name == "operator"
+        }
+        assert texts["kinema.check_motion"] == "Check Again"
+        labels = [kwargs.get("text", "") for name, _, kwargs in calls if name == "label"]
+        assert any(label.startswith("Move 1: ") for label in labels)

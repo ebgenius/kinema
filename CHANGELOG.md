@@ -183,10 +183,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buttons used all the time comes first -- Live IK, Configurations, Auto Config, Rest
   Pose, Snap to Tool, Record, Generate, Motion Check and Graph Editor, chosen and ordered
   in the preferences. Target (IK) is in sections, Target, Configuration and IK Solver
-  Statistics, and Bake to Keyframes is with the Motions. Joints,
-  Target (IK), Waypoints, Motions and Motion Check are panels of their own, to drag,
+  Statistics. Joints (FK) has Rest Pose above its sliders and Key All below them. Motions
+  has Generate, Check, Optimize and Bake to Keyframes in a box, then Graph Editor, and
+  what the Motion Check found, which no longer has a panel of its own. Joints,
+  Target (IK), Waypoints and Motions are panels of their own, to drag,
   collapse and pin; what is set once for the robot sits under Robot Settings, and what is
-  Kinema's -- importing, and the solver -- under Kinema Settings. The Bones,
+  Kinema's -- importing, and the solver -- under Kinema Settings, last. The Bones,
   Waypoints and Motions lists show every row, so the mouse wheel over one scrolls the
   sidebar instead of stopping on it.
 - **Waypoints are poses; motions are the moves between them**

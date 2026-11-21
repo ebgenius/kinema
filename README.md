@@ -61,9 +61,13 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
   following the target. It
   is always one line, so the panels under it stay put. With no robot, the quick
   bar offers to import one.
-- **Joints (FK)**, **Target (IK)**, **Waypoints**, **Motions** and **Motion Check**,
-  the panels used most, each on its own: drag one by its grip to put it elsewhere, collapse
-  it, or Shift-click its header to pin it on every tab, as Blender's own sidebar panels go.
+- **Joints (FK)**, **Target (IK)**, **Waypoints** and **Motions**, the panels used most,
+  each on its own: drag one by its grip to put it elsewhere, collapse it, or Shift-click its
+  header to pin it on every tab, as Blender's own sidebar panels go. Joints has **Rest
+  Pose** above its sliders and **Key All** below them. Motions has the job's buttons in a
+  box, in the order they are pressed -- **Generate Motion**, **Check Motion**, **Optimize
+  Motion** and **Bake to Keyframes** -- then **Graph Editor**, and under them what the
+  last Motion Check found.
 - **Robot Settings** holds what is set once for the robot shown: Reset Meshes and Meshes
   at File Origin, and as subpanels **Bones**, **Tool Centre Point**, **External Axes**,
   **Motion Limits** and **Collision**. Its header names the robot.
@@ -258,7 +262,8 @@ at each waypoint. Easing them is up to you:
 - **Bezier handles across a corner** of three waypoints bow the path through it. That is the
   blend radius a real controller would apply.
 
-**Graph Editor**, in the quick bar, takes one click to open those curves:
+**Graph Editor**, in the quick bar and the Motions panel, takes one click to open those
+curves:
 - **Where.** A Graph Editor already in the window is reused. Otherwise the bottom third of
   the 3D viewport becomes one, and the Timeline stays. Or, as the preferences say, it opens
   in a window of its own.
