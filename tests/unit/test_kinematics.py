@@ -210,3 +210,66 @@ class TestUnsupportedJoints:
         urdf = yourdfpy.URDF.load(str(path))
         with pytest.raises(kin.UnsupportedJointError, match="floating"):
             kin.model_from_urdf(urdf)
+
+
+@pytest.fixture(scope="module")
+def gripper(fixture_dir):
+    yourdfpy = pytest.importorskip("yourdfpy")
+    urdf = yourdfpy.URDF.load(str(fixture_dir / "gripper_mimic.urdf"))
+    return kin.model_from_urdf(urdf)
+
+
+def _joint(name, *, parent, child, mimic=None, multiplier=1.0, offset=0.0):
+    return kin.JointSpec(
+        name=name, joint_type="prismatic", parent_link=parent, child_link=child,
+        origin=np.eye(4), axis=np.array([1.0, 0.0, 0.0]), mimic_joint=mimic,
+        mimic_multiplier=multiplier, mimic_offset=offset,
+    )
+
+
+class TestMimicSources:
+    """#104: what each mimic joint's bone is driven from."""
+
+    def test_a_mimic_follows_its_joint(self, gripper):
+        source = gripper.mimic_sources()["grip_mirror"]
+        assert (source.joint, source.multiplier, source.offset) == ("grip", -1.0, 0.0)
+
+    def test_a_mimic_of_a_mimic_is_folded_down_to_the_actuated_joint(self, gripper):
+        """grip_tip = 2 * grip_mirror + 0.01 = 2 * (-grip) + 0.01."""
+        source = gripper.mimic_sources()["grip_tip"]
+        assert source.joint == "grip"
+        assert source.multiplier == pytest.approx(-2.0)
+        assert source.offset == pytest.approx(0.01)
+
+    def test_a_turning_mimic(self, gripper):
+        source = gripper.mimic_sources()["knuckle"]
+        assert (source.joint, source.multiplier, source.offset) == ("lift", 0.5, 0.1)
+
+    def test_bones_for_the_actuated_joints_and_the_mimics(self, gripper):
+        assert [j.name for j in gripper.actuated_joints] == ["lift", "grip"]
+        assert sorted(j.name for j in gripper.boned_joints) == [
+            "grip", "grip_mirror", "grip_tip", "knuckle", "lift",
+        ]
+
+    def test_a_mimic_of_nothing_or_of_itself_gets_no_bone(self):
+        model = kin.RobotModel(
+            name="loops",
+            links={n: kin.LinkSpec(n) for n in ("base", "a", "b", "c")},
+            joints=[
+                _joint("lost", parent="base", child="a", mimic="nowhere"),
+                _joint("one", parent="base", child="b", mimic="two"),
+                _joint("two", parent="base", child="c", mimic="one"),
+            ],
+            root_link="base",
+        )
+        assert model.mimic_sources() == {}
+        assert model.boned_joints == []
+
+    def test_the_links_a_mimic_moves_are_its_own_only_when_asked(self, gripper):
+        """A description is compared on what it actuates; the rig hangs a mimic's
+        links off its bone."""
+        assert gripper.nearest_actuated_ancestor()["tip_b"] == "lift"
+        owners = gripper.nearest_actuated_ancestor(mimics=True)
+        assert owners["finger_b"] == "grip_mirror"
+        assert owners["tip_b"] == "grip_tip"
+        assert owners["tool0"] == "lift"

@@ -33,6 +33,15 @@ ACTUATED_TYPES = frozenset({"revolute", "continuous", "prismatic"})
 SUPPORTED_TYPES = ACTUATED_TYPES | {"fixed"}
 
 
+@dataclass(frozen=True)
+class MimicSource:
+    """What a mimic joint follows: ``multiplier * value(joint) + offset``."""
+
+    joint: str
+    multiplier: float
+    offset: float
+
+
 class UnsupportedJointError(ValueError):
     """A URDF used a joint type Kinema cannot represent as a single bone."""
 
@@ -140,6 +149,45 @@ class RobotModel:
     def actuated_joints(self) -> list[JointSpec]:
         return [j for j in self.joints if j.is_actuated]
 
+    def mimic_sources(self) -> dict[str, MimicSource]:
+        """Each mimic joint that moves, by name: the actuated joint at the end of
+        its chain of mimics, and the one multiplier and offset that take that
+        joint's value to its own.
+
+        A mimic of a mimic is folded into one, so the rig drives every mimic bone
+        from an actuated joint and no driver reads another driver. A mimic whose
+        chain ends at no actuated joint -- a joint that isn't there, or a loop --
+        is left out: it gets no bone, as before mimic joints had any.
+        """
+        by_name = {j.name: j for j in self.joints}
+        sources: dict[str, MimicSource] = {}
+        for joint in self.joints:
+            if joint.mimic_joint is None or joint.joint_type not in ACTUATED_TYPES:
+                continue
+            multiplier, offset = joint.mimic_multiplier, joint.mimic_offset
+            seen = {joint.name}
+            leader = by_name.get(joint.mimic_joint)
+            while leader is not None and leader.mimic_joint is not None:
+                if leader.name in seen:
+                    leader = None
+                    break
+                seen.add(leader.name)
+                # value = m * (m_leader * q + o_leader) + o
+                offset = multiplier * leader.mimic_offset + offset
+                multiplier = multiplier * leader.mimic_multiplier
+                leader = by_name.get(leader.mimic_joint)
+            if leader is None or not leader.is_actuated:
+                continue
+            sources[joint.name] = MimicSource(leader.name, multiplier, offset)
+        return sources
+
+    @property
+    def boned_joints(self) -> list[JointSpec]:
+        """The joints the rig has a bone for: the actuated ones, and the mimics
+        that follow one."""
+        mimics = self.mimic_sources()
+        return [j for j in self.joints if j.is_actuated or j.name in mimics]
+
     def joints_by_parent(self) -> dict[str, list[JointSpec]]:
         table: dict[str, list[JointSpec]] = {}
         for joint in self.joints:
@@ -177,14 +225,19 @@ class RobotModel:
         link_frames = self.link_frames()
         return {j.name: link_frames[j.child_link] for j in self.joints}
 
-    def nearest_actuated_ancestor(self) -> dict[str, str | None]:
+    def nearest_actuated_ancestor(self, mimics: bool = False) -> dict[str, str | None]:
         """Map each link to the actuated joint that ultimately moves it.
 
         Fixed joints get no bone -- they would be inert clutter in an
         animator's rig. Their transform is instead folded into whatever the
         fixed chain carries (meshes, tool frames), so the link still lands in
         exactly the right place with fewer controls on screen.
+
+        ``mimics`` counts a mimic joint that follows one as moving its links too,
+        as the rig's bones do; without it, a description is compared joint for
+        joint on what it actuates.
         """
+        moving = {j.name for j in (self.boned_joints if mimics else self.actuated_joints)}
         owner: dict[str, str | None] = {self.root_link: None}
         by_parent = self.joints_by_parent()
 
@@ -193,7 +246,7 @@ class RobotModel:
             parent = stack.pop()
             for joint in by_parent.get(parent, ()):
                 owner[joint.child_link] = (
-                    joint.name if joint.is_actuated else owner.get(parent)
+                    joint.name if joint.name in moving else owner.get(parent)
                 )
                 stack.append(joint.child_link)
         return owner
