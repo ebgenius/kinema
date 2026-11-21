@@ -81,7 +81,8 @@ PROP_JOINT_NAME = "kinema_joint"
 #: apart so nothing that looks for joints -- IK chains, the Joints panel, Key All,
 #: the API -- takes a bone a driver moves for one the user does.
 PROP_MIMIC_JOINT = "kinema_mimic"
-#: The actuated joint a mimic bone follows, and how: value = multiplier * its + offset.
+#: The joint a mimic bone follows, as its <mimic> names it, and how: value =
+#: multiplier * its + offset. That joint may be a mimic itself.
 PROP_MIMIC_OF = "kinema_mimic_of"
 PROP_MIMIC_MULTIPLIER = "kinema_mimic_multiplier"
 PROP_MIMIC_OFFSET = "kinema_mimic_offset"
@@ -446,21 +447,30 @@ def _setup_pose_bones(
             pose_bone.bone[PROP_MOUNT_FRAME] = [float(v) for v in mount.transform.flatten()]
             pose_bone.bone[PROP_MOUNT_LINK] = mount.link
 
-    mimics = model.mimic_sources()
+    bones_of = {**result.joint_bones, **result.mimic_bones}
+
+    def rest_of(joint) -> float:
+        """Where ``joint`` stands with every joint the user moves at zero, through
+        the limits the rig enforces: a mimic at what its leader's rest gives."""
+        value = 0.0
+        if joint.mimic_joint is not None:
+            value = joint.mimic_multiplier * rest_of(joint_by_name[joint.mimic_joint])
+            value += joint.mimic_offset
+        if options.enforce_limits and joint.has_limits:
+            value = min(max(value, joint.lower), joint.upper)
+        return value
+
     for joint_name, bone_name in result.mimic_bones.items():
         joint = joint_by_name[joint_name]
-        source = mimics[joint_name]
         pose_bone = pose.bones[bone_name]
         limits = (joint.lower, joint.upper) if joint.has_limits else None
-        leader = joint_by_name[source.joint]
+        # The joint its <mimic> names, a mimic or not: the driver reads it where it
+        # stands, so a limit on the way is kept rather than folded away.
+        leader = joint_by_name[joint.mimic_joint]
         if options.enforce_limits and limits is not None:
-            # Its offset, or what its leader's rest gives where that is limited
-            # off zero too.
-            leader_rest = (
-                min(max(0.0, leader.lower), leader.upper) if leader.has_limits else 0.0
-            )
+            leader_rest = rest_of(leader)
             _warn_if_zero_is_forbidden(
-                joint, result, rest=source.multiplier * leader_rest + source.offset
+                joint, result, rest=joint.mimic_multiplier * leader_rest + joint.mimic_offset
             )
         configure_joint_bone(
             pose_bone, revolute=joint.is_revolute,
@@ -478,16 +488,14 @@ def _setup_pose_bones(
             acceleration=joint.acceleration,
             jerk=joint.jerk,
             effort=joint.effort,
-            mimic=source,
+            mimic=(leader.name, joint.mimic_multiplier, joint.mimic_offset),
         )
         drive_mimic(
             armature_object, pose_bone,
-            leader=result.joint_bones[source.joint], leader_revolute=leader.is_revolute,
-            revolute=joint.is_revolute, multiplier=source.multiplier, offset=source.offset,
-            leader_limits=(
-                (leader.lower, leader.upper)
-                if options.enforce_limits and leader.has_limits else None
-            ),
+            leader=bones_of[leader.name], leader_revolute=leader.is_revolute,
+            revolute=joint.is_revolute, multiplier=joint.mimic_multiplier,
+            offset=joint.mimic_offset,
+            leader_limited=options.enforce_limits and leader.has_limits,
         )
 
     if ROOT_BONE in pose.bones:
@@ -559,16 +567,18 @@ def write_joint_props(
     correction, which lets the solver turn a bone-space goal into the link-space
     goal PyRoki expects.
 
-    ``mimic``, a ``kinematics.MimicSource``, makes it a mimic joint's bone: named
-    by PROP_MIMIC_JOINT rather than PROP_JOINT_NAME, with what it follows.
+    ``mimic``, ``(joint, multiplier, offset)`` as its <mimic> gives them, makes it
+    a mimic joint's bone: named by PROP_MIMIC_JOINT rather than PROP_JOINT_NAME,
+    with what it follows.
     """
     if mimic is None:
         bone[PROP_JOINT_NAME] = joint_name
     else:
+        leader, multiplier, offset = mimic
         bone[PROP_MIMIC_JOINT] = joint_name
-        bone[PROP_MIMIC_OF] = mimic.joint
-        bone[PROP_MIMIC_MULTIPLIER] = float(mimic.multiplier)
-        bone[PROP_MIMIC_OFFSET] = float(mimic.offset)
+        bone[PROP_MIMIC_OF] = leader
+        bone[PROP_MIMIC_MULTIPLIER] = float(multiplier)
+        bone[PROP_MIMIC_OFFSET] = float(offset)
     bone[PROP_JOINT_TYPE] = joint_type
     bone[PROP_AXIS] = [float(v) for v in axis]
     if limits is not None:
@@ -1076,15 +1086,18 @@ def channel_of(revolute: bool) -> str:
 
 def drive_mimic(
     armature_object, pose_bone, *, leader: str, leader_revolute: bool, revolute: bool,
-    multiplier: float, offset: float, leader_limits=None,
+    multiplier: float, offset: float, leader_limited: bool = False,
 ) -> None:
     """Move ``pose_bone``'s joint channel by a driver on the ``leader`` bone's:
     ``multiplier * value + offset``, as URDF's <mimic> says.
 
-    The value is the leader's channel clamped to ``leader_limits``, its limit
-    constraint's range: where the leader stands, not where it was dragged to. Read
-    off the channel rather than the evaluated transform, so a continuous joint
-    wound past half a turn keeps its turns.
+    The value is where the leader stands. A ``leader_limited`` one is read from its
+    evaluated transform, in its own space, after its constraints: Blender's own
+    limit -- cyclic for a turn, and whatever has become of the constraint since --
+    rather than a copy of it. A leader with no limit is read off its channel, the
+    same value, but a continuous joint wound past half a turn keeps its turns. A
+    leader that is a mimic itself is read the same way, so a limit partway down a
+    chain of mimics holds.
 
     A driver, not Kinema code: Blender keeps it right in FK, IK, playback, a bake
     and a render, with nothing of Kinema's running. Its expression is one Blender
@@ -1102,19 +1115,28 @@ def drive_mimic(
     driver.type = "SCRIPTED"
     variable = driver.variables.new()
     variable.name = "q"
-    variable.type = "SINGLE_PROP"
-    target = variable.targets[0]
-    target.id_type = "OBJECT"
-    target.id = armature_object
-    target.data_path = (
-        f'pose.bones["{bpy.utils.escape_identifier(leader)}"]'
-        f".{channel_of(leader_revolute)}[1]"
-    )
-    value = "q"
-    if leader_limits is not None:
-        lower, upper = (float(v) for v in leader_limits)
-        value = f"min(max(q, {lower!r}), {upper!r})"
-    driver.expression = f"{float(multiplier)!r} * {value} + {float(offset)!r}"
+    if leader_limited:
+        variable.type = "TRANSFORMS"
+        target = variable.targets[0]
+        target.id = armature_object
+        target.bone_target = leader
+        target.transform_space = "LOCAL_SPACE"
+        if leader_revolute:
+            target.transform_type = "ROT_Y"
+            # The turn about the joint axis alone, whatever else the matrix holds.
+            target.rotation_mode = "SWING_TWIST_Y"
+        else:
+            target.transform_type = "LOC_Y"
+    else:
+        variable.type = "SINGLE_PROP"
+        target = variable.targets[0]
+        target.id_type = "OBJECT"
+        target.id = armature_object
+        target.data_path = (
+            f'pose.bones["{bpy.utils.escape_identifier(leader)}"]'
+            f".{channel_of(leader_revolute)}[1]"
+        )
+    driver.expression = f"{float(multiplier)!r} * q + {float(offset)!r}"
 
 
 def mimic_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:

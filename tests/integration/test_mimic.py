@@ -104,9 +104,10 @@ class TestNotAControl:
         for pose_bone in mimics.values():
             assert all(pose_bone.lock_location) and all(pose_bone.lock_rotation)
             assert builder.PROP_JOINT_NAME not in pose_bone.bone
+        # As its <mimic> says: following another mimic, not folded onto grip.
         tip = mimics["grip_tip"].bone
-        assert tip[builder.PROP_MIMIC_OF] == "grip"
-        assert tip[builder.PROP_MIMIC_MULTIPLIER] == pytest.approx(-2.0)
+        assert tip[builder.PROP_MIMIC_OF] == "grip_mirror"
+        assert tip[builder.PROP_MIMIC_MULTIPLIER] == pytest.approx(2.0)
         assert tip[builder.PROP_MIMIC_OFFSET] == pytest.approx(0.01)
 
     def test_in_the_mechanism_collection(self, gripper, builder):
@@ -316,12 +317,31 @@ class TestLimitsAsTheRigHasThem:
         mirror = chain.mimics[0]
         assert mirror.leader == -1, "grip is off this chain"
         assert mirror.fixed == pytest.approx(-0.04 if enforce else -0.06)
-        assert (mirror.lower, mirror.upper) == (
-            (-0.04, 0.0) if enforce else (-np.inf, np.inf)
-        )
         bpy.context.view_layer.update()
         np.testing.assert_allclose(
             chain.forward(np.zeros(1)), np.array(rig.pose.bones["grip_tip"].matrix), atol=1e-5
+        )
+
+    def test_a_cached_chain_follows_a_leader_moved_since(self, gripper, builder, addon):
+        """The solver caches its chain; a fetch stands its held mimics where the
+        rig shows them now."""
+        import bpy
+
+        manager = importlib.import_module(f"{addon.__name__}.solver.manager")
+        chain_mod = importlib.import_module(f"{addon.__name__}.solver.chain")
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        solver = manager.get_solver(gripper)
+        # A tip is a joint bone or the tool, and none here stands on a mimic: the
+        # cached solver is handed a fingertip's chain, as one on a finger would be.
+        solver.chain = chain_mod.chain_from_rig(gripper, "grip_tip")
+        _set(gripper, grip=0.03)
+        assert solver.chain.mimics[0].fixed == pytest.approx(0.0, abs=1e-6), "built before the move"
+        assert manager.get_solver(gripper) is solver, "the cached one"
+        assert solver.chain.mimics[0].fixed == pytest.approx(-0.03)
+        np.testing.assert_allclose(
+            solver.chain.forward(np.zeros(1)),
+            np.array(gripper.pose.bones["grip_tip"].matrix),
+            atol=1e-5,
         )
 
 
@@ -345,3 +365,58 @@ class TestRestOutsideItsLimits:
         assert said and "0.1" in said[0], result.warnings
         result, _ = _built(addon, fixture_dir, "gripper_mimic.urdf")
         assert not [w for w in result.warnings if w.startswith("knuckle:")]
+
+
+class TestBlendersOwnLimits:
+    """Read what Blender shows, rather than a copy of how it gets there."""
+
+    def test_a_limit_partway_down_a_chain_of_mimics_holds(
+        self, addon, fixture_dir, clean_scene, tmp_path
+    ):
+        """grip_mirror narrowed to [-0.02, 0]: at grip 0.03 it is held at -0.02, and
+        grip_tip, 2 * grip_mirror + 0.01, follows it to -0.03, not to -0.05."""
+        import bpy
+
+        text = (fixture_dir / "gripper_mimic.urdf").read_text(encoding="utf-8")
+        text = text.replace(
+            '<limit lower="-0.04" upper="0" effort="5" velocity="0.5"/>',
+            '<limit lower="-0.02" upper="0" effort="5" velocity="0.5"/>',
+        )
+        assert text.count('lower="-0.02"') == 1, "precondition: grip_mirror narrowed"
+        (tmp_path / "narrow.urdf").write_text(text, encoding="utf-8")
+        _, rig = _built(addon, tmp_path, "narrow.urdf")
+        _set(rig, grip=0.03)
+        chain_mod = importlib.import_module(f"{addon.__name__}.solver.chain")
+        shown = chain_mod.displayed_value(rig.pose.bones["grip_tip"], revolute=False)
+        assert chain_mod.displayed_value(rig.pose.bones["grip_mirror"], False) == pytest.approx(-0.02)
+        assert shown == pytest.approx(-0.03)
+
+    def test_a_constraint_taken_off_after_import_lets_the_mimic_follow(self, gripper):
+        """grip's limit removed: dragged to 0.06, it stands there, and so does its
+        mirror -- not at the -0.04 the import's limit would have held it to."""
+        constraint = gripper.pose.bones["grip"].constraints.get("Kinema Joint Limit")
+        gripper.pose.bones["grip"].constraints.remove(constraint)
+        _set(gripper, grip=0.06)
+        assert _value(gripper, "grip_mirror") == pytest.approx(-0.06)
+
+    @pytest.mark.parametrize(
+        "lower, upper, angle",
+        [(-1.0, 1.0, 2.5), (-1.0, 1.0, -3.0), (-1.0, 1.0, 2 * np.pi + 0.2),
+         (0.5, 1.5, 0.0), (0.5, 1.5, -2.6), (-1.5, 1.5, 0.3)],
+    )
+    def test_the_chains_clamp_is_blenders_limit_rotation(
+        self, gripper, addon, lower, upper, angle
+    ):
+        """The NumPy chain's clamp_angle, against Blender's Limit Rotation on lift."""
+        import bpy
+
+        chain_mod = importlib.import_module(f"{addon.__name__}.solver.chain")
+        bone = gripper.pose.bones["lift"]
+        constraint = bone.constraints["Kinema Joint Limit"]
+        constraint.min_y, constraint.max_y = lower, upper
+        bone.rotation_euler[1] = angle
+        bpy.context.view_layer.update()
+        shown = chain_mod.displayed_value(bone, revolute=True)
+        held = chain_mod.clamp_angle(angle, lower, upper)
+        assert np.cos(shown) == pytest.approx(np.cos(held), abs=1e-5)
+        assert np.sin(shown) == pytest.approx(np.sin(held), abs=1e-5)

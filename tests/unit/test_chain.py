@@ -173,12 +173,16 @@ class TestNumpySolver:
         assert np.abs(near.q - goal_q).max() < 0.2
 
 
-def _mimic(after, leader, *, revolute=True, multiplier=1.0, offset=0.0, x=0.3, **kw):
+def _mimic(
+    after, leader, *, revolute=True, multiplier=1.0, offset=0.0, x=0.3,
+    lower=-np.inf, upper=np.inf, fixed=0.0,
+):
     rest = np.eye(4)
     rest[0, 3] = x
     return chain_mod.MimicLink(
         after=after, rest_relative=rest, is_revolute=revolute, leader=leader,
-        multiplier=multiplier, offset=offset, **kw,
+        steps=(chain_mod.MimicStep(multiplier, offset, revolute, lower, upper),),
+        fixed=fixed,
     )
 
 
@@ -248,7 +252,41 @@ class TestMimicInTheChain:
             np.testing.assert_allclose(chain.jacobian(q)[:3, index], numeric, atol=1e-6)
 
     def test_held_at_its_own_limit_it_stops_moving(self):
-        mimic = _mimic(0, 0, multiplier=1.0, upper=0.2)
+        mimic = _mimic(0, 0, multiplier=1.0, lower=-0.2, upper=0.2)
         assert mimic.value(np.array([0.5])) == pytest.approx(0.2)
-        assert not mimic.moving(np.array([0.5]))
-        assert mimic.moving(np.array([0.1]))
+        assert mimic.gain(np.array([0.5])) == 0.0
+        assert mimic.gain(np.array([0.1])) == pytest.approx(1.0)
+
+    def test_a_limit_partway_down_a_chain_of_mimics_holds(self):
+        """M = A held to [0, 0.1], N = 2 * M: at A = 0.2, M stands at 0.1 and N at
+        0.2 -- not 0.4, as N folded straight onto A would."""
+        Step = chain_mod.MimicStep
+        n = chain_mod.MimicLink(
+            after=0, rest_relative=np.eye(4), is_revolute=False, leader=0,
+            steps=(Step(1.0, 0.0, False, 0.0, 0.1), Step(2.0, 0.0, False, 0.0, 1.0)),
+        )
+        assert n.value(np.array([0.2])) == pytest.approx(0.2)
+        assert n.gain(np.array([0.2])) == 0.0, "held at M's limit: it doesn't move"
+        assert n.value(np.array([0.05])) == pytest.approx(0.1)
+        assert n.gain(np.array([0.05])) == pytest.approx(2.0)
+
+
+class TestClampAngle:
+    """Blender's Limit Rotation holds a turn around the circle."""
+
+    @pytest.mark.parametrize(
+        "angle, lower, upper, held",
+        [
+            (0.5, -1.0, 1.0, 0.5),            # inside
+            (2.5, -1.0, 1.0, 1.0),            # nearer the top end
+            (-3.0, -1.0, 1.0, -1.0),          # nearer the bottom end, around the circle
+            (2 * np.pi + 0.2, -1.0, 1.0, 0.2),  # past a whole turn: inside, read as a turn
+            (0.0, 1.0, 2.0, 1.0),             # a range that leaves out zero
+            (-2.5, 1.0, 2.0, 2.0),            # its nearer end is the far one along the line
+            (5.0, -4.0, 4.0, 5.0),            # a whole turn or more: nothing held
+        ],
+    )
+    def test_as_a_turn(self, angle, lower, upper, held):
+        got = chain_mod.clamp_angle(angle, lower, upper)
+        assert np.cos(got) == pytest.approx(np.cos(held))
+        assert np.sin(got) == pytest.approx(np.sin(held))

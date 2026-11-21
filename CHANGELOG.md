@@ -11,17 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Mimic joints move** (#104). A URDF `<mimic>` joint, such as a parallel gripper's
   second finger, now gets a bone, and its link's meshes ride on it. A driver moves it from
-  the actuated joint it follows (`multiplier * value + offset`), so it is right in FK, IK,
+  the joint its `<mimic>` names (`multiplier * value + offset`), so it is right in FK, IK,
   playback, bakes and renders with nothing of Kinema's running. It follows where that
-  joint stands, through its limit, and a mimic of a mimic is folded down to the actuated
-  joint. The bone is locked, kept in the Mechanism collection, and left out of the joint
-  sliders, Key All and `kinema.api`'s joints. A mimic between two joints, such as a
-  palletizer's parallelogram, moves the joints below it in NumPy IK too. The Motion
-  Check measures it against its own limits and speed, and Load Joint Limits reaches it.
-  A rig with an external axis writes it back to PyRoki as a `<mimic>`. A mimic of a
-  joint that isn't there is named in a warning at import. The Tool bone still goes on
-  the arm's `tool0`. A rig built before keeps its mimic joints without bones; import it
-  again to give them bones.
+  joint stands, as Blender's own limit holds it, so a limit partway down a chain of mimics
+  holds too. The bone is locked, kept in the Mechanism collection, and left out of the
+  joint sliders, Key All and `kinema.api`'s joints. A mimic between two joints, such as a
+  palletizer's parallelogram, moves the joints below it in NumPy IK too. The Motion Check
+  measures it against its own limits and speed, and Load Joint Limits reaches it. A rig
+  with an external axis writes it back to PyRoki as a `<mimic>` of the actuated joint at
+  the end of its chain. A mimic of a joint that isn't there is named in a warning at
+  import. The Tool bone still goes on the arm's `tool0`. A rig built before keeps its
+  mimic joints without bones; import it again to give them bones.
 - **Auto Configuration** (#103). While live IK tracks the target, a solve that misses
   it runs a configuration search: where it finds another configuration that reaches the
   target, the arm switches to the nearest; where it finds none, nothing changes and the

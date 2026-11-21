@@ -43,6 +43,53 @@ def translation_along_y(distance: float) -> np.ndarray:
     return matrix
 
 
+def _wrap(angle: float) -> float:
+    """``angle`` into [-pi, pi)."""
+    return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def clamp_angle(angle: float, lower: float, upper: float) -> float:
+    """Where Blender's Limit Rotation puts a turn of ``angle``: held to
+    [``lower``, ``upper``] around the circle, not along the line.
+
+    Blender's own ``clamp_angle``, so a turn read off a matrix -- a mimic past half a
+    turn, say -- is held where the rig holds it. A range of a whole turn or more
+    holds nothing; outside one, the nearer end around the circle wins.
+    """
+    if upper - lower >= 2.0 * np.pi:
+        return float(angle)
+    if upper <= lower:
+        return float(lower)
+    low, high = _wrap(lower - angle), _wrap(upper - angle)
+    if low < high:
+        return float(angle + min(max(0.0, low), high))
+    if high >= 0.0 or low <= 0.0:
+        return float(angle)
+    return float(angle + (high if abs(high) < abs(low) else low))
+
+
+@dataclass(frozen=True)
+class MimicStep:
+    """One mimic on the way from an actuated joint to a mimic bone: its value is
+    ``multiplier * value + offset``, held to the limits the rig enforces on it."""
+
+    multiplier: float
+    offset: float
+    is_revolute: bool
+    lower: float = -np.inf
+    upper: float = np.inf
+
+    def __call__(self, value: float) -> float:
+        value = self.multiplier * value + self.offset
+        if self.is_revolute:
+            return clamp_angle(value, self.lower, self.upper)
+        return float(np.clip(value, self.lower, self.upper))
+
+    def holds(self, value: float) -> bool:
+        """Whether its limit holds it here, so it doesn't move with its leader."""
+        return not np.isclose(self(value), self.multiplier * value + self.offset, atol=1e-12)
+
+
 @dataclass(frozen=True)
 class MimicLink:
     """A mimic joint's bone on the way to the tool: it moves, but by a driver from
@@ -59,25 +106,35 @@ class MimicLink:
     #: mimic's before it in the same gap.
     rest_relative: np.ndarray
     is_revolute: bool
-    #: The chain index of the joint it follows, or -1 for one off the chain, whose
-    #: value is ``fixed`` for the solve.
+    #: The chain index of the actuated joint its chain of mimics starts from, or -1
+    #: for one off the chain, which stands at ``fixed`` for the solve.
     leader: int
-    multiplier: float
-    offset: float
+    #: From that joint to this bone, a step per mimic, the last its own.
+    steps: tuple[MimicStep, ...] = ()
     fixed: float = 0.0
-    lower: float = -np.inf
-    upper: float = np.inf
+    #: Its bone, to read ``fixed`` off again before a solve.
+    bone: str = ""
 
     def value(self, q: np.ndarray) -> float:
-        raw = self.multiplier * float(q[self.leader]) + self.offset if self.leader >= 0 else self.fixed
-        return float(np.clip(raw, self.lower, self.upper))
-
-    def moving(self, q: np.ndarray) -> bool:
-        """Whether it moves with its leader here, rather than held at a limit."""
         if self.leader < 0:
-            return False
-        raw = self.multiplier * float(q[self.leader]) + self.offset
-        return self.lower <= raw <= self.upper
+            return self.fixed
+        value = float(q[self.leader])
+        for step in self.steps:
+            value = step(value)
+        return value
+
+    def gain(self, q: np.ndarray) -> float:
+        """How fast it moves as its leader does: the multipliers down its chain,
+        or nothing where a limit on the way holds it."""
+        if self.leader < 0:
+            return 0.0
+        value, gain = float(q[self.leader]), 1.0
+        for step in self.steps:
+            if step.holds(value):
+                return 0.0
+            gain *= step.multiplier
+            value = step(value)
+        return gain
 
     def motion(self, q: np.ndarray) -> np.ndarray:
         value = self.value(q)
@@ -172,8 +229,9 @@ class Chain:
         # A mimic moves the tool as its leader turns, scaled: its column adds to
         # the leader's. Held at a limit, it doesn't move.
         for mimic, frame in mimic_frames:
-            if mimic.moving(q):
-                jacobian[:, mimic.leader] += mimic.multiplier * column(frame, mimic.is_revolute)
+            gain = mimic.gain(q)
+            if gain:
+                jacobian[:, mimic.leader] += gain * column(frame, mimic.is_revolute)
         return jacobian
 
     def clamp(self, q: np.ndarray) -> np.ndarray:
@@ -294,13 +352,37 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
         if builder.PROP_JOINT_NAME in b or builder.PROP_MIMIC_JOINT in b
     ]
     index_of = {b.name: i for i, b in enumerate(joints)}
-    # A mimic records its leader's URDF joint name; the chain is by bone. An
-    # external axis is never one, and could have taken a renamed joint's name.
+    # A mimic records the URDF joint it follows, a mimic or not; the chain is by
+    # bone. An external axis is never one, and could have taken a renamed joint's
+    # name.
+    bones = armature_object.data.bones
     bone_of_joint = {
-        str(b[builder.PROP_JOINT_NAME]): b.name
-        for b in armature_object.data.bones
-        if builder.PROP_JOINT_NAME in b and builder.PROP_EXTERNAL not in b
+        str(b.get(builder.PROP_JOINT_NAME, b.get(builder.PROP_MIMIC_JOINT))): b.name
+        for b in bones
+        if (builder.PROP_JOINT_NAME in b or builder.PROP_MIMIC_JOINT in b)
+        and builder.PROP_EXTERNAL not in b
     }
+
+    def steps_to(bone) -> tuple[str | None, tuple[MimicStep, ...]]:
+        """The actuated joint's bone a mimic bone's chain starts from, and the
+        steps from it down to the bone."""
+        steps = []
+        seen = set()
+        while bone is not None and builder.PROP_MIMIC_JOINT in bone and bone.name not in seen:
+            seen.add(bone.name)
+            lower, upper = _enforced(armature_object.pose.bones[bone.name])
+            steps.append(
+                MimicStep(
+                    multiplier=float(bone.get(builder.PROP_MIMIC_MULTIPLIER, 1.0)),
+                    offset=float(bone.get(builder.PROP_MIMIC_OFFSET, 0.0)),
+                    is_revolute=bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic",
+                    lower=lower,
+                    upper=upper,
+                )
+            )
+            bone = bones.get(bone_of_joint.get(str(bone.get(builder.PROP_MIMIC_OF, ""))))
+        root = bone.name if bone is not None and builder.PROP_JOINT_NAME in bone else None
+        return root, tuple(reversed(steps))
 
     rest_relative = np.empty((len(joints), 4, 4))
     mimics = []
@@ -314,34 +396,15 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
             after = index_of[bone.name]
             rest_relative[after] = relative
             continue
-        leader_bone = bone_of_joint.get(str(bone.get(builder.PROP_MIMIC_OF, "")))
-        leader = index_of.get(leader_bone, -1)
-        multiplier = float(bone.get(builder.PROP_MIMIC_MULTIPLIER, 1.0))
-        offset = float(bone.get(builder.PROP_MIMIC_OFFSET, 0.0))
-        fixed = 0.0
-        if leader < 0:
-            # Its leader is off the chain, so not solved for: held where it is.
-            source = armature_object.pose.bones.get(leader_bone) if leader_bone else None
-            if source is not None:
-                prismatic = source.bone.get(builder.PROP_JOINT_TYPE) == "prismatic"
-                value = float(source.location[1] if prismatic else source.rotation_euler[1])
-                # Where the leader stands, through its limit where it has one, as
-                # the driver reads it: imported with limits off, it has none.
-                lower, upper = _enforced(source)
-                fixed = multiplier * min(max(value, lower), upper) + offset
-        # Held at its own limits only where its constraint holds it.
-        own_lower, own_upper = _enforced(armature_object.pose.bones[bone.name])
+        root, steps = steps_to(bone)
         mimics.append(
             MimicLink(
                 after=after,
                 rest_relative=relative,
                 is_revolute=bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic",
-                leader=leader,
-                multiplier=multiplier,
-                offset=offset,
-                fixed=fixed,
-                lower=own_lower,
-                upper=own_upper,
+                leader=index_of.get(root, -1),
+                steps=steps,
+                bone=bone.name,
             )
         )
 
@@ -355,7 +418,7 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
     upper = np.array([float(b.get(builder.PROP_UPPER, np.inf)) for b in joints])
     limited = np.array([builder.PROP_LOWER in b for b in joints])
 
-    return Chain(
+    chain = Chain(
         bone_names=[b.name for b in joints],
         is_revolute=is_revolute,
         rest_relative=rest_relative,
@@ -364,6 +427,38 @@ def chain_from_rig(armature_object, tip_bone_name: str) -> Chain | None:
         upper=upper,
         limited=limited,
         mimics=tuple(mimics),
+    )
+    refresh_held_mimics(armature_object, chain)
+    return chain
+
+
+def displayed_value(pose_bone, revolute: bool) -> float:
+    """Where a joint bone stands as the rig shows it: its evaluated matrix against
+    its rest under its evaluated parent, constraints and drivers and all."""
+    frame = pose_bone.bone.matrix_local
+    if pose_bone.parent is not None:
+        parent = pose_bone.parent
+        frame = parent.matrix @ parent.bone.matrix_local.inverted() @ frame
+    local = frame.inverted() @ pose_bone.matrix
+    if revolute:
+        return float(np.arctan2(local[0][2], local[2][2]))
+    return float(local[1][3])
+
+
+def refresh_held_mimics(armature_object, chain: Chain) -> None:
+    """Stand each mimic off ``chain`` -- one led by a joint it doesn't solve -- where
+    the rig shows it now. Before each solve: its leader may have moved since the
+    chain was built, and the solver caches chains."""
+    if not any(mimic.leader < 0 for mimic in chain.mimics):
+        return
+    from dataclasses import replace
+
+    pose = armature_object.pose
+    chain.mimics = tuple(
+        replace(mimic, fixed=displayed_value(pose.bones[mimic.bone], mimic.is_revolute))
+        if mimic.leader < 0 and mimic.bone in pose.bones
+        else mimic
+        for mimic in chain.mimics
     )
 
 

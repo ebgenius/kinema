@@ -19,8 +19,9 @@ joint vector anyway, and the links after the ones each bone records -- so the TC
 link, the elbow's link and every correction the manager already holds still apply.
 
 What is lost is what the rig never had: fixed joints are folded into the links they
-carry. A mimic joint's bone is written back as a ``<mimic>`` of the joint its driver
-reads, with the multiplier and offset folded down to that joint.
+carry. A mimic joint's bone is written back as a ``<mimic>`` of the actuated joint
+at the end of its chain of mimics, with the multipliers and offsets folded into one:
+the form PyRoki takes it in.
 
 The root link is the armature's origin, which is where the manager expresses every
 goal. Collapsing the robot's own base link into it is exact: nothing moves the base
@@ -129,13 +130,13 @@ def records_from_rig(rig) -> list[BoneRecord]:
     def moves(bone) -> bool:
         return builder.PROP_JOINT_NAME in bone or builder.PROP_MIMIC_JOINT in bone
 
-    # A mimic bone records the URDF joint it follows; its record, the bone. Among
-    # the robot's own joints only: an external axis is never a mimic's leader, and
-    # one added later can be called what a renamed joint was.
+    # A mimic bone records the URDF joint it follows, a mimic or not; its record,
+    # the bone. Among the robot's own joints only: an external axis is never a
+    # mimic's leader, and one added later can be called what a renamed joint was.
     bone_of_joint = {
-        str(bone[builder.PROP_JOINT_NAME]): bone.name
+        str(bone.get(builder.PROP_JOINT_NAME, bone.get(builder.PROP_MIMIC_JOINT))): bone.name
         for bone in rig.data.bones
-        if builder.PROP_JOINT_NAME in bone and builder.PROP_EXTERNAL not in bone
+        if moves(bone) and builder.PROP_EXTERNAL not in bone
     }
 
     def matrix(values) -> np.ndarray:
@@ -179,7 +180,40 @@ def records_from_rig(rig) -> list[BoneRecord]:
                 mimic_offset=float(bone.get(builder.PROP_MIMIC_OFFSET, 0.0)),
             )
         )
-    return records
+    return _folded(records)
+
+
+def _folded(records: list[BoneRecord]) -> list[BoneRecord]:
+    """``records`` with each mimic following an actuated joint: a mimic of a mimic
+    folded down the chain, ``m * (m' * q + o') + o``.
+
+    A limit partway down a chain is lost, as it is in URDF itself, which has no
+    way to say it: the rig's drivers keep it, and so do the NumPy chain's steps.
+    """
+    from dataclasses import replace
+
+    by_name = {record.name: record for record in records}
+    out = []
+    for record in records:
+        multiplier, offset = record.mimic_multiplier, record.mimic_offset
+        leader = by_name.get(record.mimic_joint) if record.mimic_joint else None
+        seen = {record.name}
+        while leader is not None and leader.mimic_joint is not None:
+            if leader.name in seen:
+                raise ValueError(f"'{record.name}' follows a loop of mimics")
+            seen.add(leader.name)
+            offset = multiplier * leader.mimic_offset + offset
+            multiplier = multiplier * leader.mimic_multiplier
+            leader = by_name.get(leader.mimic_joint)
+        if record.mimic_joint is not None:
+            record = replace(
+                record,
+                mimic_joint=leader.name if leader is not None else record.mimic_joint,
+                mimic_multiplier=multiplier,
+                mimic_offset=offset,
+            )
+        out.append(record)
+    return out
 
 
 def model_from_rig(rig) -> RobotModel:

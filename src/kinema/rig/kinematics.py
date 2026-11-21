@@ -154,8 +154,10 @@ class RobotModel:
         its chain of mimics, and the one multiplier and offset that take that
         joint's value to its own.
 
-        A mimic of a mimic is folded into one, so the rig drives every mimic bone
-        from an actuated joint and no driver reads another driver. A mimic whose
+        A mimic of a mimic is folded into one: what it means to PyRoki, which is
+        handed the actuated joint. The rig's drivers follow each <mimic> as it is
+        written instead, one mimic reading the next, so a limit on the way holds. A
+        mimic whose
         chain ends at no actuated joint -- a joint that isn't there, or a loop --
         is left out: it gets no bone, as before mimic joints had any.
         """
