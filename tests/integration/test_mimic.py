@@ -420,3 +420,34 @@ class TestBlendersOwnLimits:
         held = chain_mod.clamp_angle(angle, lower, upper)
         assert np.cos(shown) == pytest.approx(np.cos(held), abs=1e-5)
         assert np.sin(shown) == pytest.approx(np.sin(held), abs=1e-5)
+
+
+class TestWideLeaders:
+    """A leader whose limits reach past half a turn is followed by its turns, not
+    by the half-turn a matrix reads: a 350-degree wrist."""
+
+    @pytest.mark.parametrize(
+        "lower, upper, angle",
+        [(-6.0, 6.0, 4.0), (-6.0, 6.0, -4.5), (0.0, 4.0, 3.5), (0.0, 4.0, 4.5)],
+    )
+    def test_the_mimic_follows_its_leaders_turns(
+        self, addon, fixture_dir, clean_scene, tmp_path, lower, upper, angle
+    ):
+        text = (fixture_dir / "gripper_mimic.urdf").read_text(encoding="utf-8")
+        text = text.replace(
+            '<limit lower="-1.5" upper="1.5" effort="10" velocity="1"/>',
+            f'<limit lower="{lower}" upper="{upper}" effort="10" velocity="1"/>',
+        )
+        # knuckle wide too, so only its leader's reading is under test.
+        text = text.replace(
+            '<limit lower="-1" upper="1" effort="5" velocity="1"/>\n'
+            '    <mimic joint="lift"',
+            '<limit lower="-10" upper="10" effort="5" velocity="1"/>\n'
+            '    <mimic joint="lift"',
+        )
+        assert f'lower="{lower}" upper="{upper}"' in text and 'lower="-10"' in text
+        (tmp_path / "wide.urdf").write_text(text, encoding="utf-8")
+        _, rig = _built(addon, tmp_path, "wide.urdf")
+        _set(rig, lift=angle)
+        stands = min(max(angle, lower), upper)
+        assert _value(rig, "knuckle") == pytest.approx(0.5 * stands + 0.1, abs=1e-5)

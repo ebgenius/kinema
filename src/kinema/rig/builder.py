@@ -28,6 +28,7 @@ see only controls.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import bpy
@@ -495,7 +496,10 @@ def _setup_pose_bones(
             leader=bones_of[leader.name], leader_revolute=leader.is_revolute,
             revolute=joint.is_revolute, multiplier=joint.mimic_multiplier,
             offset=joint.mimic_offset,
-            leader_limited=options.enforce_limits and leader.has_limits,
+            leader_limits=(
+                (leader.lower, leader.upper)
+                if options.enforce_limits and leader.has_limits else None
+            ),
         )
 
     if ROOT_BONE in pose.bones:
@@ -1086,18 +1090,24 @@ def channel_of(revolute: bool) -> str:
 
 def drive_mimic(
     armature_object, pose_bone, *, leader: str, leader_revolute: bool, revolute: bool,
-    multiplier: float, offset: float, leader_limited: bool = False,
+    multiplier: float, offset: float, leader_limits=None,
 ) -> None:
     """Move ``pose_bone``'s joint channel by a driver on the ``leader`` bone's:
     ``multiplier * value + offset``, as URDF's <mimic> says.
 
-    The value is where the leader stands. A ``leader_limited`` one is read from its
-    evaluated transform, in its own space, after its constraints: Blender's own
-    limit -- cyclic for a turn, and whatever has become of the constraint since --
-    rather than a copy of it. A leader with no limit is read off its channel, the
-    same value, but a continuous joint wound past half a turn keeps its turns. A
-    leader that is a mimic itself is read the same way, so a limit partway down a
-    chain of mimics holds.
+    The value is where the leader stands. One limited by ``leader_limits`` within
+    half a turn either way -- every joint that slides, most that turn -- is read from
+    its evaluated transform, in its own space, after its constraints: Blender's own
+    limit, cyclic for a turn, and whatever has become of the constraint since,
+    rather than a copy of it. A leader that is a mimic itself is read the same way,
+    so a limit partway down a chain of mimics holds.
+
+    A turn read off a matrix is wrapped to half a turn either way, though, so a
+    leader whose limits reach past that -- a 350-degree wrist -- or that has none, a
+    continuous joint, is read off its channel instead, keeping its turns. Limited to
+    less than a whole turn, it is clamped there in the expression: the same inside
+    its limits, and the nearer end along the line past them, where Blender's limit
+    takes the nearer around the circle. A whole turn or more, Blender holds nothing.
 
     A driver, not Kinema code: Blender keeps it right in FK, IK, playback, a bake
     and a render, with nothing of Kinema's running. Its expression is one Blender
@@ -1115,7 +1125,14 @@ def drive_mimic(
     driver.type = "SCRIPTED"
     variable = driver.variables.new()
     variable.name = "q"
-    if leader_limited:
+    value = "q"
+    wide = False
+    if leader_limits is not None and leader_revolute:
+        lower, upper = (float(v) for v in leader_limits)
+        wide = lower < -math.pi or upper > math.pi
+        if wide and upper - lower < 2.0 * math.pi:
+            value = f"min(max(q, {lower!r}), {upper!r})"
+    if leader_limits is not None and not wide:
         variable.type = "TRANSFORMS"
         target = variable.targets[0]
         target.id = armature_object
@@ -1136,7 +1153,7 @@ def drive_mimic(
             f'pose.bones["{bpy.utils.escape_identifier(leader)}"]'
             f".{channel_of(leader_revolute)}[1]"
         )
-    driver.expression = f"{float(multiplier)!r} * q + {float(offset)!r}"
+    driver.expression = f"{float(multiplier)!r} * {value} + {float(offset)!r}"
 
 
 def mimic_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:
