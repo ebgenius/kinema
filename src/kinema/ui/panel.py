@@ -897,37 +897,41 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
     bl_order = ORDER_MOTIONS
     bl_label = "Motions"
 
+    # Shown with no waypoints too: Bake to Keyframes and Graph Editor don't need
+    # them, and a button taken off the quick bar must still be here.
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
-        rig = active_rig(context)
-        return rig is not None and len(rig.kinema_waypoints) > 0
+        return active_rig(context) is not None
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         rig = active_rig(context)
 
-        row = layout.row(align=True)
-        row.operator("kinema.add_motion", text="Add", icon="ADD")
-        row.operator("kinema.remove_motion", text="", icon="X")
-        if not len(rig.kinema_motions):
-            text, icon = motions_note(rig)
-            layout.label(text=text, icon=icon)
+        if not len(rig.kinema_waypoints):
+            layout.label(text="Record waypoints to make motions between", icon="INFO")
         else:
-            layout.template_list(
-                "KINEMA_UL_motions", "", rig, "kinema_motions",
-                rig, "kinema_active_motion", **whole_list(len(rig.kinema_motions)),
-            )
-            index = rig.kinema_active_motion
-            if 0 <= index < len(rig.kinema_motions):
-                motion = rig.kinema_motions[index]
-                box = layout.column(align=True)
-                box.prop_search(motion, "start_name", rig, "kinema_waypoints", text="From")
-                box.prop_search(motion, "end_name", rig, "kinema_waypoints", text="To")
-                box.prop(motion, "move")
-                frames = layout.row(align=True)
-                frames.prop(motion, "frame_start")
-                frames.prop(motion, "frame_end")
-                layout.label(text=f"{motion.duration} frames", icon="TIME")
+            row = layout.row(align=True)
+            row.operator("kinema.add_motion", text="Add", icon="ADD")
+            row.operator("kinema.remove_motion", text="", icon="X")
+            if not len(rig.kinema_motions):
+                text, icon = motions_note(rig)
+                layout.label(text=text, icon=icon)
+            else:
+                layout.template_list(
+                    "KINEMA_UL_motions", "", rig, "kinema_motions",
+                    rig, "kinema_active_motion", **whole_list(len(rig.kinema_motions)),
+                )
+                index = rig.kinema_active_motion
+                if 0 <= index < len(rig.kinema_motions):
+                    motion = rig.kinema_motions[index]
+                    box = layout.column(align=True)
+                    box.prop_search(motion, "start_name", rig, "kinema_waypoints", text="From")
+                    box.prop_search(motion, "end_name", rig, "kinema_waypoints", text="To")
+                    box.prop(motion, "move")
+                    frames = layout.row(align=True)
+                    frames.prop(motion, "frame_start")
+                    frames.prop(motion, "frame_end")
+                    layout.label(text=f"{motion.duration} frames", icon="TIME")
 
         # The job's buttons in the order they are pressed, in a box as the quick
         # bar's are: made, checked, optimized, then baked to keys.

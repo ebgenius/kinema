@@ -796,15 +796,22 @@ class TestMotionsBox:
 
 
 class TestEveryButtonHasAHome:
-    def test_a_button_taken_off_the_quick_bar_is_still_in_a_panel(self, panel, arm6, addon):
-        """The quick bar is a shortcut: whatever a button does, a panel does too, so
-        removing it in the preferences takes nothing away."""
+    @pytest.mark.parametrize("waypoints", [0, 1])
+    def test_a_button_taken_off_the_quick_bar_is_still_in_a_panel(
+        self, panel, arm6, addon, waypoints
+    ):
+        """The quick bar is a shortcut: whatever a button does, a panel Blender shows
+        does too, so removing it in the preferences takes nothing away -- with no
+        waypoints recorded yet, too."""
         import types
 
         import bpy
 
         quick_bar = importlib.import_module(f"{addon.__name__}.ui.quick_bar")
         assert "FINISHED" in bpy.ops.kinema.add_ik()
+        for _ in range(waypoints):
+            assert "FINISHED" in bpy.ops.kinema.add_waypoint()
+        assert len(arm6.kinema_waypoints) == waypoints, "precondition"
         arm6.kinema_ik_enabled = False
         props = bpy.context.scene.kinema
         for name in SECTIONS:
@@ -817,8 +824,15 @@ class TestEveryButtonHasAHome:
                 if name in ("operator", "prop")
             }
 
-        in_panels = controls(_ik_drawn(panel))
-        for cls in (panel.KINEMA_PT_joints, panel.KINEMA_PT_waypoints, panel.KINEMA_PT_motions):
+        in_panels = set()
+        top = [cls for cls in _kinema_panels(panel) if not getattr(cls, "bl_parent_id", "")]
+        for cls in top:
+            shown = getattr(cls, "poll", None)
+            if cls is panel.KINEMA_PT_quick_bar or (shown and not shown(bpy.context)):
+                continue
+            if cls is panel.KINEMA_PT_ik:
+                in_panels |= controls(_ik_drawn(panel))
+                continue
             calls = []
             cls.draw(types.SimpleNamespace(layout=_Open(calls)), bpy.context)
             in_panels |= controls(calls)

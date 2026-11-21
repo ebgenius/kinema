@@ -67,7 +67,8 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
   Pose** above its sliders and **Key All** below them. Motions has the job's buttons in a
   box, in the order they are pressed -- **Generate Motion**, **Check Motion**, **Optimize
   Motion** and **Bake to Keyframes** -- then **Graph Editor**, and under them what the
-  last Motion Check found.
+  last Motion Check found. It is there before any waypoint is recorded, for Bake and
+  Graph Editor.
 - **Robot Settings** holds what is set once for the robot shown: Reset Meshes and Meshes
   at File Origin, and as subpanels **Bones**, **Tool Centre Point**, **External Axes**,
   **Motion Limits** and **Collision**. Its header names the robot.
