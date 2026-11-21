@@ -10,10 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Auto Configuration** (#103). While live IK tracks the target, a solve that misses
-  it runs a configuration search: where another configuration reaches the target, the
-  arm switches to the nearest; where none does, the target is out of reach and nothing
-  changes. Snap to Tool, in the quick bar, can be pressed only while the target is off
-  the tool.
+  it runs a configuration search: where it finds another configuration that reaches the
+  target, the arm switches to the nearest; where it finds none, nothing changes and the
+  quick bar says the target is out of reach. It tries 12 starting points, fewer than
+  Find Solutions' 40, so a configuration it misses can still be there to find. A rig
+  whose PyRoki solver is still to be built searches once it is. Snap to Tool, in the
+  quick bar, can be pressed only while the target is off the tool.
 - **`kinema.api`, for scripts and other add-ons** (#102). A versioned module that won't change
   under them: the rigs in a scene, their joints and limits, the tool and where it is,
   and joint values read and set; a tool pose solved for, its clearance from the
