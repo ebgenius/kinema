@@ -459,3 +459,18 @@ class TestAutoConfiguration:
         bpy.context.view_layer.update()
         handlers.solve_rig(arm6, force=True, live=True)
         assert len(search) == 2, "moved on 2 cm: searched again"
+
+    def test_a_turn_counts_on_a_scaled_robot_too(self, ik_ops):
+        """The goal's matrix carries the robot's scale; a turn past AUTO_TURN is one
+        at any scale, and a turn short of it isn't."""
+        from mathutils import Matrix
+
+        def turned(degrees: float, scale: float) -> np.ndarray:
+            return np.array(Matrix.Rotation(np.radians(degrees), 4, "Z")) @ np.diag(
+                [scale, scale, scale, 1.0]
+            )
+
+        for scale in (0.5, 1.0, 2.0):
+            last = turned(0.0, scale)
+            assert ik_ops._moved_on(last, turned(10.0, scale)), scale
+            assert not ik_ops._moved_on(last, turned(3.0, scale)), scale

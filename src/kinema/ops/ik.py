@@ -231,12 +231,19 @@ def goal_off_tool(rig) -> bool:
     goal, tool = _np4(bones[ik_name].matrix), _np4(bones[tip].matrix)
     if float(np.linalg.norm(goal[:3, 3] - tool[:3, 3])) > ON_TOOL_POSITION:
         return True
-    # Turned only: a Root scaled by 2 scales both, and a trace of 4 (1 + 2 cos)
-    # past 3 would read as no turn at all.
-    goal_turn = goal[:3, :3] / np.linalg.norm(goal[:3, :3], axis=0)
-    tool_turn = tool[:3, :3] / np.linalg.norm(tool[:3, :3], axis=0)
-    turn = (float(np.trace(goal_turn.T @ tool_turn)) - 1.0) / 2.0
-    return float(np.arccos(np.clip(turn, -1.0, 1.0))) > ON_TOOL_ROTATION
+    return _turn_between(goal, tool) > ON_TOOL_ROTATION
+
+
+def _turn_between(a: np.ndarray, b: np.ndarray) -> float:
+    """The angle, in radians, between two pose matrices' rotations.
+
+    Turned only: a Root scaled by 2 scales both, and a trace of 4 (1 + 2 cos)
+    past 3 would read as no turn at all, so each column is made unit first.
+    """
+    a_turn = a[:3, :3] / np.linalg.norm(a[:3, :3], axis=0)
+    b_turn = b[:3, :3] / np.linalg.norm(b[:3, :3], axis=0)
+    turn = (float(np.trace(a_turn.T @ b_turn)) - 1.0) / 2.0
+    return float(np.arccos(np.clip(turn, -1.0, 1.0)))
 
 
 #: Auto Configuration's search. Fewer seeds than Find Solutions' 40, since it runs
@@ -285,8 +292,7 @@ def forget_switch(rig_name: str) -> None:
 def _moved_on(last: np.ndarray, goal: np.ndarray) -> bool:
     if float(np.linalg.norm(goal[:3, 3] - last[:3, 3])) > AUTO_MOVE:
         return True
-    turn = (float(np.trace(last[:3, :3].T @ goal[:3, :3])) - 1.0) / 2.0
-    return float(np.arccos(np.clip(turn, -1.0, 1.0))) > AUTO_TURN
+    return _turn_between(last, goal) > AUTO_TURN
 
 
 def reconfigure(rig, solver) -> bool:
