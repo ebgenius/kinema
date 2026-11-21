@@ -175,6 +175,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The TCP bone is the Tool bone** (#103). A robot imported now has a bone, and a bone
+  collection, called Tool, and the sidebar and messages say tool where they said TCP:
+  Edit Tool…, Create Tool, Move Tool to Active Bone. A rig saved before keeps its TCP
+  bone, which Kinema finds as before. Operator and property names are unchanged.
 - **The Kinema tab, laid out like Blender's own sidebar** (#103). A quick bar of the
   buttons used all the time comes first -- Live IK, Configurations, Auto Config, Rest
   Pose, Snap to Tool, Record, Generate, Motion Check and Graph Editor, chosen and ordered

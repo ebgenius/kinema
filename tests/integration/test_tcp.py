@@ -546,3 +546,45 @@ class TestPanelReadout:
             np.array(builder.BONE_TO_TOOL.to_3x3()) @ np.array([0.0, 0.0, 1.0]),
             [0.0, 1.0, 0.0],
         )
+
+
+class TestToolBoneName:
+    """The tool bone is Tool on a rig imported now, and TCP on one from before 0.7."""
+
+    def test_a_new_rig_names_it_tool(self, rig, builder):
+        assert builder.TCP_BONE == "Tool"
+        assert rig[builder.PROP_TCP_BONE] == "Tool" and "Tool" in rig.data.bones
+        assert builder.tool_bone_name(rig) == "Tool"
+        assert builder.tool_collection(rig.data).name == "Tool"
+
+    def _as_before(self, rig, builder):
+        """The rig as Kinema 0.6 built it: bone and collection called TCP."""
+        import bpy
+
+        bpy.ops.object.mode_set(mode="EDIT")
+        rig.data.edit_bones["Tool"].name = "TCP"
+        bpy.ops.object.mode_set(mode="OBJECT")
+        builder.tool_collection(rig.data).name = "TCP"
+        rig[builder.PROP_TCP_BONE] = "TCP"
+
+    def test_a_rig_from_before_keeps_its_tcp_bone(self, rig, builder):
+        import bpy
+
+        self._as_before(rig, builder)
+        assert builder.tool_bone_name(rig) == "TCP"
+        del rig[builder.PROP_TCP_BONE]
+        assert builder.tool_bone_name(rig) == "TCP", "found by name where none is recorded"
+        assert bpy.ops.kinema.set_tcp(bone="joint5") == {"FINISHED"}
+        assert "Tool" not in rig.data.bones, "Set Tool re-placed the bone it has"
+        assert rig.data.bones["TCP"].parent.name == "joint5"
+        assert rig[builder.PROP_TCP_BONE] == "TCP"
+        assert rig.data.bones["TCP"].collections[0].name == "TCP"
+
+    def test_live_ik_aims_at_the_tcp_bone_of_a_rig_from_before(self, rig, builder, manager):
+        import bpy
+
+        self._as_before(rig, builder)
+        assert manager.tip_bone(rig) == "TCP"
+        rig.kinema_solver_mode = "NUMPY"
+        assert "FINISHED" in bpy.ops.kinema.add_ik()
+        assert rig[builder.PROP_IK_BONE] == "TCP.ik"

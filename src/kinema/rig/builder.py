@@ -42,7 +42,7 @@ from .kinematics import JointSpec, RobotModel, mount_frames
 COLLECTION_ROOT = "Kinema"
 COLLECTION_FK = "FK"
 COLLECTION_IK = "IK"
-COLLECTION_TCP = "TCP"
+COLLECTION_TCP = "Tool"
 COLLECTION_MECHANISM = "Mechanism"
 
 #: Scene collections the link meshes go into, one per geometry kind, so either
@@ -53,7 +53,10 @@ COLLECTION_VISUAL = "Visual"
 COLLECTION_COLLISION = "Collision"
 
 ROOT_BONE = "Root"
-TCP_BONE = "TCP"
+TCP_BONE = "Tool"
+#: What the tool bone, and its collection, were called before 0.7: a rig saved
+#: then has them by this name.
+LEGACY_TCP_NAME = "TCP"
 
 #: Bone axes -> tool axes, as a change of basis.
 #:
@@ -948,6 +951,30 @@ def discard_rig(result: RigBuildResult) -> None:
     ):
         if collection is not None and collection.name in bpy.data.collections:
             bpy.data.collections.remove(collection)
+
+
+def tool_bone_name(rig) -> str:
+    """The name of ``rig``'s tool bone: the one it records, or, where it records
+    none, the bone a new rig has -- or the one a rig from before 0.7 has, called
+    TCP then."""
+    recorded = rig.get(PROP_TCP_BONE)
+    if recorded:
+        return str(recorded)
+    bones = rig.data.bones if getattr(rig, "data", None) is not None else ()
+    if TCP_BONE not in bones and LEGACY_TCP_NAME in bones:
+        return LEGACY_TCP_NAME
+    return TCP_BONE
+
+
+def tool_collection(armature):
+    """``armature``'s bone collection for the tool bone, under either name, or None."""
+    return next(
+        (
+            c for c in armature.collections_all
+            if c.name in (COLLECTION_TCP, LEGACY_TCP_NAME)
+        ),
+        None,
+    )
 
 
 def is_kinema_rig(obj: bpy.types.Object | None) -> bool:

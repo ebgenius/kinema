@@ -59,9 +59,9 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
 def add_ik_target(context, rig) -> Outcome:
     """A keyframable IK control at ``rig``'s tool centre point, with live IK on:
     what Add IK Target does."""
-    tcp_bone = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    tcp_bone = builder.tool_bone_name(rig)
     if tcp_bone not in rig.data.bones:
-        return Outcome(False, "ERROR", "This rig has no TCP; create one first")
+        return Outcome(False, "ERROR", "This rig has no tool bone; create one first")
 
     ik_name = _ik_bone_name(tcp_bone)
     previous_active = context.view_layer.objects.active

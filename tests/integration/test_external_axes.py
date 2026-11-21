@@ -590,7 +590,7 @@ class TestSpindleOnTheTool:
         bpy.ops.object.mode_set(mode="EDIT")
         rig.data.edit_bones.remove(rig.data.edit_bones[builder.TCP_BONE])
         bpy.ops.object.mode_set(mode="OBJECT")
-        with pytest.raises(ValueError, match="TCP"):
+        with pytest.raises(ValueError, match="needs a tool bone"):
             _add(ops, ext, rig, **SPINDLE)
         assert "spindle" not in rig.data.bones
 
@@ -813,7 +813,7 @@ class TestTheOperators:
             "External axis base: calculated from the current robot base",
             "External axis offset: calculated from the current robot base",
             "External axis base: calculated from the current tool frame",
-            "External axis offset: calculated from the current TCP",
+            "External axis offset: calculated from the current tool bone",
         } <= labels
         assert {entry[1] for entry in log if entry[0] == "icon"} <= icons
         for entry in (e for e in log if e[0] == "operator"):

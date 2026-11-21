@@ -641,7 +641,7 @@ def tip_index_of(rig: bpy.types.Object, pose_bone) -> int | None:
     """
     if builder.PROP_JOINT_NAME in pose_bone.bone:
         return _joint_indices(rig).get(pose_bone.name)
-    tcp_name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    tcp_name = builder.tool_bone_name(rig)
     return -1 if pose_bone.name == tcp_name else None
 
 
@@ -1201,7 +1201,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         if exists:
             self._draw_readout(layout, rig, rig.pose.bones[tcp_name])
         else:
-            layout.label(text="No TCP on this rig", icon="INFO")
+            layout.label(text="No tool bone on this rig", icon="INFO")
 
         self._draw_placement(layout, rig, exists=exists)
 
@@ -1234,7 +1234,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         row = layout.row()
         row.scale_y = 1.2
         row.operator(
-            "kinema.edit_tcp", text="Edit TCP…" if exists else "Place TCP…",
+            "kinema.edit_tcp", text="Edit Tool…" if exists else "Place Tool…",
             icon="EMPTY_ARROWS",
         )
         column = layout.column(align=True)
@@ -1267,7 +1267,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         # button that vanishes is harder to understand than one that explains
         # what it wants.
         row.enabled = usable
-        label = "Update TCP" if exists else "Create TCP"
+        label = "Update Tool" if exists else "Create Tool"
         row.operator(
             "kinema.set_tcp", text=label, icon="EMPTY_ARROWS"
         ).bone = parent
@@ -1277,7 +1277,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         elif not usable:
             layout.label(text=f"'{parent}' is not a joint bone", icon="ERROR")
         layout.operator(
-            "kinema.set_tcp", text="Move TCP to Active Bone", icon="BONE_DATA"
+            "kinema.set_tcp", text="Move Tool to Active Bone", icon="BONE_DATA"
         ).bone = ""
 
 

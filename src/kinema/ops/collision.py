@@ -79,7 +79,7 @@ def link_meshes(rig) -> dict[str, list]:
     attached, a collection attached as its instance.
     """
     bones = {pose_bone.name for pose_bone in builder.joint_bones(rig)}
-    tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    tcp = builder.tool_bone_name(rig)
     if tcp in rig.pose.bones:
         bones.add(tcp)
     found: dict[str, dict[str, list]] = {}

@@ -38,10 +38,11 @@ from ..ui.panel import active_rig
 from . import deferral
 
 SOURCE_ITEMS = [
-    ("OFFSET", "Offset", "Type a location and rotation from the parent joint's TCP zero"),
-    ("CURSOR", "3D Cursor", "Put the TCP where the 3D cursor is. Snap the cursor to a "
+    ("OFFSET", "Offset", "Type a location and rotation from the parent joint's tool zero"),
+    ("CURSOR", "3D Cursor", "Put the tool bone where the 3D cursor is. Snap the cursor to a "
      "tool vertex first with Shift+S"),
-    ("OBJECT", "Object Origin", "Put the TCP on an object's origin: an empty, or the tool mesh"),
+    ("OBJECT", "Object Origin",
+     "Put the tool bone on an object's origin: an empty, or the tool mesh"),
 ]
 
 
@@ -152,15 +153,15 @@ def _refresh_preview(operator, context) -> None:
 # the operator
 # --------------------------------------------------------------------------
 class KINEMA_OT_edit_tcp(Operator):
-    """Place the TCP by offset, on the 3D cursor or on an object, previewing it first"""
+    """Place the tool bone by offset, on the 3D cursor or on an object, previewing it first"""
 
     bl_idname = "kinema.edit_tcp"
-    bl_label = "Edit TCP"
+    bl_label = "Edit Tool"
     bl_options = {"REGISTER", "UNDO"}
 
     parent: StringProperty(
         name="Parent Joint", update=_refresh_preview,
-        description="The joint bone the TCP rides; offsets are from its mounting flange",
+        description="The joint bone the tool bone rides; offsets are from its mounting flange",
     )
     source: EnumProperty(
         name="Place By", items=SOURCE_ITEMS, default="OFFSET", update=_refresh_preview,
@@ -174,7 +175,7 @@ class KINEMA_OT_edit_tcp(Operator):
         description="Roll, pitch and yaw about that frame's fixed X, Y and Z",
     )
     object_name: StringProperty(
-        name="Object", description="The object whose origin the TCP goes on",
+        name="Object", description="The object whose origin the tool bone goes on",
         update=_refresh_preview,
     )
     use_rotation: BoolProperty(
@@ -191,11 +192,11 @@ class KINEMA_OT_edit_tcp(Operator):
         link = posed_link(rig, self.parent)
         if link is None:
             if not self.parent:
-                return None, (), (), "Pick the joint the TCP rides"
+                return None, (), (), "Pick the joint the tool bone rides"
             return None, (), (), f"'{self.parent}' is not a joint bone"
         target = source_frame(context, rig, self.source, self.object_name)
         if self.source == "OBJECT" and target is None:
-            return link, (), (), "Pick the object to put the TCP on"
+            return link, (), (), "Pick the object to put the tool bone on"
         offset, rotation = resolve(link, target, self.offset, self.rotation, self.use_rotation)
         return link, offset, rotation, None
 
@@ -246,7 +247,7 @@ class KINEMA_OT_edit_tcp(Operator):
             return
         if self.source != "OFFSET":
             box = layout.box().column(align=True)
-            box.label(text="Stored as an offset from the TCP zero:", icon="EMPTY_AXIS")
+            box.label(text="Stored as an offset from the tool zero:", icon="EMPTY_AXIS")
             box.label(text="Location  " + "  ".join(f"{v:+.4f}" for v in offset))
             box.label(
                 text="Rotation  " + "  ".join(f"{np.degrees(v):+.2f}°" for v in rotation)

@@ -141,7 +141,7 @@ PROP_WAYPOINT = "kinema_waypoint"
 
 
 def _tool_bone(rig) -> str:
-    return rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    return builder.tool_bone_name(rig)
 
 
 def ik_bone_name(rig) -> str | None:
@@ -575,7 +575,7 @@ def _record(rig, waypoint, reference=None, values=None) -> str | None:
     """
     matrix = _tool_matrix(rig)
     if matrix is None:
-        return "This rig has no TCP; create one first"
+        return "This rig has no tool bone; create one first"
 
     if values is None:
         values = joint_values(rig)
@@ -1115,7 +1115,7 @@ def generate_job(context, rig) -> Outcome:
             f"moved marker{'s' if several else ''}"
         )
     if checks is None:
-        message += "; not checked, since this rig has no TCP to measure it by"
+        message += "; not checked, since this rig has no tool bone to measure it by"
     elif flagged:
         message += f"; {_flagged_text(flagged)} in the motion check"
     for note in job.notes:
@@ -1993,7 +1993,7 @@ def check_motion(context, rig) -> Outcome:
     estimate_frames_needed(context, rig, checks, samples)
     flagged = store_check(rig, checks)
     if checks is None:
-        message = "Nothing checked: this rig has no TCP to measure the job by"
+        message = "Nothing checked: this rig has no tool bone to measure the job by"
         if job.retimes:
             # Not written: a cancelled operator leaves no undo step.
             moved = ", ".join(f"'{m.name}'" for m, _, _ in job.retimes)
