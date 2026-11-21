@@ -428,6 +428,34 @@ class TestAutoConfiguration:
         handlers.solve_rig(arm6, force=True, live=False)
         assert search == []
 
+    def test_a_deferred_rig_searches_only_once_released(
+        self, arm6, builder, manager, ik_ops, handlers, search, monkeypatch
+    ):
+        """Live solves on a deferred rig run on NumPy rather than compile PyRoki
+        mid-drag; the search after a miss must not compile it either."""
+        _set_q(builder, arm6, REACHABLE)
+        self._target_at(builder, arm6, ELSEWHERE)
+        arm6.kinema_auto_configuration = True
+        arm6.kinema_solver_mode = manager.MODE_PYROKI
+        builds = []
+
+        def pyroki(self, rig, build=True):
+            builds.append(build)
+            return None
+
+        monkeypatch.setattr(manager.RigSolver, "pyroki", pyroki)
+        manager.defer(arm6.name)
+        try:
+            self._miss_once(manager, monkeypatch)
+            handlers.solve_rig(arm6, force=True, live=True)
+            assert search == [], "no search while the build is put off"
+            assert True not in builds, "nothing built"
+        finally:
+            manager.release(arm6.name)
+        self._miss_once(manager, monkeypatch)
+        handlers.solve_rig(arm6, force=True, live=True)
+        assert search == [ik_ops.AUTO_SEEDS], "released: the miss is searched"
+
     def test_out_of_reach_nothing_changes_and_it_waits_to_search_again(
         self, arm6, builder, manager, ik_ops, handlers, search, monkeypatch
     ):

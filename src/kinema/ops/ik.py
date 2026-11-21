@@ -295,6 +295,16 @@ def _moved_on(last: np.ndarray, goal: np.ndarray) -> bool:
     return _turn_between(last, goal) > AUTO_TURN
 
 
+def _would_compile(rig, solver) -> bool:
+    """Whether a search now would build PyRoki for a rig whose live solves put the
+    build off (``manager.defer``): a JAX compile in the middle of a drag, the pause
+    deferring is there to spare. Searched once it is built."""
+    mode = getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI)
+    if mode not in (manager.MODE_PYROKI, manager.MODE_OFF):
+        return False
+    return manager.deferred(rig.name) and solver.pyroki(rig, build=False) is None
+
+
 def reconfigure(rig, solver) -> bool:
     """After a live solve that missed: find the configurations that reach the goal,
     and stand the arm in the one nearest where it is. Returns whether it did.
@@ -308,6 +318,8 @@ def reconfigure(rig, solver) -> bool:
     """
     import time
 
+    if _would_compile(rig, solver):
+        return False
     goal = _np4(rig.pose.bones[solver.ik_bone].matrix)
     last = _auto_searched.get(rig.name)
     now = time.perf_counter()
