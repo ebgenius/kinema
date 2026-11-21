@@ -84,8 +84,28 @@ def held_turn_expression(lower: float, upper: float, value: str = "q") -> str:
     For less than a whole turn of range: a whole turn or more holds nothing.
     """
     centre, half = (lower + upper) / 2.0, (upper - lower) / 2.0
-    d = f"({value}-{centre!r}-2*pi*floor(({value}-{centre!r}+pi)/(2*pi)))"
-    return f"({value}-{d}+min(max({d},{-half!r}),{half!r}))"
+    c = _number(centre)
+    d = f"({value}-{c}-2*pi*floor(({value}-{c}+pi)/(2*pi)))"
+    return f"({value}-{d}+min(max({d},{_number(-half)}),{_number(half)}))"
+
+
+def _number(value: float) -> str:
+    """``value`` to twelve significant figures: a hundredth of a nanometre or a
+    nanoradian on any joint, and a short enough constant for a driver."""
+    return f"{float(value):.12g}"
+
+
+def mimic_expression(multiplier: float, offset: float, value: str = "q") -> str:
+    """A mimic driver's whole expression, ``multiplier * value + offset``: refused
+    when longer than a driver holds, which Blender would cut short, and the cut
+    expression doesn't evaluate."""
+    expression = f"{_number(multiplier)} * {value} + {_number(offset)}"
+    if len(expression) > DRIVER_EXPRESSION_LIMIT:
+        raise ValueError(
+            f"A mimic's driver expression is {len(expression)} characters, more than "
+            f"the {DRIVER_EXPRESSION_LIMIT} a driver holds"
+        )
+    return expression
 
 
 @dataclass(frozen=True)
@@ -113,7 +133,9 @@ class MimicStep:
     def holds(self, value: float) -> bool:
         """Whether its limit holds it here, so it doesn't move with its leader."""
         free = self.multiplier * (_wrap(value) if self.wraps else value) + self.offset
-        return not np.isclose(self(value), free, atol=1e-12)
+        # Absolute only: a leader wound many turns would hide a small hold in a
+        # relative tolerance.
+        return not np.isclose(self(value), free, rtol=0.0, atol=1e-12)
 
 
 @dataclass(frozen=True)

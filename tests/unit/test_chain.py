@@ -312,16 +312,44 @@ class TestHeldTurnExpression:
     expression, and short enough for its 256 characters."""
 
     @pytest.mark.parametrize(
-        "lower, upper",
-        [(0.0, 4.0), (-3.5, 0.0), (-4.0, 2.0), (1.0, 2.0), (-0.3333333333333333, 6.0)],
+        "lower, upper, multiplier, offset",
+        [
+            (0.0, 4.0, 0.5, 0.1),
+            (-3.5, 0.0, 1.0, 0.0),
+            (-4.0, 2.0, -1.0, 0.0),
+            (1.0, 2.0, 0.3333333333333333, 0.016666666666666666),
+            (-0.3333333333333333, 6.0, 2.0, -0.5),
+            # The longest constants a description could hold, from the review.
+            (-3.141593123456789, 3.141590987654321,
+             -1.2345678901234567e-05, -1.2345678901234567e-05),
+        ],
     )
-    def test_it_is_clamp_angle(self, lower, upper):
+    def test_it_is_clamp_angle_and_fits_a_driver(self, lower, upper, multiplier, offset):
         import math
 
-        expression = chain_mod.held_turn_expression(lower, upper)
-        wrapper = f"0.3333333333333333 * {expression} + 0.016666666666666666"
-        assert len(wrapper) <= chain_mod.DRIVER_EXPRESSION_LIMIT, len(wrapper)
+        expression = chain_mod.mimic_expression(
+            multiplier, offset, chain_mod.held_turn_expression(lower, upper)
+        )
+        assert len(expression) <= chain_mod.DRIVER_EXPRESSION_LIMIT, len(expression)
         names = {"floor": math.floor, "pi": math.pi, "min": min, "max": max}
         for angle in np.linspace(-9.0, 9.0, 181):
-            held = eval(expression, {"__builtins__": {}}, {**names, "q": float(angle)})
-            assert held == pytest.approx(chain_mod.clamp_angle(angle, lower, upper), abs=1e-9)
+            got = eval(expression, {"__builtins__": {}}, {**names, "q": float(angle)})
+            held = chain_mod.clamp_angle(angle, lower, upper)
+            assert got == pytest.approx(multiplier * held + offset, abs=1e-9)
+
+    def test_one_too_long_is_refused_rather_than_cut(self):
+        with pytest.raises(ValueError, match="characters"):
+            chain_mod.mimic_expression(1.0, 0.0, "q" + " + 0" * 100)
+
+
+class TestWoundLeader:
+    def test_a_small_hold_on_a_leader_wound_many_turns_counts(self):
+        """q = 200 pi + 1.001 and M = -q held to [-1, 1]: held by 0.001 rad, which
+        a relative tolerance would read as free."""
+        Step = chain_mod.MimicStep
+        m = chain_mod.MimicLink(
+            after=0, rest_relative=np.eye(4), is_revolute=True, leader=0,
+            steps=(Step(-1.0, 0.0, True, -1.0, 1.0),),
+        )
+        assert m.gain(np.array([200 * np.pi + 1.001])) == 0.0
+        assert m.gain(np.array([200 * np.pi + 0.5])) == pytest.approx(-1.0)

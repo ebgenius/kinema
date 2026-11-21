@@ -1171,7 +1171,9 @@ def drive_mimic(
             f'pose.bones["{bpy.utils.escape_identifier(leader)}"]'
             f".{channel_of(leader_revolute)}[1]"
         )
-    driver.expression = f"{float(multiplier)!r} * {value} + {float(offset)!r}"
+    from ..solver.chain import mimic_expression
+
+    driver.expression = mimic_expression(multiplier, offset, value)
 
 
 def mimic_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:
