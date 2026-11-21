@@ -616,6 +616,10 @@ class TestJointsBox:
         assert "CON_LOCLIMIT" in icons and "CON_ROTLIMIT" in icons
 
 
+#: The Target (IK) panel's sections, by the scene property that opens each.
+SECTIONS = ("show_ik_target", "show_ik_configuration", "show_ik_swivel", "show_ik_statistics")
+
+
 class _Open(_Layout):
     """A recording layout whose collapsible sections are all open."""
 
@@ -652,19 +656,48 @@ class TestTargetPanel:
 
         assert "FINISHED" in bpy.ops.kinema.add_ik()
         arm6.kinema_ik_enabled = False
-        return arm6
+        props = bpy.context.scene.kinema
+        shown = {name: getattr(props, name) for name in SECTIONS}
+        for name in SECTIONS:
+            setattr(props, name, True)
+        yield arm6
+        for name, value in shown.items():
+            setattr(props, name, value)
 
-    def test_its_sections_each_in_a_box(self, panel, targeted):
+    def test_its_sections_each_a_thin_row_in_a_box(self, panel, targeted):
+        """The triangle, an icon and the label on one row, as add-ons' own sections
+        go: no layout panel, whose header stood twice as tall."""
         calls = _ik_drawn(panel)
-        sections = [args[0] for name, args, _ in calls if name == "panel"]
-        assert sections[:2] == ["kinema_ik_target", "kinema_solutions"]
-        assert sections[-1] == "kinema_ik_statistics"
         names = [name for name, _, _ in calls]
-        boxes = [i for i, name in enumerate(names) if name == "box"]
-        panels = [i for i, name in enumerate(names) if name == "panel"]
-        assert all(box + 1 == section for box, section in zip(boxes, panels, strict=True)), (
-            "each section opened in a box of its own"
-        )
+        assert "panel" not in names
+        toggles = [
+            (i, args[1])
+            for i, (name, args, _) in enumerate(calls)
+            if name == "prop" and args[1] in SECTIONS
+        ]
+        assert [name for _, name in toggles] == [
+            "show_ik_target",
+            "show_ik_configuration",
+            "show_ik_statistics",
+        ]
+        for i, _ in toggles:
+            assert names[i - 2 : i] == ["box", "row"], "a row at the top of a box of its own"
+            assert calls[i][2]["icon"] in ("TRIA_DOWN", "TRIA_RIGHT")
+
+    def test_live_ik_and_auto_config_sit_in_their_section_rows(self, panel, targeted):
+        calls = _ik_drawn(panel)
+        props = [args[1] for name, args, _ in calls if name == "prop"]
+        assert props.index("kinema_ik_enabled") == props.index("show_ik_target") + 1
+        assert props.index("kinema_auto_configuration") == props.index("show_ik_configuration") + 1
+        assert props.count("kinema_ik_enabled") == props.count("kinema_auto_configuration") == 1
+
+    def test_a_closed_section_shows_its_row_alone(self, panel, targeted):
+        import bpy
+
+        bpy.context.scene.kinema.show_ik_target = False
+        operators = [args[0] for name, args, _ in _ik_drawn(panel) if name == "operator"]
+        assert "kinema.snap_ik" not in operators
+        assert "kinema.key_ik_tip" not in operators
 
     def test_the_target_is_deleted_by_a_button_that_says_so(self, panel, targeted):
         operators = {

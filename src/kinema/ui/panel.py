@@ -104,6 +104,10 @@ class KinemaSceneProps(PropertyGroup):
     adjusted after it.
     """
 
+    show_ik_target: BoolProperty(name="Target", default=True)
+    show_ik_configuration: BoolProperty(name="Configuration", default=False)
+    show_ik_swivel: BoolProperty(name="Elbow Swivel", default=False)
+    show_ik_statistics: BoolProperty(name="IK Solver Statistics", default=False)
     last_import: StringProperty(
         name="Last Import",
         description="Most recently imported robot description",
@@ -229,12 +233,22 @@ ORDER_SETTINGS = 6
 ORDER_KINEMA = 7
 
 
-def section(layout, idname: str, label: str, *, closed: bool = False, icon: str = "NONE"):
-    """A collapsible section in a darker box of its own, as Blender's own panels
-    nest them. Returns where its contents go, or None while it is collapsed."""
-    header, body = layout.box().panel(idname, default_closed=closed)
+def section(layout, context, name: str, label: str, icon: str, buttons=None):
+    """A collapsible section in a darker box of its own: one thin header row -- the
+    triangle, an icon, the label, and ``buttons`` (a function drawing into a row)
+    at its right -- as add-ons' own sidebar sections go. Open or closed by the
+    scene's ``name``. Returns where its contents go, or None while it is closed."""
+    props = context.scene.kinema
+    shown = bool(getattr(props, name))
+    box = layout.box()
+    header = box.row()
+    header.prop(props, name, text="", icon="TRIA_DOWN" if shown else "TRIA_RIGHT", emboss=False)
     header.label(text=label, icon=icon)
-    return body
+    if buttons is not None:
+        right = header.row()
+        right.alignment = "RIGHT"
+        buttons(right)
+    return box.column() if shown else None
 
 
 class KinemaPanelBase:
@@ -1286,21 +1300,23 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             layout.label(text="Adds a keyframable control at the tool.", icon="BLANK1")
             return
 
-        body = section(layout, "kinema_ik_target", "Target")
+        def live_ik(row):
+            row.prop(rig, "kinema_ik_enabled", text="Live IK", toggle=True,
+                     icon="PLAY" if rig.kinema_ik_enabled else "PAUSE")
+
+        body = section(layout, context, "show_ik_target", "Target", "CON_KINEMATIC", live_ik)
         if body is not None:
             self._draw_target(body, rig)
         self._draw_solutions(layout, context, rig)
-        self._draw_swivel(layout, rig)
-        body = section(layout, "kinema_ik_statistics", "IK Solver Statistics", closed=True)
+        self._draw_swivel(layout, context, rig)
+        body = section(layout, context, "show_ik_statistics", "IK Solver Statistics", "TIME")
         if body is not None:
             self._draw_readout(body, rig)
 
     @staticmethod
     def _draw_target(layout, rig) -> None:
-        """Live IK, which bone it aims with, and the target itself."""
-        column = layout.column(align=True)
-        column.prop(rig, "kinema_ik_enabled", toggle=True,
-                    icon="PLAY" if rig.kinema_ik_enabled else "PAUSE")
+        """Which bone the target is aimed with, and the target itself: Live IK is in
+        the section's header."""
 
         # The friendly way to change the tip is the radio column in the Bones
         # list; this row shows where it landed and keys it.
@@ -1312,13 +1328,12 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         # this is the one that behaves.
         from ..solver import manager
 
-        tip = layout.column(align=True)
-        tip.use_property_split = True
-        tip.use_property_decorate = False
-        row = tip.row(align=True)
+        # The field and its key across the section's width, and where it lands
+        # on a line of its own.
+        row = layout.row(align=True)
         row.prop(rig, "kinema_ik_tip", text="Target Bone")
         row.operator("kinema.key_ik_tip", text="", icon="DECORATE_KEYFRAME")
-        tip.label(text=f"Solving to '{manager.tip_bone(rig)}'", icon="BONE_DATA")
+        layout.label(text=f"Solving to '{manager.tip_bone(rig)}'", icon="BONE_DATA")
 
         column = layout.column(align=True)
         column.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
@@ -1330,12 +1345,18 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         from ..ops import ik as ik_ops
         from . import quick_bar
 
-        body = section(layout, "kinema_solutions", "Configuration", closed=True)
+        def auto_config(row):
+            row.prop(rig, "kinema_auto_configuration", text="Auto Config", toggle=True,
+                     icon="PLAY" if rig.kinema_auto_configuration else "PAUSE")
+
+        body = section(
+            layout, context, "show_ik_configuration", "Configuration", "ARMATURE_DATA",
+            auto_config,
+        )
         if body is None:
             return
 
         count = ik_ops.solution_count(rig)
-        body.prop(rig, "kinema_auto_configuration", text="Auto Configuration")
         body.operator(
             "kinema.find_solutions", text="Find Solutions", icon="VIEWZOOM"
         )
@@ -1344,7 +1365,9 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             current = min(int(rig.kinema_active_solution) + 1, count)
             row = body.row(align=True)
             row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
-            row.label(text=f"Solution {current}" if stale else f"Solution {current} of {count}")
+            middle = row.row()
+            middle.alignment = "CENTER"
+            middle.label(text=f"Solution {current}" if stale else f"Solution {current} of {count}")
             row.operator("kinema.apply_solution", text="", icon="TRIA_RIGHT").step = 1
         else:
             body.label(text="An arm reaches a pose several ways.", icon="BLANK1")
@@ -1352,7 +1375,7 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         quick_bar.draw_status(body, context, rig)
 
     @staticmethod
-    def _draw_swivel(layout, rig) -> None:
+    def _draw_swivel(layout, context, rig) -> None:
         """The elbow swivel: offered with a joint to spare, and kept once added."""
         state = _swivel_section(rig)
         if state is None:
@@ -1363,8 +1386,8 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
 
         # Flagged in the header too, so a collapsed section still says so.
         body = section(
-            layout, "kinema_swivel", "Elbow Swivel", closed=True,
-            icon="ERROR" if state == "stalled" else "NONE",
+            layout, context, "show_ik_swivel", "Elbow Swivel",
+            "ERROR" if state == "stalled" else "CON_ROTLIKE",
         )
         if body is None:
             return
