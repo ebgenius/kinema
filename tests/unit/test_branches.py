@@ -308,3 +308,24 @@ class TestCollect:
 
         found = branches.collect(chain, goal, [first, second])
         assert len(found) == 2, "a genuine rail alternative was folded away"
+
+
+class TestNearest:
+    """Which configuration found is the one the arm stands in (#103)."""
+
+    def test_the_one_with_the_smallest_largest_difference(self):
+        reference = np.array([0.0, 0.5, 1.0])
+        found = [[0.3, 0.5, 1.0], [0.05, 0.45, 1.02], [0.0, -0.5, 1.0]]
+        assert branches.nearest(found, reference) == 1
+
+    def test_a_held_joint_read_otherwise_doesnt_hide_it(self):
+        """A rail held, its channel at 4, shown at 1.5: 2.5 off in every one found,
+        which, as the largest difference, ties them all."""
+        reference = np.array([4.0, 0.0, 0.5])
+        found = [[1.5, 0.9, 0.5], [1.5, 0.01, 0.52], [1.5, -0.4, 0.5]]
+        held = np.array([True, False, False])
+        assert branches.nearest(found, reference, held) == 1
+        assert branches.nearest(found, reference) == 0, "precondition: unmasked, a tie"
+
+    def test_all_held_is_the_first(self):
+        assert branches.nearest([[1.0], [2.0]], np.array([2.0]), np.array([True])) == 0

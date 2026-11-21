@@ -104,6 +104,11 @@ class KinemaSceneProps(PropertyGroup):
     adjusted after it.
     """
 
+    show_ik_target: BoolProperty(name="Target", default=True)
+    show_ik_configuration: BoolProperty(name="Configuration", default=False)
+    show_ik_swivel: BoolProperty(name="Elbow Swivel", default=False)
+    show_ik_statistics: BoolProperty(name="IK Solver Statistics", default=False)
+    show_motion_check: BoolProperty(name="Motion Check", default=True)
     last_import: StringProperty(
         name="Last Import",
         description="Most recently imported robot description",
@@ -206,15 +211,152 @@ def _draw_catalog(layout, context: bpy.types.Context) -> None:
     box.operator("kinema.open_catalog_repo", text="Open Repository", icon="URL")
 
 
+def whole_list(count: int) -> dict:
+    """``template_list`` sizes for a list that shows every row it has.
+
+    A list holding more rows than it shows scrolls itself under the mouse
+    wheel, and the sidebar stops dead wherever the pointer crosses it. Shown
+    whole, it has nothing to scroll, and the wheel scrolls the sidebar.
+    """
+    rows = max(count, 1)
+    return {"rows": rows, "maxrows": rows}
+
+
+#: Where each top-level panel stands in the Kinema tab, top first. Blender keeps
+#: the order a user drags them into, per file; these are where they start.
+ORDER_QUICK_BAR = 0
+ORDER_JOINTS = 1
+ORDER_IK = 2
+ORDER_WAYPOINTS = 3
+ORDER_MOTIONS = 4
+ORDER_SETTINGS = 5
+ORDER_KINEMA = 6
+
+
+def section(layout, context, name: str, label: str, icon: str, buttons=None):
+    """A collapsible section in a darker box of its own: one thin header row -- the
+    triangle, an icon, the label, and ``buttons`` (a function drawing into a row)
+    at its right -- as add-ons' own sidebar sections go. Open or closed by the
+    scene's ``name``. Returns where its contents go, or None while it is closed."""
+    props = context.scene.kinema
+    shown = bool(getattr(props, name))
+    box = layout.box()
+    header = box.row()
+    header.prop(props, name, text="", icon="TRIA_DOWN" if shown else "TRIA_RIGHT", emboss=False)
+    header.label(text=label, icon=icon)
+    if buttons is not None:
+        right = header.row()
+        right.alignment = "RIGHT"
+        buttons(right)
+    return box.column() if shown else None
+
+
 class KinemaPanelBase:
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = CATEGORY
 
 
+class KINEMA_PT_quick_bar(KinemaPanelBase, Panel):
+    """The buttons used all the time, above every panel, under a header naming
+    the robot shown and its joints.
+
+    A panel like the others, first to begin with: dragged, collapsed or pinned
+    as they are. Blender outlines a panel with no header just the same, so a
+    header costs nothing and says whose buttons they are. With no robot, it
+    offers to import one.
+    """
+
+    bl_idname = "KINEMA_PT_quick_bar"
+    bl_label = ""
+    bl_order = ORDER_QUICK_BAR
+
+    def draw_header(self, context: bpy.types.Context) -> None:
+        rig = active_rig(context)
+        if rig is None:
+            self.layout.label(text="No robot", icon="ARMATURE_DATA")
+            return
+        self.layout.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
+
+    def draw(self, context: bpy.types.Context) -> None:
+        from . import quick_bar
+
+        layout = self.layout
+        rig = active_rig(context)
+        if rig is None:
+            row = layout.row()
+            row.scale_y = 1.2
+            row.operator("kinema.import_urdf", text="Import URDF File…", icon="FILE_FOLDER")
+            return
+
+        from ..prefs import get_prefs, quick_button_keys
+
+        quick_bar.draw(layout, context, rig, quick_button_keys(get_prefs(context)))
+
+
 class KINEMA_PT_main(KinemaPanelBase, Panel):
+    """The robot's settings: what is set once -- importing, bones, the TCP,
+    external axes, limits, collision and the solver -- as subpanels, under the
+    everyday panels. Its header names the robot."""
+
     bl_idname = "KINEMA_PT_main"
-    bl_label = "Kinema"
+    bl_label = "Robot Settings"
+    bl_order = ORDER_SETTINGS
+
+    def draw_header(self, context: bpy.types.Context) -> None:
+        rig = active_rig(context)
+        if rig is not None:
+            self.layout.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name))
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        return active_rig(context) is not None
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        rig = active_rig(context)
+        layout.label(text=f"{len(builder.joint_bones(rig))} joints", icon="ARMATURE_DATA")
+
+        # The robot's meshes, where the import put them: put back on their links,
+        # or moved to where the file has them. Only with meshes to move, so it
+        # doesn't suggest a rig has meshes when it has none.
+        if builder.link_meshes(rig):
+            column = layout.column(align=True)
+            column.operator("kinema.reset_link_meshes", text="Reset Meshes", icon="LOOP_BACK")
+            column.prop(rig, "kinema_meshes_at_file_origin", icon="EXPORT")
+            if rig.kinema_meshes_at_file_origin:
+                # Warned loudly: the meshes no longer move with the rig.
+                layout.label(text="Meshes are off the rig", icon="ERROR")
+        from ..ops import locate
+
+        if locate.description_missing(rig):
+            # Where the file went missing: on another machine, or moved. The
+            # solver can't build from it until it is found again.
+            box = layout.box()
+            box.label(text="Description file missing", icon="ERROR")
+            box.label(text=locate.file_name(rig.get(builder.PROP_SOURCE)), icon="BLANK1")
+            box.operator(
+                "kinema.locate_description", text="Locate Description…", icon="FILE_FOLDER"
+            )
+
+
+class KINEMA_PT_kinema(KinemaPanelBase, Panel):
+    """What is Kinema's rather than a robot's: importing another robot, and the
+    solver -- which one drives the robot shown, and whether PyRoki is there."""
+
+    bl_idname = "KINEMA_PT_kinema"
+    bl_label = "Kinema Settings"
+    bl_order = ORDER_KINEMA
+
+    def draw(self, context: bpy.types.Context) -> None:
+        pass
+
+
+class KINEMA_PT_import(KinemaPanelBase, Panel):
+    bl_idname = "KINEMA_PT_import"
+    bl_parent_id = "KINEMA_PT_kinema"
+    bl_label = "Import"
+    bl_order = 0
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
@@ -235,40 +377,10 @@ class KINEMA_PT_main(KinemaPanelBase, Panel):
             for name in SETTING_NAMES:
                 body.prop(context.scene.kinema, name)
 
-        rig = active_rig(context)
-        if rig is None:
-            box = layout.box()
-            box.label(text="No robot selected", icon="INFO")
-            box.label(text="Import one, or select an existing rig.")
-            return
-
-        layout.separator()
-        row = layout.row()
-        row.label(text=rig.get(builder.PROP_ROBOT_NAME, rig.name), icon="ARMATURE_DATA")
-        count = len(builder.joint_bones(rig))
-        sub = row.row()
-        sub.alignment = "RIGHT"
-        sub.label(text=f"{count} DoF")
-        if not is_selected(context, rig):
-            # Kept while something else is selected: say so, so the panels
-            # aren't read as the selected object's.
-            layout.label(text="Not selected: the robot last shown", icon="RESTRICT_SELECT_ON")
-        from ..ops import locate
-
-        if locate.description_missing(rig):
-            # Where the file went missing: on another machine, or moved. The
-            # solver can't build from it until it is found again.
-            box = layout.box()
-            box.label(text="Description file missing", icon="ERROR")
-            box.label(text=locate.file_name(rig.get(builder.PROP_SOURCE)), icon="BLANK1")
-            box.operator(
-                "kinema.locate_description", text="Locate Description…", icon="FILE_FOLDER"
-            )
-
 
 class KINEMA_PT_joints(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_joints"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_order = ORDER_JOINTS
     bl_label = "Joints (FK)"
 
     @classmethod
@@ -284,27 +396,6 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
             layout.label(text="This rig has no movable joints", icon="INFO")
             return
 
-        header = layout.row(align=True)
-        header.operator("kinema.reset_pose", text="Rest Pose", icon="LOOP_BACK")
-        header.operator("kinema.key_joints", text="Key All", icon="DECORATE_KEYFRAME")
-        # Where the keys this panel makes are shaped afterwards.
-        layout.operator("kinema.graph_editor", icon="GRAPH")
-
-        # Beside Rest Pose because it answers the same question -- "put the
-        # robot back" -- for the half Rest Pose cannot reach. Only shown when
-        # there is something to reset, so it does not imply the rig has meshes
-        # when it has none.
-        if builder.link_meshes(rig):
-            layout.operator(
-                "kinema.reset_link_meshes", text="Reset Meshes", icon="LOOP_BACK"
-            )
-            # Not a pose control, but it lives with the other "where is the
-            # geometry" answers, and it warns loudly rather than sitting quiet
-            # in a panel the user has scrolled past.
-            layout.prop(rig, "kinema_meshes_at_file_origin", icon="EXPORT")
-            if rig.kinema_meshes_at_file_origin:
-                layout.label(text="Meshes are off the rig", icon="ERROR")
-
         from ..ops import velocity
 
         # Red on the slider of a joint moving faster, or speeding up harder,
@@ -312,7 +403,9 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
         # fixes it.
         flagged = {reading.joint for reading in velocity.warnings(rig, context.scene)}
 
-        column = layout.column(align=True)
+        layout.operator("kinema.reset_pose", text="Rest Pose", icon="LOOP_BACK")
+        # In a box, as the quick bar's buttons are.
+        column = layout.box().column(align=True)
         for pose_bone in joints:
             bone = pose_bone.bone
             is_revolute = bone.get(builder.PROP_JOINT_TYPE, "revolute") != "prismatic"
@@ -331,11 +424,13 @@ class KINEMA_PT_joints(KinemaPanelBase, Panel):
                 icon="PINNED" if held else "UNPINNED", emboss=False,
             )
 
+            # The limit constraint the joint has: on its turn, or on its slide.
             limited = builder.PROP_LOWER in bone
-            icon = "CON_ROTLIMIT" if limited else "BLANK1"
+            icon = ("CON_ROTLIMIT" if is_revolute else "CON_LOCLIMIT") if limited else "BLANK1"
             sub = row.row(align=True)
             sub.enabled = limited
             sub.label(text="", icon=icon)
+        layout.operator("kinema.key_joints", text="Key All", icon="DECORATE_KEYFRAME")
 
 
 class KINEMA_PT_motion_limits(KinemaPanelBase, Panel):
@@ -346,6 +441,7 @@ class KINEMA_PT_motion_limits(KinemaPanelBase, Panel):
 
     bl_idname = "KINEMA_PT_motion_limits"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 4
     bl_label = "Motion Limits"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -547,7 +643,7 @@ def tip_index_of(rig: bpy.types.Object, pose_bone) -> int | None:
     """
     if builder.PROP_JOINT_NAME in pose_bone.bone:
         return _joint_indices(rig).get(pose_bone.name)
-    tcp_name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    tcp_name = builder.tool_bone_name(rig)
     return -1 if pose_bone.name == tcp_name else None
 
 
@@ -628,6 +724,7 @@ class KINEMA_UL_bones(UIList):
 class KINEMA_PT_bones(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_bones"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 1
     bl_label = "Bones"
 
     @classmethod
@@ -638,9 +735,11 @@ class KINEMA_PT_bones(KinemaPanelBase, Panel):
         layout = self.layout
         rig = active_rig(context)
 
+        ik_name = rig.get(builder.PROP_IK_BONE)
+        shown = sum(1 for pose_bone in rig.pose.bones if pose_bone.name != ik_name)
         layout.template_list(
             "KINEMA_UL_bones", "", rig.pose, "bones", rig, "kinema_active_bone_index",
-            rows=6,
+            **whole_list(shown),
         )
 
         pose_bone = active_bone(rig)
@@ -737,7 +836,7 @@ class KINEMA_UL_motions(UIList):
 
 class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_waypoints"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_order = ORDER_WAYPOINTS
     bl_label = "Waypoints"
 
     @classmethod
@@ -759,7 +858,7 @@ class KINEMA_PT_waypoints(KinemaPanelBase, Panel):
 
         layout.template_list(
             "KINEMA_UL_waypoints", "", rig, "kinema_waypoints",
-            rig, "kinema_active_waypoint", rows=4,
+            rig, "kinema_active_waypoint", **whole_list(len(rig.kinema_waypoints)),
         )
         index = rig.kinema_active_waypoint
         if 0 <= index < len(rig.kinema_waypoints):
@@ -795,55 +894,68 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
     """The moves between waypoints, each with its own frames, and the job they make."""
 
     bl_idname = "KINEMA_PT_motions"
-    bl_parent_id = "KINEMA_PT_waypoints"
+    bl_order = ORDER_MOTIONS
     bl_label = "Motions"
 
+    # Shown with no waypoints too: Bake to Keyframes and Graph Editor don't need
+    # them, and a button taken off the quick bar must still be here.
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
-        rig = active_rig(context)
-        return rig is not None and len(rig.kinema_waypoints) > 0
+        return active_rig(context) is not None
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         rig = active_rig(context)
 
-        row = layout.row(align=True)
-        row.operator("kinema.add_motion", text="Add", icon="ADD")
-        row.operator("kinema.remove_motion", text="", icon="X")
-        if not len(rig.kinema_motions):
-            text, icon = motions_note(rig)
-            layout.label(text=text, icon=icon)
+        if not len(rig.kinema_waypoints):
+            layout.label(text="Record waypoints to make motions between", icon="INFO")
         else:
-            layout.template_list(
-                "KINEMA_UL_motions", "", rig, "kinema_motions",
-                rig, "kinema_active_motion", rows=4,
-            )
-            index = rig.kinema_active_motion
-            if 0 <= index < len(rig.kinema_motions):
-                motion = rig.kinema_motions[index]
-                box = layout.column(align=True)
-                box.prop_search(motion, "start_name", rig, "kinema_waypoints", text="From")
-                box.prop_search(motion, "end_name", rig, "kinema_waypoints", text="To")
-                box.prop(motion, "move")
-                frames = layout.row(align=True)
-                frames.prop(motion, "frame_start")
-                frames.prop(motion, "frame_end")
-                layout.label(text=f"{motion.duration} frames", icon="TIME")
+            row = layout.row(align=True)
+            row.operator("kinema.add_motion", text="Add", icon="ADD")
+            row.operator("kinema.remove_motion", text="", icon="X")
+            if not len(rig.kinema_motions):
+                text, icon = motions_note(rig)
+                layout.label(text=text, icon=icon)
+            else:
+                layout.template_list(
+                    "KINEMA_UL_motions", "", rig, "kinema_motions",
+                    rig, "kinema_active_motion", **whole_list(len(rig.kinema_motions)),
+                )
+                index = rig.kinema_active_motion
+                if 0 <= index < len(rig.kinema_motions):
+                    motion = rig.kinema_motions[index]
+                    box = layout.column(align=True)
+                    box.prop_search(motion, "start_name", rig, "kinema_waypoints", text="From")
+                    box.prop_search(motion, "end_name", rig, "kinema_waypoints", text="To")
+                    box.prop(motion, "move")
+                    frames = layout.row(align=True)
+                    frames.prop(motion, "frame_start")
+                    frames.prop(motion, "frame_end")
+                    layout.label(text=f"{motion.duration} frames", icon="TIME")
 
-        column = layout.column()
-        column.enabled = len(rig.kinema_motions) > 0 or (
-            rig.kinema_job_version < 1 and len(rig.kinema_waypoints) > 1
-        )
-        column.scale_y = 1.2
-        column.operator("kinema.generate_motion", text="Generate Motion", icon="TRACKING")
+        # The job's buttons in the order they are pressed, in a box as the quick
+        # bar's are: made, checked, optimized, then baked to keys.
         from ..ops.optimize import optimizing
 
+        checks = rig.kinema_motion_check
+        actions = layout.box().column(align=True)
+        job = actions.column(align=True)
+        job.enabled = len(rig.kinema_motions) > 0 or (
+            rig.kinema_job_version < 1 and len(rig.kinema_waypoints) > 1
+        )
+        job.operator("kinema.generate_motion", text="Generate Motion", icon="TRACKING")
+        job.operator(
+            "kinema.check_motion",
+            text="Check Again" if len(checks) else "Check Motion",
+            icon="VIEWZOOM",
+        )
         if optimizing(rig):
-            column.label(text="Optimizing motion... Esc to cancel", icon="SORTTIME")
+            job.label(text="Optimizing motion... Esc to cancel", icon="SORTTIME")
         else:
-            column.operator(
-                "kinema.optimize_motion", text="Optimize Motion", icon="IPO_EASE_IN_OUT"
-            )
+            job.operator("kinema.optimize_motion", text="Optimize Motion", icon="IPO_EASE_IN_OUT")
+        # What live IK plays, as keys: with the job it is made of.
+        actions.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
+        layout.operator("kinema.graph_editor", text="Graph Editor", icon="GRAPH")
 
         # The same test the operator makes, not a truthier one: a rig whose IK
         # bone was deleted keeps the property, and checking only that would
@@ -852,6 +964,9 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
 
         if wants_ik(rig) and ik_bone_name(rig) is None:
             layout.label(text="Linear moves need an IK target", icon="ERROR")
+
+        if len(checks):
+            _draw_motion_check(layout, context, rig)
 
 
 def motions_note(rig) -> tuple[str, str]:
@@ -895,53 +1010,35 @@ def check_outdated(rig, scene) -> str:
     return ""
 
 
-class KINEMA_PT_motion_check(KinemaPanelBase, Panel):
-    """What the last motion check found, one move per row.
+def _draw_motion_check(layout, context, rig) -> None:
+    """What the last motion check found, one move per row, in a section of its own.
 
     Read from the rig rather than measured here: measuring means playing the job
     through, which is an operator's work, never a redraw's.
     """
+    from ..rig.motion_check import problems
 
-    bl_idname = "KINEMA_PT_motion_check"
-    bl_parent_id = "KINEMA_PT_waypoints"
-    bl_label = "Motion Check"
-
-    @classmethod
-    def poll(cls, context: bpy.types.Context) -> bool:
-        rig = active_rig(context)
-        return rig is not None and (len(rig.kinema_motions) > 0 or len(rig.kinema_motion_check) > 0)
-
-    def draw(self, context: bpy.types.Context) -> None:
-        from ..rig.motion_check import problems
-
-        layout = self.layout
-        rig = active_rig(context)
-        checks = rig.kinema_motion_check
-        layout.operator(
-            "kinema.check_motion",
-            text="Check Again" if len(checks) else "Check Motion",
-            icon="VIEWZOOM",
+    checks = rig.kinema_motion_check
+    found = [problems(check) for check in checks]
+    outdated = check_outdated(rig, context.scene)
+    icon = "ERROR" if outdated or any(found) else "CHECKMARK"
+    body = section(layout, context, "show_motion_check", "Motion Check", icon)
+    if body is None:
+        return
+    if outdated:
+        body.label(text=outdated, icon="ERROR")
+    column = body.column(align=True)
+    for check, its in zip(checks, found):
+        kind = "Linear" if check.move == MOVE_LINEAR else "Joint"
+        heading = f"{check.name}: {kind}, {check.start_frame}–{check.end_frame}"
+        column.label(
+            text=heading if its else f"{heading}, ok",
+            icon="ERROR" if its else "CHECKMARK",
         )
-        if not len(checks):
-            layout.label(text="Generate Motion checks the job too", icon="INFO")
-            return
-        outdated = check_outdated(rig, context.scene)
-        if outdated:
-            layout.label(text=outdated, icon="ERROR")
-
-        column = layout.column(align=True)
-        for check in checks:
-            found = problems(check)
-            kind = "Linear" if check.move == MOVE_LINEAR else "Joint"
-            heading = f"{check.name}: {kind}, {check.start_frame}–{check.end_frame}"
-            column.label(
-                text=heading if found else f"{heading}, ok",
-                icon="ERROR" if found else "CHECKMARK",
-            )
-            for problem in found:
-                row = column.row()
-                row.separator(factor=2.0)
-                row.label(text=problem)
+        for problem in its:
+            row = column.row()
+            row.separator(factor=2.0)
+            row.label(text=problem)
 
 
 def _draw_capsule_counts(layout, rig, capsules, meshes) -> None:
@@ -969,6 +1066,7 @@ class KINEMA_PT_collision(KinemaPanelBase, Panel):
 
     bl_idname = "KINEMA_PT_collision"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 5
     bl_label = "Collision"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -1049,6 +1147,7 @@ class KINEMA_PT_external_axes(KinemaPanelBase, Panel):
 
     bl_idname = "KINEMA_PT_external_axes"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 3
     bl_label = "External Axes"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -1084,6 +1183,7 @@ class KINEMA_PT_external_axes(KinemaPanelBase, Panel):
 class KINEMA_PT_tcp(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_tcp"
     bl_parent_id = "KINEMA_PT_main"
+    bl_order = 2
     bl_label = "Tool Centre Point"
 
     @classmethod
@@ -1099,7 +1199,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         if exists:
             self._draw_readout(layout, rig, rig.pose.bones[tcp_name])
         else:
-            layout.label(text="No TCP on this rig", icon="INFO")
+            layout.label(text="No tool bone on this rig", icon="INFO")
 
         self._draw_placement(layout, rig, exists=exists)
 
@@ -1132,7 +1232,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         row = layout.row()
         row.scale_y = 1.2
         row.operator(
-            "kinema.edit_tcp", text="Edit TCP…" if exists else "Place TCP…",
+            "kinema.edit_tcp", text="Edit Tool…" if exists else "Place Tool…",
             icon="EMPTY_ARROWS",
         )
         column = layout.column(align=True)
@@ -1165,7 +1265,7 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         # button that vanishes is harder to understand than one that explains
         # what it wants.
         row.enabled = usable
-        label = "Update TCP" if exists else "Create TCP"
+        label = "Update Tool" if exists else "Create Tool"
         row.operator(
             "kinema.set_tcp", text=label, icon="EMPTY_ARROWS"
         ).bone = parent
@@ -1175,14 +1275,14 @@ class KINEMA_PT_tcp(KinemaPanelBase, Panel):
         elif not usable:
             layout.label(text=f"'{parent}' is not a joint bone", icon="ERROR")
         layout.operator(
-            "kinema.set_tcp", text="Move TCP to Active Bone", icon="BONE_DATA"
+            "kinema.set_tcp", text="Move Tool to Active Bone", icon="BONE_DATA"
         ).bone = ""
 
 
 class KINEMA_PT_ik(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_ik"
-    bl_parent_id = "KINEMA_PT_main"
-    bl_label = "Inverse Kinematics"
+    bl_order = ORDER_IK
+    bl_label = "Target (IK)"
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
@@ -1198,10 +1298,23 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             layout.label(text="Adds a keyframable control at the tool.", icon="BLANK1")
             return
 
-        column = layout.column(align=True)
-        column.prop(rig, "kinema_ik_enabled", toggle=True,
-                    icon="PLAY" if rig.kinema_ik_enabled else "PAUSE")
-        column.prop(rig, "kinema_solver_mode", text="")
+        def live_ik(row):
+            row.prop(rig, "kinema_ik_enabled", text="Live IK", toggle=True,
+                     icon="PLAY" if rig.kinema_ik_enabled else "PAUSE")
+
+        body = section(layout, context, "show_ik_target", "Target", "CON_KINEMATIC", live_ik)
+        if body is not None:
+            self._draw_target(body, rig)
+        self._draw_solutions(layout, context, rig)
+        self._draw_swivel(layout, context, rig)
+        body = section(layout, context, "show_ik_statistics", "IK Solver Statistics", "TIME")
+        if body is not None:
+            self._draw_readout(body, rig)
+
+    @staticmethod
+    def _draw_target(layout, rig) -> None:
+        """Which bone the target is aimed with, and the target itself: Live IK is in
+        the section's header."""
 
         # The friendly way to change the tip is the radio column in the Bones
         # list; this row shows where it landed and keys it.
@@ -1213,31 +1326,31 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         # this is the one that behaves.
         from ..solver import manager
 
-        tip = layout.column(align=True)
-        tip.use_property_split = True
-        tip.use_property_decorate = False
-        row = tip.row(align=True)
+        # The field and its key across the section's width, and where it lands
+        # on a line of its own.
+        row = layout.row(align=True)
         row.prop(rig, "kinema_ik_tip", text="Target Bone")
         row.operator("kinema.key_ik_tip", text="", icon="DECORATE_KEYFRAME")
-        tip.label(text=f"Solving to '{manager.tip_bone(rig)}'", icon="BONE_DATA")
+        layout.label(text=f"Solving to '{manager.tip_bone(rig)}'", icon="BONE_DATA")
 
-        row = layout.row(align=True)
-        row.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
-        row.operator("kinema.remove_ik", text="", icon="X")
-
-        self._draw_solutions(layout, rig)
-        self._draw_swivel(layout, rig)
-
-        layout.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
-        self._draw_readout(layout, rig)
+        column = layout.column(align=True)
+        column.operator("kinema.snap_ik", text="Snap to Tool", icon="SNAP_ON")
+        column.operator("kinema.remove_ik", text="Delete Target", icon="X")
 
     @staticmethod
-    def _draw_solutions(layout, rig) -> None:
+    def _draw_solutions(layout, context, rig) -> None:
         """Cycle among the configurations that reach this pose."""
         from ..ops import ik as ik_ops
+        from . import quick_bar
 
-        header, body = layout.panel("kinema_solutions", default_closed=True)
-        header.label(text="Configuration")
+        def auto_config(row):
+            row.prop(rig, "kinema_auto_configuration", text="Auto Config", toggle=True,
+                     icon="PLAY" if rig.kinema_auto_configuration else "PAUSE")
+
+        body = section(
+            layout, context, "show_ik_configuration", "Configuration", "ARMATURE_DATA",
+            auto_config,
+        )
         if body is None:
             return
 
@@ -1245,23 +1358,22 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
         body.operator(
             "kinema.find_solutions", text="Find Solutions", icon="VIEWZOOM"
         )
-        if not count:
+        if count:
+            stale = ik_ops.solutions_are_stale(rig)
+            current = min(int(rig.kinema_active_solution) + 1, count)
+            row = body.row(align=True)
+            row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
+            middle = row.row()
+            middle.alignment = "CENTER"
+            middle.label(text=f"Solution {current}" if stale else f"Solution {current} of {count}")
+            row.operator("kinema.apply_solution", text="", icon="TRIA_RIGHT").step = 1
+        else:
             body.label(text="An arm reaches a pose several ways.", icon="BLANK1")
-            return
-
-        row = body.row(align=True)
-        row.operator("kinema.apply_solution", text="", icon="TRIA_LEFT").step = -1
-        current = int(rig.kinema_active_solution)
-        row.label(text=f"Solution {min(current + 1, count)} of {count}")
-        row.operator("kinema.apply_solution", text="", icon="TRIA_RIGHT").step = 1
-
-        if ik_ops.solutions_are_stale(rig):
-            # They describe how to reach one pose. The target has moved, so
-            # they describe nothing -- better said than silently offered.
-            body.label(text="The target moved; search again", icon="ERROR")
+        # What the quick bar says, said here too.
+        quick_bar.draw_status(body, context, rig)
 
     @staticmethod
-    def _draw_swivel(layout, rig) -> None:
+    def _draw_swivel(layout, context, rig) -> None:
         """The elbow swivel: offered with a joint to spare, and kept once added."""
         state = _swivel_section(rig)
         if state is None:
@@ -1270,9 +1382,11 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
             # rail robot does not offer one.
             return
 
-        header, body = layout.panel("kinema_swivel", default_closed=True)
         # Flagged in the header too, so a collapsed section still says so.
-        header.label(text="Elbow Swivel", icon="ERROR" if state == "stalled" else "NONE")
+        body = section(
+            layout, context, "show_ik_swivel", "Elbow Swivel",
+            "ERROR" if state == "stalled" else "CON_ROTLIKE",
+        )
         if body is None:
             return
 
@@ -1313,8 +1427,7 @@ class KINEMA_PT_ik(KinemaPanelBase, Panel):
 
         elapsed = handlers.last_solve_ms(rig)
         solver = manager_state(rig)
-        box = layout.box()
-        info = box.column(align=True)
+        info = layout.column(align=True)
         if elapsed is not None:
             budget = _solve_budget_ms()
             icon = "CHECKMARK" if elapsed <= budget else "ERROR"
@@ -1417,12 +1530,17 @@ def _solve_budget_ms() -> float:
 
 class KINEMA_PT_status(KinemaPanelBase, Panel):
     bl_idname = "KINEMA_PT_status"
-    bl_parent_id = "KINEMA_PT_main"
+    bl_parent_id = "KINEMA_PT_kinema"
+    bl_order = 1
     bl_label = "Solver"
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
+        rig = active_rig(context)
+        if rig is not None:
+            # Which solver drives the robot shown: PyRoki, NumPy, or none.
+            layout.prop(rig, "kinema_solver_mode", text="")
         column = layout.column(align=True)
 
         if runtime.solver_available():
@@ -1443,20 +1561,22 @@ classes = (
     KINEMA_UL_bones,
     KINEMA_UL_waypoints,
     KINEMA_UL_motions,
-    KINEMA_PT_main,
+    KINEMA_PT_quick_bar,
     KINEMA_PT_joints,
+    KINEMA_PT_ik,
+    KINEMA_PT_waypoints,
+    KINEMA_PT_motions,
+    KINEMA_PT_main,
+    KINEMA_PT_bones,
+    KINEMA_PT_tcp,
+    KINEMA_PT_external_axes,
     KINEMA_PT_motion_limits,
     KINEMA_PT_motion_speed,
     KINEMA_PT_motion_acceleration,
     KINEMA_PT_motion_unchecked,
-    KINEMA_PT_bones,
-    KINEMA_PT_waypoints,
-    KINEMA_PT_motions,
-    KINEMA_PT_motion_check,
     KINEMA_PT_collision,
-    KINEMA_PT_external_axes,
-    KINEMA_PT_tcp,
-    KINEMA_PT_ik,
+    KINEMA_PT_kinema,
+    KINEMA_PT_import,
     KINEMA_PT_status,
 )
 
@@ -1594,6 +1714,16 @@ def register_props() -> None:
     )
     # Which of the found configurations is showing. An index rather than the
     # values themselves, so the arrows can cycle and the list can highlight.
+    bpy.types.Object.kinema_auto_configuration = BoolProperty(
+        name="Auto Configuration",
+        description=(
+            "While live IK tracks the target, find another configuration when the arm "
+            "can't reach it in the one it is in -- the wrist would have to flip, a joint "
+            "is at its limit -- and switch to the nearest. A target out of reach is "
+            "left as it is"
+        ),
+        default=False,
+    )
     bpy.types.Object.kinema_active_solution = IntProperty(
         name="Solution",
         description="Which of the configurations found is currently applied",
@@ -1669,6 +1799,7 @@ def unregister_props() -> None:
     del bpy.types.Object.kinema_active_bone_index
     del bpy.types.Object.kinema_meshes_at_file_origin
     del bpy.types.Object.kinema_active_solution
+    del bpy.types.Object.kinema_auto_configuration
     del bpy.types.Object.kinema_elbow_strength
     del bpy.types.PoseBone.kinema_ik_hold
     del bpy.types.Object.kinema_tcp_parent

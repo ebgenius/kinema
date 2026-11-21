@@ -71,7 +71,7 @@ def import_settings() -> dict:
             default=False,
         ),
         "create_tcp": BoolProperty(
-            name="Create TCP",
+            name="Create Tool Bone",
             description="Add a tool-centre-point marker at the end of the chain",
             default=True,
         ),
@@ -213,7 +213,7 @@ class KINEMA_OT_build_robot(Operator):
         self.report(
             {"INFO"},
             f"{result.model.name}: {len(rig.joint_bones)} joints, "
-            f"{len(rig.mesh_objects)} meshes, TCP at '{rig.tcp_link}'",
+            f"{len(rig.mesh_objects)} meshes, tool at '{rig.tcp_link}'",
         )
         context.scene.kinema.last_import = result.model.name
         return {"FINISHED"}

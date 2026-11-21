@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Auto Configuration** (#103). While live IK tracks the target, a solve that misses
+  it runs a configuration search: where it finds another configuration that reaches the
+  target, the arm switches to the nearest; where it finds none, nothing changes and the
+  quick bar says the target is out of reach. It tries 12 starting points, fewer than
+  Find Solutions' 40, so a configuration it misses can still be there to find. A rig
+  whose PyRoki solver is still to be built searches once it is. Snap to Tool, in the
+  quick bar, can be pressed only while the target is off the tool.
 - **`kinema.api`, for scripts and other add-ons** (#102). A versioned module that won't change
   under them: the rigs in a scene, their joints and limits, the tool and where it is,
   and joint values read and set; a tool pose solved for, its clearance from the
@@ -170,6 +177,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The TCP bone is the Tool bone** (#103). A robot imported now has a bone, and a bone
+  collection, called Tool, and the sidebar and messages say tool where they said TCP:
+  Edit Tool…, Create Tool, Move Tool to Active Bone. A rig saved before keeps its TCP
+  bone, which Kinema finds as before. Operator and property names are unchanged.
+- **The Kinema tab, laid out like Blender's own sidebar** (#103). A quick bar of the
+  buttons used all the time comes first -- Live IK, Configurations, Auto Config, Rest
+  Pose, Snap to Tool, Record, Generate, Motion Check and Graph Editor, chosen and ordered
+  in the preferences. Target (IK) is in sections, Target, Configuration and IK Solver
+  Statistics. Joints (FK) has Rest Pose above its sliders and Key All below them. Motions
+  has Generate, Check, Optimize and Bake to Keyframes in a box, then Graph Editor, and
+  what the Motion Check found, which no longer has a panel of its own. Joints,
+  Target (IK), Waypoints and Motions are panels of their own, to drag,
+  collapse and pin; what is set once for the robot sits under Robot Settings, and what is
+  Kinema's -- importing, and the solver -- under Kinema Settings, last. The Bones,
+  Waypoints and Motions lists show every row, so the mouse wheel over one scrolls the
+  sidebar instead of stopping on it.
 - **Waypoints are poses; motions are the moves between them**
   ([#96](https://github.com/ebgenius/kinema/issues/96)). A motion, in the new Motions list,
   goes from one waypoint to another, Joint or Linear, with its own start and end frame, as

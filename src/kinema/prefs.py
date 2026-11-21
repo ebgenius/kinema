@@ -13,6 +13,7 @@ from bpy.props import (
 from bpy.types import AddonPreferences, PropertyGroup, UIList
 
 from . import runtime
+from .ui import quick_bar
 
 
 class KinemaSearchPath(PropertyGroup):
@@ -205,6 +206,15 @@ class KinemaPreferences(AddonPreferences):
         default=True,
     )
 
+    #: The quick bar's buttons, in order, as keys of ui/quick_bar.BUTTONS joined
+    #: by commas. Edited with the operators below, not typed.
+    quick_buttons: StringProperty(
+        name="Quick Bar",
+        description="The buttons above the Kinema tab's panels, in order",
+        default=",".join(quick_bar.DEFAULT),
+        options={"HIDDEN"},
+    )
+
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
 
@@ -223,6 +233,9 @@ class KinemaPreferences(AddonPreferences):
         )
 
         layout.separator()
+        layout.separator()
+        self._draw_quick_bar(layout)
+
         layout.separator()
         header = layout.row()
         header.label(text="Graph Editor", icon="GRAPH")
@@ -270,6 +283,131 @@ class KinemaPreferences(AddonPreferences):
             text="For a cell whose macros live in a different repository from its robots.",
             icon="BLANK1",
         )
+
+
+    def _draw_quick_bar(self, layout) -> None:
+        """The quick bar's buttons, to put in order, take out and add to."""
+        header = layout.row()
+        header.label(text="Quick Bar", icon="TOOL_SETTINGS")
+        header.operator("kinema.quick_button_reset", text="Reset", icon="LOOP_BACK")
+        box = layout.box()
+        keys = quick_button_keys(self)
+        if not keys:
+            box.label(text="No buttons: the quick bar shows only the robot's name.")
+        for index, key in enumerate(keys):
+            button = quick_bar.BUTTONS[key]
+            row = box.row(align=True)
+            row.label(text=button.label, icon=button.icon)
+            if index == 0 and len(keys) % 2:
+                row.label(text="Spans the bar")
+            up = row.row(align=True)
+            up.enabled = index > 0
+            move = up.operator("kinema.quick_button_move", text="", icon="TRIA_UP")
+            move.index, move.step = index, -1
+            down = row.row(align=True)
+            down.enabled = index < len(keys) - 1
+            move = down.operator("kinema.quick_button_move", text="", icon="TRIA_DOWN")
+            move.index, move.step = index, 1
+            row.operator("kinema.quick_button_remove", text="", icon="X").index = index
+        missing = [key for key in quick_bar.BUTTONS if key not in keys]
+        if missing:
+            box.operator_menu_enum(
+                "kinema.quick_button_add", "button", text="Add Button", icon="ADD"
+            )
+
+
+def quick_button_keys(preferences=None) -> list[str]:
+    """The quick bar's buttons, in order: those the preferences name that Kinema
+    knows, or the defaults where there are no preferences to read."""
+    preferences = preferences if preferences is not None else get_prefs()
+    if preferences is None:
+        return list(quick_bar.DEFAULT)
+    keys = [key for key in preferences.quick_buttons.split(",") if key in quick_bar.BUTTONS]
+    return list(dict.fromkeys(keys))
+
+
+def _set_quick_buttons(context, keys) -> None:
+    get_prefs(context).quick_buttons = ",".join(keys)
+    context.preferences.is_dirty = True
+
+
+class KINEMA_OT_quick_button_move(bpy.types.Operator):
+    bl_idname = "kinema.quick_button_move"
+    bl_label = "Move Quick Bar Button"
+    bl_description = "Move this button up or down the quick bar"
+    bl_options = {"INTERNAL"}
+
+    index: IntProperty(options={"SKIP_SAVE"})
+    step: IntProperty(default=1, options={"SKIP_SAVE"})
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        keys = quick_button_keys(get_prefs(context))
+        to = self.index + self.step
+        if not (0 <= self.index < len(keys) and 0 <= to < len(keys)):
+            return {"CANCELLED"}
+        keys[self.index], keys[to] = keys[to], keys[self.index]
+        _set_quick_buttons(context, keys)
+        return {"FINISHED"}
+
+
+class KINEMA_OT_quick_button_remove(bpy.types.Operator):
+    bl_idname = "kinema.quick_button_remove"
+    bl_label = "Remove Quick Bar Button"
+    bl_description = "Take this button off the quick bar. Its panel keeps it"
+    bl_options = {"INTERNAL"}
+
+    index: IntProperty(options={"SKIP_SAVE"})
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        keys = quick_button_keys(get_prefs(context))
+        if not 0 <= self.index < len(keys):
+            return {"CANCELLED"}
+        del keys[self.index]
+        _set_quick_buttons(context, keys)
+        return {"FINISHED"}
+
+
+#: The Add Button menu's items, kept referenced: Blender reads a dynamic enum's
+#: strings after its callback has returned.
+_MISSING_ITEMS: list = []
+
+
+def _missing_buttons(_self, context) -> list:
+    """The buttons not on the quick bar yet, for the Add Button menu."""
+    keys = quick_button_keys(get_prefs(context))
+    _MISSING_ITEMS[:] = [
+        (key, button.label, button.description, button.icon, index)
+        for index, (key, button) in enumerate(quick_bar.BUTTONS.items())
+        if key not in keys
+    ]
+    return _MISSING_ITEMS
+
+
+class KINEMA_OT_quick_button_add(bpy.types.Operator):
+    bl_idname = "kinema.quick_button_add"
+    bl_label = "Add Quick Bar Button"
+    bl_description = "Put a button at the end of the quick bar"
+    bl_options = {"INTERNAL"}
+
+    button: EnumProperty(name="Button", items=_missing_buttons)
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        keys = quick_button_keys(get_prefs(context))
+        if self.button in keys or self.button not in quick_bar.BUTTONS:
+            return {"CANCELLED"}
+        _set_quick_buttons(context, [*keys, self.button])
+        return {"FINISHED"}
+
+
+class KINEMA_OT_quick_button_reset(bpy.types.Operator):
+    bl_idname = "kinema.quick_button_reset"
+    bl_label = "Reset Quick Bar"
+    bl_description = "Put the quick bar's buttons back to Kinema's defaults"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        _set_quick_buttons(context, quick_bar.DEFAULT)
+        return {"FINISHED"}
 
 
 #: The Graph Editor preferences, in the order they are drawn, and the ones
@@ -354,4 +492,8 @@ classes = (
     KINEMA_OT_check_dependencies,
     KINEMA_OT_clear_compile_cache,
     KINEMA_OT_reset_graph_preferences,
+    KINEMA_OT_quick_button_move,
+    KINEMA_OT_quick_button_remove,
+    KINEMA_OT_quick_button_add,
+    KINEMA_OT_quick_button_reset,
 )

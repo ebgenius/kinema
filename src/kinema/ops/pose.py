@@ -341,7 +341,7 @@ def _deltas_are_clear(obj) -> bool:
 
 class KINEMA_OT_set_tcp(KinemaRigOperator):
     bl_idname = "kinema.set_tcp"
-    bl_label = "Set TCP"
+    bl_label = "Set Tool"
     bl_description = (
         "Place the tool-centre-point marker on a joint bone, offset by the rig's tool "
         "offset from that joint's mounting flange -- or its link frame where it has none"
@@ -349,7 +349,7 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
 
     bone: StringProperty(
         name="Bone",
-        description="Joint bone to place the TCP on. Empty uses the active bone",
+        description="Joint bone to place the tool bone on. Empty uses the active bone",
         default="",
         options={"SKIP_SAVE"},
     )
@@ -433,7 +433,10 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
                 self.report({"ERROR"}, f"'{source.name}' vanished from the armature")
                 return {"CANCELLED"}
 
-            tcp = edit_bones.get(builder.TCP_BONE) or edit_bones.new(builder.TCP_BONE)
+            # The rig's own tool bone, under the name it has: TCP on a rig from
+            # before 0.7, rather than a second bone beside it.
+            name = builder.tool_bone_name(rig)
+            tcp = edit_bones.get(name) or edit_bones.new(name)
             # The same three lines the importer uses, against the same frame --
             # which is what makes re-setting the TCP land where it started
             # rather than rolling it onto the bone's own axes.
@@ -447,7 +450,7 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
             bpy.ops.object.mode_set(mode="OBJECT")
 
         self._finish_tcp(rig, source)
-        self.report({"INFO"}, f"TCP placed on '{source.name}'")
+        self.report({"INFO"}, f"Tool bone placed on '{source.name}'")
         return {"FINISHED"}
 
     @staticmethod
@@ -500,7 +503,8 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
 
     @staticmethod
     def _finish_tcp(rig, source) -> None:
-        rig[builder.PROP_TCP_BONE] = builder.TCP_BONE
+        name = builder.tool_bone_name(rig)
+        rig[builder.PROP_TCP_BONE] = name
         # The URDF link, not the bone name -- the panel labels this "Link:", and
         # the importer writes a link here, so writing a bone name made the two
         # disagree depending on how the TCP had last been placed. The mounting
@@ -513,15 +517,12 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
         rig.kinema_tcp_parent = source.name
 
         armature = rig.data
-        tcp_collection = next(
-            (c for c in armature.collections_all if c.name == builder.COLLECTION_TCP),
-            None,
-        )
-        bone = armature.bones.get(builder.TCP_BONE)
+        tcp_collection = builder.tool_collection(armature)
+        bone = armature.bones.get(name)
         if tcp_collection is not None and bone is not None:
             tcp_collection.assign(bone)
 
-        pose_bone = rig.pose.bones.get(builder.TCP_BONE)
+        pose_bone = rig.pose.bones.get(name)
         if pose_bone is not None:
             from ..rig import widgets
 
@@ -549,7 +550,7 @@ class KINEMA_OT_set_tcp(KinemaRigOperator):
 def aims_at_tcp(rig) -> bool:
     """Whether ``rig`` has an IK target whose solver aims at the TCP."""
     ik_name = rig.get(builder.PROP_IK_BONE)
-    tcp = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    tcp = builder.tool_bone_name(rig)
     return bool(ik_name) and ik_name in rig.pose.bones and manager.tip_bone(rig) == tcp
 
 
@@ -578,12 +579,12 @@ class KINEMA_OT_reset_tcp_offset(KinemaRigOperator):
     bl_idname = "kinema.reset_tcp_offset"
     bl_label = "Reset Tool Offset"
     bl_description = (
-        "Zero the tool offset, putting the TCP exactly on the selected joint's "
+        "Zero the tool offset, putting the tool bone exactly on the selected joint's "
         "mounting flange -- or its link frame where it has none"
     )
 
     apply: BoolProperty(
-        name="Re-place the TCP",
+        name="Re-place the Tool Bone",
         description="Move the marker straight away, rather than only clearing the fields",
         default=True,
         options={"SKIP_SAVE"},

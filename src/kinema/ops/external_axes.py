@@ -463,9 +463,9 @@ def placement(rig, spec: ext.AxisSpec) -> tuple[str, np.ndarray, np.ndarray]:
         raise ValueError("This rig has no Root bone")
     shift = np.eye(4)
     if spec.mount == "AFTER":
-        tcp = bones.get(rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE)
+        tcp = bones.get(builder.tool_bone_name(rig))
         if tcp is None or tcp.parent is None:
-            raise ValueError("An axis on the tool needs a TCP; create one first")
+            raise ValueError("An axis on the tool needs a tool bone; create one first")
         parent_name = tcp.parent.name
         reference = _np4(tcp.matrix_local @ builder.BONE_TO_TOOL)
     elif spec.mount == "BEFORE":
@@ -514,7 +514,7 @@ def add_axis(rig, spec: ext.AxisSpec) -> str:
     link = _unique_link_name(rig, f"{name}_link")
     length = _bone_length(rig)
     base = robot_base(rig)
-    tcp_name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    tcp_name = builder.tool_bone_name(rig)
     head, y_direction, z_reference = ext.bone_placement(frame, spec.axis)
 
     # Everything that reads Bone data is read here: none of it is live in Edit mode.
@@ -659,7 +659,7 @@ def remove_axis(rig, name: str) -> None:
         for obj in on_bone if obj not in attached
     ]
 
-    tcp_name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    tcp_name = builder.tool_bone_name(rig)
     tcp = bones.get(tcp_name)
     tcp_rides = mount == "AFTER" and tcp is not None and tcp.parent is not None \
         and tcp.parent.name == name
@@ -743,7 +743,7 @@ MOUNT_ITEMS = [
      "there, placed from the bottom of the robot as it stands now"),
     ("AFTER", MOUNT_LABELS["AFTER"],
      "It rides the tool: a spindle or a slide. Placed from the tool frame, and the "
-     "TCP moves onto it"),
+     "tool bone moves onto it"),
     ("EXTERNAL", MOUNT_LABELS["EXTERNAL"],
      "It stands on its own beside the robot, like a positioner. Placed from the "
      "robot's base; attach the workpiece to it in the Bones panel"),
@@ -936,7 +936,7 @@ class KINEMA_OT_add_external_axis(Operator):
         name="Location", size=3, subtype="TRANSLATION", unit="LENGTH", update=_refresh_preview,
         description=(
             "Where what it carries sits on its moving part: the current robot base, "
-            "or the TCP. Anything but zero moves it there"
+            "or the tool bone. Anything but zero moves it there"
         ),
     )
     offset_rotation: FloatVectorProperty(
@@ -1026,7 +1026,7 @@ class KINEMA_OT_add_external_axis(Operator):
             box = layout.box()
             box.label(
                 text="External axis offset: calculated from the current "
-                + ("TCP" if on_tool else "robot base"),
+                + ("tool bone" if on_tool else "robot base"),
                 icon="ORIENTATION_PARENT",
             )
             column = box.column(align=True)
@@ -1082,7 +1082,7 @@ class KINEMA_OT_add_external_axis(Operator):
 
 
 class KINEMA_OT_remove_external_axis(Operator):
-    """Remove an external axis, putting back the robot, the TCP and the waypoints"""
+    """Remove an external axis, putting back the robot, the tool bone and the waypoints"""
 
     bl_idname = "kinema.remove_external_axis"
     bl_label = "Remove External Axis"

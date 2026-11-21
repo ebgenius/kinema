@@ -19,7 +19,7 @@ from bpy.types import Operator
 
 from .. import handlers
 from ..rig import builder, widgets
-from ..solver import chain, manager
+from ..solver import branches, chain, manager
 from ..ui.panel import active_rig
 from . import strips
 from .outcome import Outcome, reported
@@ -59,9 +59,9 @@ class KINEMA_OT_add_ik(KinemaRigOperator):
 def add_ik_target(context, rig) -> Outcome:
     """A keyframable IK control at ``rig``'s tool centre point, with live IK on:
     what Add IK Target does."""
-    tcp_bone = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    tcp_bone = builder.tool_bone_name(rig)
     if tcp_bone not in rig.data.bones:
-        return Outcome(False, "ERROR", "This rig has no TCP; create one first")
+        return Outcome(False, "ERROR", "This rig has no tool bone; create one first")
 
     ik_name = _ik_bone_name(tcp_bone)
     previous_active = context.view_layer.objects.active
@@ -214,6 +214,177 @@ class KINEMA_OT_snap_ik(KinemaRigOperator):
         return {"FINISHED"}
 
 
+#: How far the IK target may be from the tool, in metres and radians, and stand
+#: on it: what the solvers call a solve done (POSITION_TOLERANCE x 10).
+ON_TOOL_POSITION = 1e-3
+ON_TOOL_ROTATION = 1e-3
+
+
+def goal_off_tool(rig) -> bool:
+    """Whether ``rig``'s IK target has been left off the bone it aims with: dragged
+    out of reach, or the tool posed by hand while live IK was off. False with no
+    IK target, where there is nothing to snap."""
+    ik_name, tip = rig.get(builder.PROP_IK_BONE), manager.tip_bone(rig)
+    bones = rig.pose.bones
+    if not ik_name or ik_name not in bones or tip not in bones:
+        return False
+    goal, tool = _np4(bones[ik_name].matrix), _np4(bones[tip].matrix)
+    if float(np.linalg.norm(goal[:3, 3] - tool[:3, 3])) > ON_TOOL_POSITION:
+        return True
+    return _turn_between(goal, tool) > ON_TOOL_ROTATION
+
+
+def _turn_between(a: np.ndarray, b: np.ndarray) -> float:
+    """The angle, in radians, between two pose matrices' rotations.
+
+    Turned only: a Root scaled by 2 scales both, and a trace of 4 (1 + 2 cos)
+    past 3 would read as no turn at all, so each column is made unit first.
+    """
+    a_turn = a[:3, :3] / np.linalg.norm(a[:3, :3], axis=0)
+    b_turn = b[:3, :3] / np.linalg.norm(b[:3, :3], axis=0)
+    turn = (float(np.trace(a_turn.T @ b_turn)) - 1.0) / 2.0
+    return float(np.arccos(np.clip(turn, -1.0, 1.0)))
+
+
+#: Auto Configuration's search. Fewer seeds than Find Solutions' 40, since it runs
+#: in the middle of a drag: on arm6, on PyRoki, 8 seeds took 87 ms and found two to
+#: four configurations, 16 took 194 ms.
+AUTO_SEEDS = 12
+#: How far the target moves, and how long goes by, before a search that found
+#: nothing is tried again: out of reach, each drag update would otherwise search.
+AUTO_MOVE = 0.01
+AUTO_TURN = np.radians(5.0)
+AUTO_INTERVAL = 0.5
+#: rig name -> (the goal last searched for and found nothing at, when).
+_auto_searched: dict[str, tuple[np.ndarray, float]] = {}
+#: Rigs Auto Configuration has switched to another configuration since a
+#: waypoint was last recorded on them: a linear move from that waypoint can't
+#: cross the switch, so the quick bar says so until the next is recorded.
+_auto_switched: set[str] = set()
+#: rig name -> the timer running a search the interval put off, once it is up.
+_auto_retry: dict[str, object] = {}
+
+
+def forget_auto_search(rig_name: str | None = None) -> None:
+    """Search again on the next miss: tracking was regained, or a file opened."""
+    if rig_name is None:
+        _auto_searched.clear()
+        _auto_switched.clear()
+        # Their timers went with the file: Blender drops a timer that isn't persistent.
+        _auto_retry.clear()
+    else:
+        _auto_searched.pop(rig_name, None)
+
+
+def auto_found_nothing(rig) -> bool:
+    """Whether Auto Configuration's last search, for where the target is or near it,
+    found no configuration that reaches it: the target is out of reach."""
+    return rig.name in _auto_searched
+
+
+def switched_since_recorded(rig) -> bool:
+    """Whether Auto Configuration has switched ``rig``'s configuration since a
+    waypoint was last recorded on it."""
+    return rig.name in _auto_switched
+
+
+def forget_switch(rig_name: str) -> None:
+    """A waypoint was recorded: taught in the configuration the arm is in now."""
+    _auto_switched.discard(rig_name)
+
+
+def _moved_on(last: np.ndarray, goal: np.ndarray) -> bool:
+    if float(np.linalg.norm(goal[:3, 3] - last[:3, 3])) > AUTO_MOVE:
+        return True
+    return _turn_between(last, goal) > AUTO_TURN
+
+
+def _search_later(rig_name: str, delay: float) -> None:
+    """Solve ``rig_name`` live once more after ``delay`` seconds, which searches if
+    it still misses. One timer per rig: a drag asks on every update."""
+    if rig_name in _auto_retry:
+        return
+
+    def retry():
+        _auto_retry.pop(rig_name, None)
+        rig = bpy.data.objects.get(rig_name)
+        if (
+            not _playing_or_rendering()
+            and rig is not None
+            and builder.is_kinema_rig(rig)
+            and getattr(rig, "kinema_ik_enabled", False)
+            and getattr(rig, "kinema_auto_configuration", False)
+        ):
+            handlers.solve_rig(rig, force=True, live=True)
+        return None
+
+    _auto_retry[rig_name] = retry
+    bpy.app.timers.register(retry, first_interval=max(0.0, delay))
+
+
+def _playing_or_rendering() -> bool:
+    """Whether frames are playing in any window, or a render is running: Auto
+    Configuration is for a drag, and a timer can fire in either."""
+    if bpy.app.is_job_running("RENDER"):
+        return True
+    wm = bpy.context.window_manager
+    windows = wm.windows if wm is not None else ()
+    return any(window.screen and window.screen.is_animation_playing for window in windows)
+
+
+def _would_compile(rig, solver) -> bool:
+    """Whether a search now would build PyRoki for a rig whose live solves put the
+    build off (``manager.defer``): a JAX compile in the middle of a drag, the pause
+    deferring is there to spare. Searched once it is built."""
+    mode = getattr(rig, "kinema_solver_mode", manager.MODE_PYROKI)
+    if mode not in (manager.MODE_PYROKI, manager.MODE_OFF):
+        return False
+    return manager.deferred(rig.name) and solver.pyroki(rig, build=False) is None
+
+
+def reconfigure(rig, solver) -> bool:
+    """After a live solve that missed: find the configurations that reach the goal,
+    and stand the arm in the one nearest where it is. Returns whether it did.
+
+    A miss is either the goal out of reach, where no configuration reaches it and
+    nothing changes, or the arm unable to get there from the configuration it is
+    in -- the wrist would have to flip, a joint is at its limit -- where another
+    configuration reaches it. Searching tells the two apart. One that found nothing
+    is not tried again until the goal has moved on, and then no sooner than half a
+    second after it: out of reach, every drag update would search.
+    """
+    import time
+
+    if _would_compile(rig, solver):
+        return False
+    goal = _np4(rig.pose.bones[solver.ik_bone].matrix)
+    last = _auto_searched.get(rig.name)
+    now = time.perf_counter()
+    if last is not None and not _moved_on(last[0], goal):
+        return False
+    if last is not None and now - last[1] < AUTO_INTERVAL:
+        # Moved on, but too soon after the last search. Searched once the interval
+        # is up, so a target let go of here is still searched for: nothing else
+        # would solve again until it moved.
+        _search_later(rig.name, AUTO_INTERVAL - (now - last[1]))
+        return False
+    found = manager.find_solutions(rig, solver, seeds=AUTO_SEEDS)
+    if not found:
+        _auto_searched[rig.name] = (goal, now)
+        return False
+    forget_auto_search(rig.name)
+    current = chain.read_configuration(rig, solver.chain)
+    held = manager.held_mask(rig, solver.chain)
+    index = branches.nearest([s.q for s in found], current, held)
+    chain.write_configuration(rig, solver.chain, np.asarray(found[index].q), skip=held)
+    # The configurations found, as Find Solutions keeps them: the arrows step
+    # among them, and the quick bar says which this is.
+    _store_solutions(rig, solver, found)
+    rig.kinema_active_solution = index
+    _auto_switched.add(rig.name)
+    return True
+
+
 class KINEMA_OT_set_ik_tip(KinemaRigOperator):
     bl_idname = "kinema.set_ik_tip"
     bl_label = "Set IK Target Bone"
@@ -314,7 +485,8 @@ class KINEMA_OT_find_solutions(KinemaRigOperator):
     bl_label = "Find Solutions"
     bl_description = (
         "Search for other arm configurations that reach the same tool pose, "
-        "so you can pick the one that reads best on camera"
+        "so you can pick the one that reads best on camera. The robot stays where "
+        "it stands"
     )
 
     seeds: IntProperty(
@@ -327,52 +499,67 @@ class KINEMA_OT_find_solutions(KinemaRigOperator):
     )
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        rig = active_rig(context)
-        ik_name = rig.get(builder.PROP_IK_BONE)
-        if not ik_name or ik_name not in rig.pose.bones:
-            self.report({"ERROR"}, "This rig has no IK target to search around")
-            return {"CANCELLED"}
+        return reported(self, search_solutions(context, active_rig(context), self.seeds))
 
-        solver = manager.get_solver(rig, ik_name)
-        if solver is None:
-            self.report({"ERROR"}, "Could not prepare a solver for this rig")
-            return {"CANCELLED"}
 
+def search_solutions(context, rig, seeds: int = 0) -> Outcome:
+    """Find the configurations that reach ``rig``'s goal, leaving the arm as it
+    stands, and select the one it stands in: what Find Solutions does."""
+    ik_name = rig.get(builder.PROP_IK_BONE)
+    if not ik_name or ik_name not in rig.pose.bones:
+        return Outcome(False, "ERROR", "This rig has no IK target to search around")
+
+    solver = manager.get_solver(rig, ik_name)
+    if solver is None:
+        return Outcome(False, "ERROR", "Could not prepare a solver for this rig")
+
+    # Live IK held off from the arm being read to its being put back, as a bake
+    # holds it off: the search runs many solves, which the handler would
+    # interleave with its own, and an update in between could solve a goal moved
+    # before the search and move the arm it is to leave where it stands.
+    with handlers.suspended():
         context.view_layer.update()
         before = chain.read_configuration(rig, solver.chain)
-        context.window.cursor_set("WAIT")
-        # Suspended for the same reason baking suspends: the search writes
-        # nothing, but it runs many solves and the live handler would interleave
-        # its own with them.
+        window = getattr(context, "window", None)
+        if window is not None:
+            window.cursor_set("WAIT")
         try:
-            with handlers.suspended():
-                found = manager.find_solutions(rig, solver, seeds=self.seeds)
+            found = manager.find_solutions(rig, solver, seeds=seeds)
         finally:
-            context.window.cursor_set("DEFAULT")
+            if window is not None:
+                window.cursor_set("DEFAULT")
 
         _store_solutions(rig, solver, found)
+        if found:
+            # The one the arm stands in: searching again is not a way to be moved
+            # on to another, and the arrows step from where the arm is.
+            rig.kinema_active_solution = branches.nearest(
+                [s.q for s in found], before, manager.held_mask(rig, solver.chain)
+            )
         # Put the arm back: searching is not a way to lose the pose you had.
         chain.write_configuration(rig, solver.chain, before)
         context.view_layer.update()
 
-        if not found:
-            self.report(
-                {"WARNING"},
-                "No configuration reached that pose. It may be out of reach",
-            )
-            return {"CANCELLED"}
-        self.report(
-            {"INFO"},
-            f"Found {len(found)} configuration{'s' if len(found) != 1 else ''} "
-            f"(from {self.seeds or 40} seeds; more seeds may find more)",
+    if not found:
+        return Outcome(
+            False, "WARNING", "No configuration reached that pose. It may be out of reach"
         )
-        return {"FINISHED"}
+    return Outcome(
+        True,
+        "INFO",
+        f"Found {len(found)} configuration{'s' if len(found) != 1 else ''} "
+        f"(from {seeds or 40} seeds; more seeds may find more)",
+    )
 
 
 class KINEMA_OT_apply_solution(KinemaRigOperator):
     bl_idname = "kinema.apply_solution"
     bl_label = "Apply Solution"
-    bl_description = "Pose the robot in this configuration"
+    bl_description = (
+        "Pose the robot in the next or previous configuration. Where the target "
+        "has moved since they were found, they are found again first, from where "
+        "the arm stands"
+    )
 
     #: Index into the stored solutions. -1 steps by ``step`` instead.
     index: IntProperty(name="Index", default=-1, options={"SKIP_SAVE"})
@@ -380,6 +567,12 @@ class KINEMA_OT_apply_solution(KinemaRigOperator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         rig = active_rig(context)
+        if self.index < 0 and (not solution_count(rig) or solutions_are_stale(rig)):
+            # Found for a goal since moved, or not yet: found again for this one,
+            # from where the arm stands, and the step taken from there.
+            searched = search_solutions(context, rig)
+            if not searched.done:
+                return reported(self, searched)
         stored = _read_solutions(rig)
         if not stored:
             self.report({"ERROR"}, "No solutions found yet")
@@ -1338,8 +1531,23 @@ def _iter_fcurve_containers(action, slot_handle=None):
         yield legacy
 
 
+class KINEMA_OT_dismiss_config_change(KinemaRigOperator):
+    bl_idname = "kinema.dismiss_config_change"
+    bl_label = "Dismiss"
+    bl_description = (
+        "Seen: stop warning that Auto Config changed the configuration. A linear "
+        "move from the last waypoint still can't cross the change"
+    )
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        forget_switch(active_rig(context).name)
+        return {"FINISHED"}
+
+
 classes = (
     KINEMA_OT_add_ik,
+    KINEMA_OT_dismiss_config_change,
     KINEMA_OT_remove_ik,
     KINEMA_OT_snap_ik,
     KINEMA_OT_set_ik_tip,

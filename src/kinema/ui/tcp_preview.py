@@ -61,7 +61,7 @@ def shapes(new_frame, current_frame, link_frame, length: float) -> tuple[np.ndar
 
 def _current_tool(rig) -> np.ndarray | None:
     """The TCP's tool frame where it stands now, in armature space."""
-    tcp = rig.pose.bones.get(rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE)
+    tcp = rig.pose.bones.get(builder.tool_bone_name(rig))
     if tcp is None:
         return None
     return _np4(tcp.matrix @ builder.BONE_TO_TOOL)

@@ -183,7 +183,7 @@ def prepare(context, rig) -> Job:
 
     samples = wp.play_job(context, rig, plan)
     if samples is None:
-        raise Refused("This rig has no TCP to aim the tool by")
+        raise Refused("This rig has no tool bone to aim by")
     placement = wp.place_job(context, rig, plan)
     problem, free = assemble(
         rig, plan, samples, solver, pyroki, 1.0 / wp.scene_fps(context.scene), placement
@@ -304,7 +304,7 @@ def _model(rig):
     """
     solver = manager.build_solver(rig, wp.ik_bone_name(rig), wp._tool_bone(rig))
     if solver is None or solver.link_target is None:
-        raise Refused("This rig has no chain from its base to its TCP to optimize")
+        raise Refused("This rig has no chain from its base to its tool bone to optimize")
     pyroki = solver.pyroki(rig)
     if pyroki is None:
         reason = solver.pyroki_error or "the PyRoki solver isn't available"
@@ -696,7 +696,7 @@ class KINEMA_OT_optimize_motion(Operator):
     bl_description = (
         "Solve the generated job again as one smooth motion within every joint's "
         "range, speed and acceleration limits, keeping the waypoints and the lines. "
-        "Keys every free joint, on the chain to the TCP and not held, on every frame"
+        "Keys every free joint, on the chain to the tool bone and not held, on every frame"
     )
     bl_options = {"REGISTER", "UNDO"}
 

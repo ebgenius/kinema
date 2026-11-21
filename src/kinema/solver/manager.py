@@ -122,7 +122,7 @@ class RigSolver:
 
     def _build_pyroki(self, rig) -> pyroki_backend.PyrokiSolver:
         if self.link_target is None:
-            raise SolverError("this rig has no URDF link recorded for its TCP")
+            raise SolverError("this rig has no URDF link recorded for its tool bone")
         urdf = _load_source_urdf(rig)
         if urdf is None:
             raise SolverError("the robot description for this rig is not available")
@@ -405,7 +405,7 @@ def tip_bone_for(rig, index: int) -> str:
         joints = builder.joint_bones(rig)
         if index < len(joints):
             return joints[index].name
-    return rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    return builder.tool_bone_name(rig)
 
 
 def tip_bone(rig) -> str:

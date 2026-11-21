@@ -336,7 +336,7 @@ def tools(rig) -> list[Tool]:
     from .rig import builder
 
     rig = _rig(rig)
-    name = rig.get(builder.PROP_TCP_BONE) or builder.TCP_BONE
+    name = builder.tool_bone_name(rig)
     if name not in rig.pose.bones:
         return []
     bone = rig.pose.bones[name]

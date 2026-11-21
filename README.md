@@ -28,9 +28,9 @@ Concretely, that means:
 - **One armature.** Not armatures nested inside armatures.
 - **One 1-DoF bone per joint**, with the bone's local Y aligned to the URDF joint axis, so
   every joint is a true single-axis control with real limits.
-- **Bone collections** (`Kinema/FK`, `Kinema/IK`, `Kinema/TCP`, `Kinema/Mechanism`) so an
+- **Bone collections** (`Kinema/FK`, `Kinema/IK`, `Kinema/Tool`, `Kinema/Mechanism`) so an
   animator sees controls, not machinery.
-- **IK that behaves like a normal Blender IK control** — keyframe the TCP and move on —
+- **IK that behaves like a normal Blender IK control** — keyframe the tool and move on —
   but is solved by [PyRoki] rather than Blender's built-in solver.
 - **A bake step**, so the finished .blend renders anywhere, with or without Kinema.
 
@@ -40,9 +40,46 @@ Concretely, that means:
 [blender-urdf]: https://github.com/kralf/blender-urdf
 [PyRoki]: https://github.com/chungmin99/pyroki
 
+## The Kinema tab
+
+Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
+
+- **The quick bar**, first, names the robot shown in its header and holds the buttons used
+  all the time: **Live IK** (or **Add IK Target**, where there is none); **Configurations**
+  (Find, then stepping through the arm's other ways to the pose) beside **Auto Config**;
+  **Rest Pose** beside **Snap to Tool**, which is greyed out while the IK target is on the
+  tool and pressable once it is left off it; **Record** (a waypoint) beside **Generate**;
+  and **Motion Check** beside **Graph Editor**. Which buttons, and their order, is yours to
+  choose in the add-on's preferences, under **Quick Bar**: move them up or down, remove
+  them, add others (Key All, Optimize, Bake IK), or Reset. Two sit to a row; with an odd number,
+  the first spans the bar. Under them, the bar says what most needs knowing and what to do
+  about it: that the robot shown isn't the one selected, that Live IK is paused, that the
+  tool can't reach the target (and what to try), that the target is out of reach (once
+  Auto Config has searched and found no configuration that reaches it), that Auto Config
+  changed the configuration -- kept until the next waypoint is recorded, since a linear
+  move from the last one can't cross the change, or dismissed with its x -- or that it is
+  following the target. It
+  is always one line, so the panels under it stay put. With no robot, the quick
+  bar offers to import one.
+- **Joints (FK)**, **Target (IK)**, **Waypoints** and **Motions**, the panels used most,
+  each on its own: drag one by its grip to put it elsewhere, collapse it, or Shift-click its
+  header to pin it on every tab, as Blender's own sidebar panels go. Joints has **Rest
+  Pose** above its sliders and **Key All** below them. Motions has the job's buttons in a
+  box, in the order they are pressed -- **Generate Motion**, **Check Motion**, **Optimize
+  Motion** and **Bake to Keyframes** -- then **Graph Editor**, and under them what the
+  last Motion Check found. It is there before any waypoint is recorded, for Bake and
+  Graph Editor.
+- **Robot Settings** holds what is set once for the robot shown: Reset Meshes and Meshes
+  at File Origin, and as subpanels **Bones**, **Tool Centre Point**, **External Axes**,
+  **Motion Limits** and **Collision**. Its header names the robot.
+- **Kinema Settings**, last, holds what is Kinema's rather than a robot's: **Import** (with
+  Find a Robot and Import Options), to bring in another robot, and **Solver**: which
+  solver drives the robot shown, PyRoki or NumPy, and whether PyRoki is there, with
+  Re-check.
+
 ## Dressing a rig, and where IK aims
 
-The sidebar's **Bones** list is one row per bone, and it answers the two questions that come
+The **Bones** list, under Robot Settings, is one row per bone, and it answers the two questions that come
 up as soon as a robot is imported.
 
 **Hang something off a bone.** Pick an object or a collection in a row and a linked copy
@@ -77,7 +114,7 @@ flange instead and the chain is the seven arm joints it should be. Switching sna
 control onto the new target, so the arm does not jump.
 
 The choice is keyframable, so a shot can hand the goal from the wrist to the elbow part-way
-through. **Key Target Bone**, beside the field in the IK panel, is the way to key it: the
+through. **Key Target Bone**, beside the field in the Target (IK) panel, is the way to key it: the
 target is an index rather than a quantity, and those keys have to *step* between values.
 Interpolated, a hand-off from the tool point to joint 3 would pass through joints 1 and 2 on
 the frames in between and solve two chains nobody asked for. Baking follows a keyed target
@@ -226,7 +263,8 @@ at each waypoint. Easing them is up to you:
 - **Bezier handles across a corner** of three waypoints bow the path through it. That is the
   blend radius a real controller would apply.
 
-**Graph Editor**, in Joints (FK), takes one click to open those curves:
+**Graph Editor**, in the quick bar and the Motions panel, takes one click to open those
+curves:
 - **Where.** A Graph Editor already in the window is reused. Otherwise the bottom third of
   the 3D viewport becomes one, and the Timeline stays. Or, as the preferences say, it opens
   in a window of its own.
@@ -273,7 +311,7 @@ Everything else may change. Within each joint's range, top speed and acceleratio
 clear of the obstacles (see [Checking for collisions](#checking-for-collisions)), it takes the
 smoothest path it can. Then it keys every free joint on every frame with live IK
 off, so the job plays as it was solved, and checks it again. A free joint is one on the
-chain to the TCP that isn't held.
+chain to the tool bone that isn't held.
 - On a KR10 R1100-2 with its own `joint_limits.yaml`, a four-waypoint job with joint 2 at three
   times its acceleration limit came back within every limit, solved in 0.2 s once compiled.
 - On a KR210 with moves of 100-150 frames at 24 fps, joint 3 was at 7.3 times its
@@ -293,11 +331,11 @@ is never retimed.
   Motion again first. Generate Motion afterwards replaces it.
 - Acceleration limits come from a `joint_limits.yaml` (Load Joint Limits). Without them, it
   keeps to the speeds and ranges.
-- From the panel it runs while Blender stays live, and Esc abandons it, writing nothing. If the
-  waypoints or the robot change before it finishes, it writes nothing either: a joint held or
-  released, a held joint moved or its keys edited, a limit, the TCP, Root's pose, or the frame
-  rate. So do the obstacles, the capsules, where the robot stands, and Keep Clear By, while it
-  keeps clear. Scrubbing the timeline meanwhile is fine.
+- From the panel it runs while Blender stays live, and Esc abandons it, writing nothing. If
+  the waypoints or the robot change before it finishes, it writes nothing either: a joint
+  held or released, a held joint moved or its keys edited, a limit, the tool bone, Root's
+  pose, or the frame rate. So do the obstacles, the capsules, where the robot stands, and
+  Keep Clear By, while it keeps clear. Scrubbing the timeline meanwhile is fine.
 - The first run for a robot and a job length compiles first, which holds Blender up for
   seconds. JAX's compile cache keeps it for the sessions after.
 - It needs the PyRoki solver, whichever solver live IK uses.
@@ -396,7 +434,7 @@ frame of the job. Both sides are simple shapes, so the distances are exact and q
 **Collision** panel sets them up.
 
 **The robot is a set of capsules.** **Fit Capsules** fits them round the meshes on each joint
-bone, and on the TCP for an attached tool:
+bone, and on the tool bone for an attached tool:
 - a link's imported collision meshes where it has them, otherwise what the link shows, and
   either way whatever was added to it, an attached tool;
 - each link split into up to four capsules, the fewest that come close to the tightest fit,
@@ -537,7 +575,7 @@ or the other, wrist flipped, base swung round behind. Until now you got whicheve
 solver landed on from wherever the arm happened to be, which is how a shot ends up with the
 elbow on the wrong side of the robot and no obvious way to fix it.
 
-**Find Solutions**, in the IK panel, searches for the others. PyRoki is a nonlinear solver
+**Find Solutions**, in the Target (IK) panel, searches for the others. PyRoki is a nonlinear solver
 rather than an analytic one, so it does not enumerate branches — it converges to whichever
 is nearest its seed. So they are *found*: seed from configurations scattered across the joint
 limits, solve each, keep the ones that reached the goal, fold away the duplicates. That makes
@@ -547,8 +585,21 @@ The ◀ ▶ arrows cycle through what turned up. Applying one only writes joint 
 **Key All** keyframes it and it bakes like anything else — flipping the elbow between two
 frames is two keyed poses, which is what a robot programmer would do anyway.
 
-Solutions belong to one goal pose. Move the IK target and the panel says they are stale
-rather than offering configurations for a pose the robot is no longer being asked to reach.
+Solutions belong to one goal pose. Move the IK target and the quick bar names the one
+picked, *Config 8*, without how many there were: they were found for a pose the target has
+left. Clicking it searches again, and the arm stays where it is: a search selects the
+configuration nearest the one the arm stands in. The arrows search again first, then step
+from there.
+
+**Auto Configuration**, in the quick bar and the Target (IK) panel's Configuration section, does
+this for you while live IK tracks the target. A live solve that misses the target means one
+of two things: the target is out of reach, or the arm can't get there from the
+configuration it is in, because the wrist would have to flip or a joint is at its limit.
+With it on, a miss runs a search, which tells the two apart. If it finds configurations
+that reach the target, the arm switches to the one nearest where it was; if it finds none,
+nothing changes. It searches 12 seeds, about 0.15 s on a six-axis arm, and after a search
+that found nothing it waits until the target has moved on 1 cm or 5° and half a second has
+gone by. It runs for viewport solves only: playback and renders play what was keyed.
 Held joints stay where they stand in every solution, so on a robot with its rail held, every
 alternative is an arm reaching from where the carriage already is.
 
@@ -620,7 +671,7 @@ rides, a turntable under it, a positioner holding the part, a spindle on its fla
   just fills in the fields below, and any of them can still be changed.
 - **Mount:**
   - *Under the Robot*: the robot rides it.
-  - *On the Tool*: it rides the flange and carries the TCP.
+  - *On the Tool*: it rides the flange and carries the tool bone.
   - *Standalone*: it stands beside the robot and carries nothing until you attach a part to
     it in the **Bones** panel.
 - **Motion and direction:** linear or rotary, along or about ±X, ±Y or ±Z of the axis's base
@@ -631,9 +682,9 @@ rides, a turntable under it, a positioner holding the part, a spindle on its fla
   from the current tool frame for an axis on the tool. Location, plus roll, pitch and yaw
   about fixed X, Y and Z, as in URDF.
 - **External axis offset:** where what the axis carries sits on its moving part. That is the
-  current robot base for an axis under the robot. For an axis on the tool it is the TCP,
-  measured from the current TCP: with no offset the TCP stays where it is, however the base
-  moves or turns the axis.
+  current robot base for an axis under the robot. For an axis on the tool it is the tool
+  bone, measured from the current tool bone: with no offset the tool bone stays where it is,
+  however the base moves or turns the axis.
 
 **The current robot base** includes any axes already under the robot. A new axis under the
 robot goes in at the bottom of that stack, and its base is measured from just under the
@@ -653,8 +704,8 @@ follows every field you change:
   limits written beside them;
 - for an axis under the robot that moves it, a ghost of the robot and the axes it already
   rides, where they will stand;
-- for an axis on the tool, the TCP where it will be, as a bright X/Y/Z triad, and where it
-  is now, as a faint one. They part as you edit the offset.
+- for an axis on the tool, the tool bone where it will be, as a bright X/Y/Z triad, and
+  where it is now, as a faint one. They part as you edit the offset.
 
 All of it is drawn as the arm stands, so an axis on a posed tool shows on the tool.
 
@@ -668,19 +719,20 @@ solves on NumPy, and the panel says so, until you move on to something else or l
 axis alone for ten seconds. Then PyRoki is compiled once, behind a wait cursor.
 
 **Moving the robot, and putting it back.** With base and offset at zero nothing moves: the
-axis slides in under the robot and its axes, or behind the TCP, exactly where they are. Give
-them values and the robot ends up at base-then-offset on the carriage. Everything riding the
-robot moves with it by one rigid transform, so the pose you had is still the pose you have:
+axis slides in under the robot and its axes, or behind the tool bone, exactly where they
+are. Give them values and the robot ends up at base-then-offset on the carriage. Everything
+riding the robot moves with it by one rigid transform, so the pose you had is still the pose
+you have:
 
-- the robot's bones and its TCP;
+- the robot's bones and its tool bone;
 - the axes already under it, and their placeholders;
 - the IK target and the swivel;
 - the base link's meshes;
 - the waypoints.
 
 **Remove** undoes all of it, stacked axes in any order included. Something you parented to
-the axis bone by hand stays where it stands. An axis on the tool moves the TCP by its offset,
-and removing the axis puts the TCP back with the offset it had.
+the axis bone by hand stays where it stands. An axis on the tool moves the tool bone by its
+offset, and removing the axis puts the tool bone back with the offset it had.
 
 **Joint indices follow names.** Blender orders bones by hierarchy, so an axis under the robot
 becomes joint 0. Waypoints' joint vectors and the IK tip, keyframes included, are remapped
@@ -701,37 +753,40 @@ the tool.
 
 ## Where the tool frame sits
 
-The **Tool Centre Point** panel places the TCP on a joint bone and offsets it from there.
-**Edit TCP…** opens a dialog for it that previews before anything moves:
+The **Tool Centre Point** panel places the tool bone on a joint bone and offsets it from
+there. **Edit Tool…** opens a dialog for it that previews before anything moves:
 
 - **Offset:** type a location and rotation, as the panel's fields take them.
-- **3D Cursor:** the TCP goes where the cursor is. Snap the cursor to a vertex of the tool
-  mesh first (Shift+S), and the TCP lands on that vertex.
-- **Object Origin:** the TCP goes on an empty, or on the origin of the tool mesh itself.
+- **3D Cursor:** the tool bone goes where the cursor is. Snap the cursor to a vertex of the
+  tool mesh first (Shift+S), and the tool bone lands on that vertex.
+- **Object Origin:** the tool bone goes on an empty, or on the origin of the tool mesh
+  itself.
 
 The cursor and the object can give the orientation too, or leave it at the typed one. Either
 way the dialog shows the offset it will store, measured from the mounting flange (see below)
-where it stands now, so a TCP can be picked off a tool on a posed robot. While it is open, the viewport draws the
-new TCP next to the current one. Clicking away closes the dialog, and opening it again brings
-back what you had. The panel's fields and *Update TCP* still work as before.
+where it stands now, so a tool bone can be picked off a tool on a posed robot. While it is
+open, the viewport draws the new tool bone next to the current one. Clicking away closes the
+dialog, and opening it again brings back what you had. The panel's fields and *Update Tool*
+still work as before.
 
-**Changing the TCP doesn't move the robot.** Redefining the tool, as on a real controller,
-leaves the joints where they are, and the IK target comes to the new TCP. A keyed IK target
-goes back to its keys on the next frame, because an animated path is the tool's path, and
-the new tool follows it.
+**Changing the tool bone doesn't move the robot.** Redefining the tool, as on a real
+controller, leaves the joints where they are, and the IK target comes to the new tool bone.
+A keyed IK target goes back to its keys on the next frame, because an animated path is the
+tool's path, and the new tool follows it.
 
-**Changing the TCP doesn't recompile the solver.** PyRoki's compiled solver depends on the
-robot and on the joint the TCP rides, not on the tool offset. Re-offsetting the TCP, or
-removing and re-adding the IK target, reuses it. A TCP moved onto another joint needs a new
-one, and it waits until you're done: live IK solves on NumPy meanwhile, and the panel says
-so. It then compiles once, when you move on to something else or leave it for ten seconds.
-A bake, Find Solutions, playback and rendering never wait. They use PyRoki, compiling it if
-they must.
+**Changing the tool bone doesn't recompile the solver.** PyRoki's compiled solver depends on
+the robot and on the joint the tool bone rides, not on the tool offset. Re-offsetting the
+tool bone, or removing and re-adding the IK target, reuses it. A tool bone moved onto
+another joint needs a new one, and it waits until you're done: live IK solves on NumPy
+meanwhile, and the panel says so. It then compiles once, when you move on to something else
+or leave it for ten seconds. A bake, Find Solutions, playback and rendering never wait. They
+use PyRoki, compiling it if they must.
 
 **Zero is the mounting flange.** The offset is measured from the flange the description
-defines for that joint, the frame a tool's CAD is measured from. So a TCP taken off the tool's
-drawing goes in unchanged, and `Z = 0.15` means 150 mm out of the flange face. The angles are
-roll, pitch and yaw about fixed X, Y and Z, the convention URDF uses in `<origin rpy="...">`.
+defines for that joint, the frame a tool's CAD is measured from. So a tool bone taken off
+the tool's drawing goes in unchanged, and `Z = 0.15` means 150 mm out of the flange face.
+The angles are roll, pitch and yaw about fixed X, Y and Z, the convention URDF uses in
+`<origin rpy="...">`.
 
 Industrial descriptions usually define the flange twice, as ROS-Industrial's REP-199 does:
 
@@ -739,14 +794,15 @@ Industrial descriptions usually define the flange twice, as ROS-Industrial's REP
 - `flange`, with X out of it.
 
 Kinema uses `tool0`. Where there's only a `flange`, it turns it so Z points out of the face,
-as `tool0` would. A fresh import puts the TCP there, with zero offsets and the approach axis
-out of the flange. The panel names the frame, for example *From the mounting flange (tool0)*.
+as `tool0` would. A fresh import puts the tool bone there, with zero offsets and the
+approach axis out of the flange. The panel names the frame, for example *From the mounting
+flange (tool0)*.
 
-A joint with no flange measures from its own **link frame**. The importer then puts the TCP
-on the description's deepest link and seeds the distance to it into the offset, since fixed
-joints get no bone and nothing else on the rig would show it. Rigs built before Kinema
-recorded the flange keep measuring from the link frame too, so their offsets keep the meaning
-they were typed with. Reimport to measure from the flange.
+A joint with no flange measures from its own **link frame**. The importer then puts the tool
+bone on the description's deepest link and seeds the distance to it into the offset, since
+fixed joints get no bone and nothing else on the rig would show it. Rigs built before Kinema
+recorded the flange keep measuring from the link frame too, so their offsets keep the
+meaning they were typed with. Reimport to measure from the flange.
 
 Bone axes are not tool axes and cannot be: a bone's +Y always runs head to tail. Kinema rides
 the tool frame on the marker permuted — tool Z on the bone's Y — and reports the tool frame,
@@ -764,8 +820,8 @@ first, then the absolute one, so a .blend moved on its own still finds the file 
 A description anywhere else is kept by its absolute path only, as is every path while
 Blender's *Default To: Relative Paths* preference, under *File Paths*, is off.
 
-Move the description's folder, or open the .blend somewhere the file isn't, and the Kinema
-panel shows **Description file missing**, live IK falls back to NumPy, and Optimize Motion
+Move the description's folder, or open the .blend somewhere the file isn't, and Robot
+Settings shows **Description file missing**, live IK falls back to NumPy, and Optimize Motion
 says why it can't run.
 
 **Locate Description…**, under that message, points the robot at the file again: a URDF,
@@ -975,8 +1031,8 @@ For 0.6.0, the Windows zip was installed into a clean Blender 5.2.1 profile
 (`BLENDER_USER_RESOURCES` pointed at an empty directory) and checked:
 
 - every bundled dependency loads from the zip's own wheels, and IK solves on PyRoki;
-- a KUKA KR10 R1100-2 xacro imports through rospkg, with its TCP on `tool0`, and PyRoki
-  solves it to 0.00 mm;
+- a KUKA KR10 R1100-2 xacro imports through rospkg, with its tool bone on `tool0`, and
+  PyRoki solves it to 0.00 mm;
 - MJCF and COLLADA files import, and Load Joint Limits reads a yaml;
 - Blender reports no extension policy warnings, and no thread is started;
 - a baked .blend plays exactly as baked in a Blender with no Kinema installed at all.

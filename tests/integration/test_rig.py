@@ -73,7 +73,7 @@ class TestArmatureShape:
     def test_bone_collections_exist(self, arm3_rig):
         _, result = arm3_rig
         names = {c.name for c in result.armature_object.data.collections_all}
-        assert {"Kinema", "FK", "IK", "TCP", "Mechanism"} <= names
+        assert {"Kinema", "FK", "IK", "Tool", "Mechanism"} <= names
 
 
 class TestBoneAxisAlignment:
