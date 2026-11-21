@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<!-- A palletizer's parallelogram, for #104: "level" is a mimic joint between two
+     actuated ones, undoing the shoulder's turn so the wrist below stays level.
+     The arm's actuated joints carry on below it, so a solver that left the mimic
+     out would solve another mechanism. -->
+<robot name="mimic_palletizer">
+  <link name="base"/>
+  <link name="turret"/>
+  <link name="upper_arm"/>
+  <link name="forearm"/>
+  <link name="wrist"/>
+  <link name="flange"/>
+  <link name="tool0"/>
+
+  <joint name="swing" type="revolute">
+    <parent link="base"/><child link="turret"/>
+    <origin xyz="0 0 0.3" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-3" upper="3" effort="10" velocity="1"/>
+  </joint>
+  <joint name="shoulder" type="revolute">
+    <parent link="turret"/><child link="upper_arm"/>
+    <origin xyz="0.1 0 0.2" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-1.5" upper="1.5" effort="10" velocity="1"/>
+  </joint>
+  <joint name="level" type="revolute">
+    <parent link="upper_arm"/><child link="forearm"/>
+    <origin xyz="0 0 0.6" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-1.5" upper="1.5" effort="10" velocity="1"/>
+    <mimic joint="shoulder" multiplier="-1.0" offset="0.0"/>
+  </joint>
+  <joint name="reach" type="prismatic">
+    <parent link="forearm"/><child link="wrist"/>
+    <origin xyz="0.2 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="0" upper="0.5" effort="10" velocity="0.5"/>
+  </joint>
+  <joint name="twist" type="revolute">
+    <parent link="wrist"/><child link="flange"/>
+    <origin xyz="0.3 0 -0.1" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-3" upper="3" effort="10" velocity="1"/>
+  </joint>
+  <joint name="flange_tool0" type="fixed">
+    <parent link="flange"/><child link="tool0"/>
+    <origin xyz="0 0 -0.05" rpy="0 0 0"/>
+  </joint>
+</robot>

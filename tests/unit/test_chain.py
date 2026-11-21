@@ -171,3 +171,185 @@ class TestNumpySolver:
         target = chain.forward(goal_q)
         near = numpy_backend.solve(chain, goal_q + 0.01, target)
         assert np.abs(near.q - goal_q).max() < 0.2
+
+
+def _mimic(
+    after, leader, *, revolute=True, multiplier=1.0, offset=0.0, x=0.3,
+    lower=-np.inf, upper=np.inf, fixed=0.0,
+):
+    rest = np.eye(4)
+    rest[0, 3] = x
+    return chain_mod.MimicLink(
+        after=after, rest_relative=rest, is_revolute=revolute, leader=leader,
+        steps=(chain_mod.MimicStep(multiplier, offset, revolute, lower, upper),),
+        fixed=fixed,
+    )
+
+
+class TestMimicInTheChain:
+    """A mimic joint's bone between two joints (#104): it moves the joints below
+    it by its leader's value, without being a degree of freedom of its own."""
+
+    def _sliders(self):
+        """A -> M -> B, all sliding along Y; M follows A one for one."""
+        rest = np.stack([np.eye(4), np.eye(4)])
+        return chain_mod.Chain(
+            bone_names=["a", "b"],
+            is_revolute=np.array([False, False]),
+            rest_relative=rest,
+            tool_offset=np.eye(4),
+            lower=np.full(2, -1.0),
+            upper=np.full(2, 1.0),
+            limited=np.array([True, True]),
+            mimics=(_mimic(0, 0, revolute=False, x=0.0),),
+        )
+
+    def test_a_collinear_mimic_doubles_its_leaders_slide(self):
+        """The review's example: A = 0.02 with B = 0 moves B 0.04, not 0.02."""
+        chain = self._sliders()
+        assert chain.dof == 2
+        tool = chain.forward(np.array([0.02, 0.0]))
+        assert tool[1, 3] == pytest.approx(0.04)
+
+    def test_its_column_adds_to_its_leaders(self):
+        chain = self._sliders()
+        jacobian = chain.jacobian(np.array([0.02, 0.0]))
+        np.testing.assert_allclose(jacobian[:3, 0], [0.0, 2.0, 0.0])
+        np.testing.assert_allclose(jacobian[:3, 1], [0.0, 1.0, 0.0])
+
+    @pytest.mark.parametrize("after", [-1, 0, 1, 2])
+    def test_the_jacobian_matches_finite_differences(self, after):
+        """A turning mimic of j0, halved and offset, wherever it sits in the arm."""
+        base = make_chain()
+        chain = chain_mod.Chain(
+            **{**base.__dict__, "mimics": (_mimic(after, 0, multiplier=0.5, offset=0.1),)}
+        )
+        q = np.array([0.3, -0.4, 0.5])
+        analytic = chain.jacobian(q)
+        step = 1e-6
+        for index in range(3):
+            dq = np.zeros(3)
+            dq[index] = step
+            ahead, behind = chain.forward(q + dq), chain.forward(q - dq)
+            np.testing.assert_allclose(
+                analytic[:3, index], (ahead[:3, 3] - behind[:3, 3]) / (2 * step), atol=1e-6
+            )
+
+    def test_a_mimic_off_the_chain_is_held_where_it_is(self):
+        """Its leader isn't solved for: it stands at ``fixed`` whatever q is, bending
+        the arm there, and adds nothing to any column."""
+        base = make_chain()
+        held = _mimic(1, -1, fixed=0.4, x=0.0)
+        chain = chain_mod.Chain(**{**base.__dict__, "mimics": (held,)})
+        q = np.array([0.3, -0.4, 0.5])
+        bent = base.forward(np.array([0.3, -0.4 + 0.4, 0.5]))
+        np.testing.assert_allclose(chain.forward(q), bent, atol=1e-12)
+        step = 1e-6
+        for index in range(3):
+            dq = np.zeros(3)
+            dq[index] = step
+            numeric = (chain.forward(q + dq)[:3, 3] - chain.forward(q - dq)[:3, 3]) / (2 * step)
+            np.testing.assert_allclose(chain.jacobian(q)[:3, index], numeric, atol=1e-6)
+
+    def test_held_at_its_own_limit_it_stops_moving(self):
+        mimic = _mimic(0, 0, multiplier=1.0, lower=-0.2, upper=0.2)
+        assert mimic.value(np.array([0.5])) == pytest.approx(0.2)
+        assert mimic.gain(np.array([0.5])) == 0.0
+        assert mimic.gain(np.array([0.1])) == pytest.approx(1.0)
+
+    def test_a_limit_partway_down_a_chain_of_mimics_holds(self):
+        """M = A held to [0, 0.1], N = 2 * M: at A = 0.2, M stands at 0.1 and N at
+        0.2 -- not 0.4, as N folded straight onto A would."""
+        Step = chain_mod.MimicStep
+        n = chain_mod.MimicLink(
+            after=0, rest_relative=np.eye(4), is_revolute=False, leader=0,
+            steps=(Step(1.0, 0.0, False, 0.0, 0.1), Step(2.0, 0.0, False, 0.0, 1.0)),
+        )
+        assert n.value(np.array([0.2])) == pytest.approx(0.2)
+        assert n.gain(np.array([0.2])) == 0.0, "held at M's limit: it doesn't move"
+        assert n.value(np.array([0.05])) == pytest.approx(0.1)
+        assert n.gain(np.array([0.05])) == pytest.approx(2.0)
+
+
+class TestClampAngle:
+    """Blender's Limit Rotation holds a turn around the circle."""
+
+    @pytest.mark.parametrize(
+        "angle, lower, upper, held",
+        [
+            (0.5, -1.0, 1.0, 0.5),            # inside
+            (2.5, -1.0, 1.0, 1.0),            # nearer the top end
+            (-3.0, -1.0, 1.0, -1.0),          # nearer the bottom end, around the circle
+            (2 * np.pi + 0.2, -1.0, 1.0, 0.2),  # past a whole turn: inside, read as a turn
+            (0.0, 1.0, 2.0, 1.0),             # a range that leaves out zero
+            (-2.5, 1.0, 2.0, 2.0),            # its nearer end is the far one along the line
+            (5.0, -4.0, 4.0, 5.0),            # a whole turn or more: nothing held
+        ],
+    )
+    def test_as_a_turn(self, angle, lower, upper, held):
+        got = chain_mod.clamp_angle(angle, lower, upper)
+        assert np.cos(got) == pytest.approx(np.cos(held))
+        assert np.sin(got) == pytest.approx(np.sin(held))
+
+
+class TestWrappedReading:
+    def test_a_step_reading_a_limited_leaders_turn_reads_it_wrapped(self):
+        """A continuous A at 2 pi + 0.2; M = A, limited to [-1, 1]; N = 0.5 * M.
+        M's limit holds a turn around the circle, so M stands at 2 pi + 0.2 -- a
+        turn of 0.2 -- and N's driver reads that turn off M's matrix: 0.1, not
+        pi + 0.1."""
+        Step = chain_mod.MimicStep
+        n = chain_mod.MimicLink(
+            after=0, rest_relative=np.eye(4), is_revolute=True, leader=0,
+            steps=(Step(1.0, 0.0, True, -1.0, 1.0), Step(0.5, 0.0, True, wraps=True)),
+        )
+        assert n.value(np.array([2 * np.pi + 0.2])) == pytest.approx(0.1)
+        assert n.gain(np.array([2 * np.pi + 0.2])) == pytest.approx(0.5)
+
+
+class TestHeldTurnExpression:
+    """The driver's cyclic hold: clamp_angle, written as Blender's simple
+    expression, and short enough for its 256 characters."""
+
+    @pytest.mark.parametrize(
+        "lower, upper, multiplier, offset",
+        [
+            (0.0, 4.0, 0.5, 0.1),
+            (-3.5, 0.0, 1.0, 0.0),
+            (-4.0, 2.0, -1.0, 0.0),
+            (1.0, 2.0, 0.3333333333333333, 0.016666666666666666),
+            (-0.3333333333333333, 6.0, 2.0, -0.5),
+            # The longest constants a description could hold, from the review.
+            (-3.141593123456789, 3.141590987654321,
+             -1.2345678901234567e-05, -1.2345678901234567e-05),
+        ],
+    )
+    def test_it_is_clamp_angle_and_fits_a_driver(self, lower, upper, multiplier, offset):
+        import math
+
+        expression = chain_mod.mimic_expression(
+            multiplier, offset, chain_mod.held_turn_expression(lower, upper)
+        )
+        assert len(expression) <= chain_mod.DRIVER_EXPRESSION_LIMIT, len(expression)
+        names = {"floor": math.floor, "pi": math.pi, "min": min, "max": max}
+        for angle in np.linspace(-9.0, 9.0, 181):
+            got = eval(expression, {"__builtins__": {}}, {**names, "q": float(angle)})
+            held = chain_mod.clamp_angle(angle, lower, upper)
+            assert got == pytest.approx(multiplier * held + offset, abs=1e-9)
+
+    def test_one_too_long_is_refused_rather_than_cut(self):
+        with pytest.raises(ValueError, match="characters"):
+            chain_mod.mimic_expression(1.0, 0.0, "q" + " + 0" * 100)
+
+
+class TestWoundLeader:
+    def test_a_small_hold_on_a_leader_wound_many_turns_counts(self):
+        """q = 200 pi + 1.001 and M = -q held to [-1, 1]: held by 0.001 rad, which
+        a relative tolerance would read as free."""
+        Step = chain_mod.MimicStep
+        m = chain_mod.MimicLink(
+            after=0, rest_relative=np.eye(4), is_revolute=True, leader=0,
+            steps=(Step(-1.0, 0.0, True, -1.0, 1.0),),
+        )
+        assert m.gain(np.array([200 * np.pi + 1.001])) == 0.0
+        assert m.gain(np.array([200 * np.pi + 0.5])) == pytest.approx(-1.0)
