@@ -428,7 +428,14 @@ class TestWideLeaders:
 
     @pytest.mark.parametrize(
         "lower, upper, angle",
-        [(-6.0, 6.0, 4.0), (-6.0, 6.0, -4.5), (0.0, 4.0, 3.5), (0.0, 4.0, 4.5)],
+        [
+            (-6.0, 6.0, 4.0), (-6.0, 6.0, -4.5), (0.0, 4.0, 3.5), (0.0, 4.0, 4.5),
+            # Past the limits by more than half a turn: -3.0 is a turn of 3.28,
+            # inside [0, 4] around the circle, and Blender holds nothing.
+            (0.0, 4.0, -3.0),
+            # Nearer the bottom end around the circle than along the line.
+            (0.0, 4.0, 5.5), (0.0, 4.0, -0.4),
+        ],
     )
     def test_the_mimic_follows_its_leaders_turns(
         self, addon, fixture_dir, clean_scene, tmp_path, lower, upper, angle
@@ -449,8 +456,19 @@ class TestWideLeaders:
         (tmp_path / "wide.urdf").write_text(text, encoding="utf-8")
         _, rig = _built(addon, tmp_path, "wide.urdf")
         _set(rig, lift=angle)
-        stands = min(max(angle, lower), upper)
+        chain_mod = importlib.import_module(f"{addon.__name__}.solver.chain")
+        stands = chain_mod.clamp_angle(angle, lower, upper)
+        # Where Blender's Limit Rotation holds the leader, as a turn...
+        shown = chain_mod.displayed_value(rig.pose.bones["lift"], revolute=True)
+        assert np.cos(shown) == pytest.approx(np.cos(stands), abs=1e-5)
+        assert np.sin(shown) == pytest.approx(np.sin(stands), abs=1e-5)
+        # ...and the mimic follows that, turns and all, in an expression Blender
+        # evaluates without Python.
         assert _value(rig, "knuckle") == pytest.approx(0.5 * stands + 0.1, abs=1e-5)
+        knuckle = next(
+            f.driver for f in rig.animation_data.drivers if '"knuckle"' in f.data_path
+        )
+        assert knuckle.is_simple_expression and knuckle.is_valid
 
 
 WRAPPED = """<?xml version="1.0"?>

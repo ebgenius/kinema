@@ -305,3 +305,23 @@ class TestWrappedReading:
         )
         assert n.value(np.array([2 * np.pi + 0.2])) == pytest.approx(0.1)
         assert n.gain(np.array([2 * np.pi + 0.2])) == pytest.approx(0.5)
+
+
+class TestHeldTurnExpression:
+    """The driver's cyclic hold: clamp_angle, written as Blender's simple
+    expression, and short enough for its 256 characters."""
+
+    @pytest.mark.parametrize(
+        "lower, upper",
+        [(0.0, 4.0), (-3.5, 0.0), (-4.0, 2.0), (1.0, 2.0), (-0.3333333333333333, 6.0)],
+    )
+    def test_it_is_clamp_angle(self, lower, upper):
+        import math
+
+        expression = chain_mod.held_turn_expression(lower, upper)
+        wrapper = f"0.3333333333333333 * {expression} + 0.016666666666666666"
+        assert len(wrapper) <= chain_mod.DRIVER_EXPRESSION_LIMIT, len(wrapper)
+        names = {"floor": math.floor, "pi": math.pi, "min": min, "max": max}
+        for angle in np.linspace(-9.0, 9.0, 181):
+            held = eval(expression, {"__builtins__": {}}, {**names, "q": float(angle)})
+            assert held == pytest.approx(chain_mod.clamp_angle(angle, lower, upper), abs=1e-9)

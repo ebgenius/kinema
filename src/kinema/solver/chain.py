@@ -68,6 +68,26 @@ def clamp_angle(angle: float, lower: float, upper: float) -> float:
     return float(angle + (high if abs(high) < abs(low) else low))
 
 
+#: Blender keeps a driver's expression in 256 characters.
+DRIVER_EXPRESSION_LIMIT = 255
+
+
+def held_turn_expression(lower: float, upper: float, value: str = "q") -> str:
+    """``value`` held to [``lower``, ``upper``] around the circle, as :func:`clamp_angle`
+    holds it, written for a driver: what Blender evaluates without Python, and
+    short enough for a driver's expression.
+
+    Around the range's centre ``c``, with half-width ``h``, ``D`` is ``value - c``
+    wrapped to half a turn either way; the turn held is ``value - D + clamp(D, -h, h)``.
+    Inside the range it is ``value`` as it is, turns and all. Past it, the nearer end
+    around the circle is the one on ``D``'s side, since ``D`` never passes half a turn.
+    For less than a whole turn of range: a whole turn or more holds nothing.
+    """
+    centre, half = (lower + upper) / 2.0, (upper - lower) / 2.0
+    d = f"({value}-{centre!r}-2*pi*floor(({value}-{centre!r}+pi)/(2*pi)))"
+    return f"({value}-{d}+min(max({d},{-half!r}),{half!r}))"
+
+
 @dataclass(frozen=True)
 class MimicStep:
     """One mimic on the way from an actuated joint to a mimic bone: its value is

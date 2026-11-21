@@ -1121,9 +1121,9 @@ def drive_mimic(
     A turn read off a matrix is wrapped to half a turn either way, though, so a
     leader whose limits reach past that -- a 350-degree wrist -- or that has none, a
     continuous joint, is read off its channel instead, keeping its turns. Limited to
-    less than a whole turn, it is clamped there in the expression: the same inside
-    its limits, and the nearer end along the line past them, where Blender's limit
-    takes the nearer around the circle. A whole turn or more, Blender holds nothing.
+    less than a whole turn, it is held there in the expression as Blender's Limit
+    Rotation holds it, around the circle (``solver.chain.held_turn_expression``). A whole
+    turn or more, Blender holds nothing.
 
     A driver, not Kinema code: Blender keeps it right in FK, IK, playback, a bake
     and a render, with nothing of Kinema's running. Its expression is one Blender
@@ -1147,7 +1147,9 @@ def drive_mimic(
         lower, upper = (float(v) for v in leader_limits)
         wide = lower < -math.pi or upper > math.pi
         if wide and upper - lower < 2.0 * math.pi:
-            value = f"min(max(q, {lower!r}), {upper!r})"
+            from ..solver.chain import held_turn_expression
+
+            value = held_turn_expression(lower, upper)
     if leader_limits is not None and not wide:
         variable.type = "TRANSFORMS"
         target = variable.targets[0]
