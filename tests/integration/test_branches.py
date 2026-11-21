@@ -338,6 +338,13 @@ class TestAutoConfiguration:
     def handlers(self, addon):
         return importlib.import_module(f"{addon.__name__}.handlers")
 
+    @pytest.fixture(autouse=True)
+    def forgotten(self, ik_ops):
+        """What Auto Configuration keeps by rig name, gone after each test: the next
+        test's rig is arm6 too, and a switch left behind would show in its quick bar."""
+        yield
+        ik_ops.forget_auto_search()
+
     @pytest.fixture
     def search(self, manager, monkeypatch):
         """manager.find_solutions, counted."""
@@ -534,18 +541,26 @@ class TestAutoConfiguration:
         bpy.context.view_layer.update()
         handlers.solve_rig(arm6, force=True, live=True)
         assert len(search) == 1, "too soon"
-        retry = ik_ops._auto_retry.get(arm6.name)
+        retry = first = ik_ops._auto_retry.get(arm6.name)
         assert retry is not None and bpy.app.timers.is_registered(retry)
         handlers.solve_rig(arm6, force=True, live=True)
         assert ik_ops._auto_retry[arm6.name] is retry, "one timer, however many updates"
         try:
             monkeypatch.setattr(ik_ops, "AUTO_INTERVAL", 0.0)
+            assert ik_ops._playing_or_rendering() is False, "nothing plays here"
+            monkeypatch.setattr(ik_ops, "_playing_or_rendering", lambda: True)
+            retry()
+            assert len(search) == 1, "not while frames play: a search is for a drag"
+            ik_ops._search_later(arm6.name, 0.0)
+            retry = ik_ops._auto_retry[arm6.name]
+            monkeypatch.setattr(ik_ops, "_playing_or_rendering", lambda: False)
             retry()
             assert len(search) == 2, "searched when the timer ran"
             assert arm6.name not in ik_ops._auto_retry
         finally:
-            if bpy.app.timers.is_registered(retry):
-                bpy.app.timers.unregister(retry)
+            for timer in (first, retry):
+                if bpy.app.timers.is_registered(timer):
+                    bpy.app.timers.unregister(timer)
             arm6.kinema_ik_enabled = False
 
     def test_a_turn_counts_on_a_scaled_robot_too(self, ik_ops):

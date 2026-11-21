@@ -309,7 +309,8 @@ def _search_later(rig_name: str, delay: float) -> None:
         _auto_retry.pop(rig_name, None)
         rig = bpy.data.objects.get(rig_name)
         if (
-            rig is not None
+            not _playing_or_rendering()
+            and rig is not None
             and builder.is_kinema_rig(rig)
             and getattr(rig, "kinema_ik_enabled", False)
             and getattr(rig, "kinema_auto_configuration", False)
@@ -319,6 +320,16 @@ def _search_later(rig_name: str, delay: float) -> None:
 
     _auto_retry[rig_name] = retry
     bpy.app.timers.register(retry, first_interval=max(0.0, delay))
+
+
+def _playing_or_rendering() -> bool:
+    """Whether frames are playing in any window, or a render is running: Auto
+    Configuration is for a drag, and a timer can fire in either."""
+    if bpy.app.is_job_running("RENDER"):
+        return True
+    wm = bpy.context.window_manager
+    windows = wm.windows if wm is not None else ()
+    return any(window.screen and window.screen.is_animation_playing for window in windows)
 
 
 def _would_compile(rig, solver) -> bool:
