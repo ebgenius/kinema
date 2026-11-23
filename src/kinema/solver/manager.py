@@ -225,8 +225,10 @@ class RigSolver:
         retried = self._solve_pyroki(solver, start, goal, elbow=elbow, held=held)
         if retried is None:
             return missed
-        retried.iterations += missed.iterations
-        return retried if retried.converged or _closer(retried, missed) else missed
+        kept = retried if retried.converged or _closer(retried, missed) else missed
+        # Both solves ran, whichever is kept: the readout counts them both.
+        kept.iterations = missed.iterations + retried.iterations
+        return kept
 
     def compile(self, rig) -> bool:
         """Build PyRoki and pay its compile, without touching the pose.

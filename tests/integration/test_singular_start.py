@@ -92,3 +92,22 @@ class TestFromAPinnedElbow:
         monkeypatch.setattr(manager.RigSolver, "_solve_pyroki", counted)
         modules("handlers").solve_rig(fer, force=True)
         assert len(calls) == 1
+
+
+class TestRetryReadout:
+    @pytest.mark.parametrize("retry_wins", [True, False])
+    def test_both_solves_are_counted_whichever_is_kept(self, fer, modules, monkeypatch, retry_wins):
+        """The readout's iterations are the work done: the miss and its retry."""
+        manager, solver = _pyroki_or_skip(modules, fer)
+        base = modules("solver.base")
+        q = np.zeros(solver.chain.dof)
+        q[solver.chain.bone_names.index("fer_joint4")] = solver.chain.upper[
+            solver.chain.bone_names.index("fer_joint4")
+        ]
+        missed = base.SolveResult(q, False, 0.075, 0.06, 100, "PyRoki")
+        retry_error = 0.001 if retry_wins else 0.2
+        retried = base.SolveResult(q.copy(), False, retry_error, 0.06, 40, "PyRoki")
+        monkeypatch.setattr(manager.RigSolver, "_solve_pyroki", lambda self, *a, **k: retried)
+        kept = solver._unpinned(None, missed, np.eye(4), elbow=None, held=None)
+        assert kept is (retried if retry_wins else missed)
+        assert kept.iterations == 140
