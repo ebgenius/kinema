@@ -287,6 +287,30 @@ class Chain:
         return np.where(self.limited, np.clip(q, self.lower, self.upper), q)
 
 
+#: How near a limit a joint counts as pinned at it: a hundredth of a radian, or of
+#: a metre. A solve that stops against a limit stops within float32 of it.
+PINNED = 0.01
+
+
+def unpinned(chain: Chain, q: np.ndarray, held: np.ndarray | None = None) -> np.ndarray | None:
+    """``q`` with each free joint that sits at a limit moved halfway to the middle of
+    its range, or None when none does.
+
+    Halfway, not a nudge: measured on the Franka's elbow pinned just short of
+    straight (tests/fixtures/fer_kinematics.urdf), a tenth or a quarter of the way
+    still stalled 75 mm off, and half the way converged.
+    """
+    q = np.asarray(q, dtype=float)
+    bounded = chain.limited & np.isfinite(chain.lower) & np.isfinite(chain.upper)
+    pinned = bounded & ((q - chain.lower < PINNED) | (chain.upper - q < PINNED))
+    if held is not None:
+        pinned &= ~np.asarray(held, dtype=bool)
+    if not pinned.any():
+        return None
+    middle = (chain.lower + chain.upper) / 2.0
+    return np.where(pinned, q + 0.5 * (middle - q), q)
+
+
 def pose_error(current: np.ndarray, target: np.ndarray) -> np.ndarray:
     """Six-vector twist taking ``current`` to ``target``.
 

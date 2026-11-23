@@ -242,6 +242,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Live IK stalled with a joint pinned at its limit** (#56). On a Franka at rest the
+  elbow is held at its limit just short of straight, where the arm is singular, and
+  PyRoki stopped about 75 mm short of a target it could reach, on every solve, until
+  the elbow was moved by hand. A PyRoki solve that misses with a free joint at a limit
+  now solves once more with those joints moved halfway to the middle of their range,
+  and keeps whichever comes closer. A solve that reaches its goal costs nothing more.
+  The UR5e target the report started from sits on the edge of the arm's reach, with
+  the elbow dead straight, and stays a best effort there.
 - **The NumPy solver stopped short of a turn it had to make** (#102). With a goal read off
   Blender's float32 matrices, a turn of 0.02° (4e-4 rad) could read as none, and a solve
   that left the tool turned that far was reported as converged. The angle is now taken

@@ -203,9 +203,30 @@ class RigSolver:
             if solver is not None:
                 elbow = self.elbow_goal(rig, solver) if swivel else None
                 result = self._solve_pyroki(solver, seed, goal, elbow=elbow, held=held)
+                if result is not None and not result.converged:
+                    result = self._unpinned(solver, result, goal, elbow=elbow, held=held)
         if result is None:
             result = numpy_backend.solve(self.chain, seed, goal, held=held)
         return result
+
+    def _unpinned(self, solver, missed: SolveResult, goal, *, elbow, held) -> SolveResult:
+        """``missed`` solved again with the joints it left at a limit moved off it,
+        where that does better (#56).
+
+        A joint pinned at a limit where the arm is singular -- a Franka's elbow held
+        just short of straight -- leaves the solver a stationary point: bending it
+        barely moves the tool there, so the other joints take up what they can and
+        stop short. Halfway to the middle of its range, the joint is off both. Only
+        on a miss, so a solve that reaches the goal costs nothing more.
+        """
+        start = chain_mod.unpinned(self.chain, missed.q, held)
+        if start is None:
+            return missed
+        retried = self._solve_pyroki(solver, start, goal, elbow=elbow, held=held)
+        if retried is None:
+            return missed
+        retried.iterations += missed.iterations
+        return retried if retried.converged or _closer(retried, missed) else missed
 
     def compile(self, rig) -> bool:
         """Build PyRoki and pay its compile, without touching the pose.
@@ -329,6 +350,16 @@ class RigSolver:
         except Exception as exc:  # noqa: BLE001
             self._pyroki_failed = str(exc)
             return None
+
+
+def _closer(a: SolveResult, b: SolveResult) -> bool:
+    """Whether ``a`` misses its goal by less than ``b``, as the pose cost weighs a miss."""
+    def cost(r: SolveResult) -> float:
+        position = pyroki_backend.POSITION_WEIGHT * r.position_error
+        rotation = pyroki_backend.ORIENTATION_WEIGHT * r.rotation_error
+        return position * position + rotation * rotation
+
+    return cost(a) < cost(b)
 
 
 # --------------------------------------------------------------------------
