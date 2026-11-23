@@ -372,8 +372,11 @@ class TestUnpinned:
         start = chain_mod.unpinned(make_chain(), np.array([0.3, 2.0, -2.0]), held)
         np.testing.assert_allclose(start, [0.3, 2.0, -1.0])
 
-    def test_an_unbounded_joint_is_never_pinned(self):
+    @pytest.mark.parametrize("lower, upper, at", [(-2.0, np.inf, -2.0), (-np.inf, 2.0, 2.0)])
+    def test_a_joint_limited_on_one_side_only_is_never_pinned(self, lower, upper, at):
+        # A rig can carry a lower limit with no upper one, and still reads as limited;
+        # the middle of its range is infinite, so moving toward it is no seed at all.
         chain = make_chain()
-        chain.limited = np.array([False, True, True])
-        chain.lower[0], chain.upper[0] = -np.inf, np.inf
-        assert chain_mod.unpinned(chain, np.array([1e6, 0.0, 0.0])) is None
+        chain.lower[0], chain.upper[0] = lower, upper
+        assert chain.limited[0]
+        assert chain_mod.unpinned(chain, np.array([at, 0.0, 0.0])) is None
