@@ -28,6 +28,7 @@ see only controls.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import bpy
@@ -77,6 +78,15 @@ LIMIT_CONSTRAINT = "Kinema Joint Limit"
 #: self-describing: the solver and the FK panel read the URDF facts back off
 #: the armature instead of needing the original file.
 PROP_JOINT_NAME = "kinema_joint"
+#: On a mimic joint's bone, in place of PROP_JOINT_NAME: its URDF joint name. Kept
+#: apart so nothing that looks for joints -- IK chains, the Joints panel, Key All,
+#: the API -- takes a bone a driver moves for one the user does.
+PROP_MIMIC_JOINT = "kinema_mimic"
+#: The joint a mimic bone follows, as its <mimic> names it, and how: value =
+#: multiplier * its + offset. That joint may be a mimic itself.
+PROP_MIMIC_OF = "kinema_mimic_of"
+PROP_MIMIC_MULTIPLIER = "kinema_mimic_multiplier"
+PROP_MIMIC_OFFSET = "kinema_mimic_offset"
 PROP_JOINT_TYPE = "kinema_joint_type"
 PROP_LOWER = "kinema_lower"
 PROP_UPPER = "kinema_upper"
@@ -216,6 +226,8 @@ class RigBuildResult:
     collection: bpy.types.Collection | None = None
     #: joint name -> bone name (identical today, but keep the indirection).
     joint_bones: dict[str, str] = field(default_factory=dict)
+    #: mimic joint name -> bone name: bones a driver moves from the joint they follow.
+    mimic_bones: dict[str, str] = field(default_factory=dict)
     #: Every mesh built, of either kind, so discard_rig can clean all of it up.
     mesh_objects: list[bpy.types.Object] = field(default_factory=list)
     visual_collection: bpy.types.Collection | None = None
@@ -288,8 +300,14 @@ def _create_bones(
 ) -> None:
     joint_frames = model.joint_frames()
     link_frames = model.link_frames()
-    owner_of_link = model.nearest_actuated_ancestor()
+    owner_of_link = model.nearest_actuated_ancestor(mimics=True)
     joint_by_name = {j.name: j for j in model.joints}
+    mimics = model.mimic_sources()
+    for name, leader in model.unresolved_mimics().items():
+        result.warnings.append(
+            f"{name}: its <mimic> follows '{leader}', which leads to no joint that "
+            f"moves, so it has no bone and its link stays where it is"
+        )
     length = options.bone_length or _auto_bone_length(model)
 
     _activate(armature_object)
@@ -302,8 +320,8 @@ def _create_bones(
     root.tail = Vector((0.0, 0.0, length * 1.5))
     root.roll = 0.0
 
-    actuated = model.actuated_joints
-    for joint in actuated:
+    boned = model.boned_joints
+    for joint in boned:
         frame = joint_frames[joint.name]
         head = Vector(frame[:3, 3])
         # The joint axis, taken into world space. This becomes the bone's Y.
@@ -315,15 +333,18 @@ def _create_bones(
         # Roll only affects the bone's X/Z; point Z along the link's own Z so
         # the rig reads consistently with the URDF frames.
         bone.align_roll(Vector(frame[:3, 2]))
-        result.joint_bones[joint.name] = bone.name
+        (result.mimic_bones if joint.name in mimics else result.joint_bones)[
+            joint.name
+        ] = bone.name
+    bones_of = {**result.joint_bones, **result.mimic_bones}
 
     # Parent each bone to the bone of its nearest actuated ancestor. Because
     # rest matrices are absolute, the relative offset Blender derives already
     # contains every intervening fixed joint.
-    for joint in actuated:
-        bone = edit_bones[result.joint_bones[joint.name]]
+    for joint in boned:
+        bone = edit_bones[bones_of[joint.name]]
         owner = owner_of_link.get(joint.parent_link)
-        parent_name = result.joint_bones.get(owner) if owner else None
+        parent_name = bones_of.get(owner) if owner else None
         bone.parent = edit_bones[parent_name] if parent_name else root
         # Never connect: a connected bone's head is pinned to its parent's
         # tail, which would drag every joint origin to the wrong place.
@@ -336,20 +357,27 @@ def _create_bones(
     # and whichever came first in the file won, axes and all.
     result.mounts = mount_frames(model)
     tcp_link = options.tcp_link or _deepest_link(model)
-    mount = None if options.tcp_link else result.mounts.get(owner_of_link.get(tcp_link))
+    # The flange is the actuated joints': a finger a mimic joint moves still hangs
+    # off the arm's last joint, whose tool0 the tool goes on, as before mimics
+    # had bones.
+    actuated_owner = model.nearest_actuated_ancestor()
+    mount = None if options.tcp_link else result.mounts.get(actuated_owner.get(tcp_link))
     if mount is not None:
         tcp_link = mount.link
     if options.create_tcp and tcp_link in link_frames:
         frame = link_frames[tcp_link]
         if mount is not None:
-            carrier = joint_by_name[owner_of_link[tcp_link]].child_link
+            carrier = joint_by_name[actuated_owner[tcp_link]].child_link
             frame = link_frames[carrier] @ mount.transform
         tcp = edit_bones.new(TCP_BONE)
         tcp.head = Vector(frame[:3, 3])
         # Tool frames point along their own +Z by ROS convention.
         tcp.tail = Vector(frame[:3, 3]) + Vector(frame[:3, 2]).normalized() * length * 0.8
         tcp.align_roll(Vector(frame[:3, 0]))
-        owner = owner_of_link.get(tcp_link)
+        # On an actuated joint's bone, as before mimics had bones: IK chains are
+        # made of joint bones, and one through a mimic's would solve as though
+        # its finger never moved.
+        owner = actuated_owner.get(tcp_link)
         parent_name = result.joint_bones.get(owner) if owner else None
         tcp.parent = edit_bones[parent_name] if parent_name else root
         tcp.use_connect = False
@@ -370,6 +398,9 @@ def _setup_collections(armature: bpy.types.Armature, result: RigBuildResult) -> 
         groups[COLLECTION_FK].assign(armature.bones[bone_name])
     if ROOT_BONE in armature.bones:
         groups[COLLECTION_FK].assign(armature.bones[ROOT_BONE])
+    # Not controls: a driver moves them. With the mechanism, out of the way.
+    for bone_name in result.mimic_bones.values():
+        groups[COLLECTION_MECHANISM].assign(armature.bones[bone_name])
     if TCP_BONE in armature.bones:
         groups[COLLECTION_TCP].assign(armature.bones[TCP_BONE])
 
@@ -416,6 +447,64 @@ def _setup_pose_bones(
         if mount is not None:
             pose_bone.bone[PROP_MOUNT_FRAME] = [float(v) for v in mount.transform.flatten()]
             pose_bone.bone[PROP_MOUNT_LINK] = mount.link
+
+    bones_of = {**result.joint_bones, **result.mimic_bones}
+
+    def rest_of(joint) -> float:
+        """Where ``joint`` stands with every joint the user moves at zero, through
+        the limits the rig enforces: a mimic at what its leader's rest gives."""
+        value = 0.0
+        if joint.mimic_joint is not None:
+            leader = joint_by_name[joint.mimic_joint]
+            read = rest_of(leader)
+            if _read_as_a_turn(leader, options):
+                # Its driver reads a turn off a matrix: wrapped, as drive_mimic says.
+                read = (read + math.pi) % (2.0 * math.pi) - math.pi
+            value = joint.mimic_multiplier * read + joint.mimic_offset
+        if options.enforce_limits and joint.has_limits:
+            value = min(max(value, joint.lower), joint.upper)
+        return value
+
+    for joint_name, bone_name in result.mimic_bones.items():
+        joint = joint_by_name[joint_name]
+        pose_bone = pose.bones[bone_name]
+        limits = (joint.lower, joint.upper) if joint.has_limits else None
+        # The joint its <mimic> names, a mimic or not: the driver reads it where it
+        # stands, so a limit on the way is kept rather than folded away.
+        leader = joint_by_name[joint.mimic_joint]
+        if options.enforce_limits and limits is not None:
+            leader_rest = rest_of(leader)
+            _warn_if_zero_is_forbidden(
+                joint, result, rest=joint.mimic_multiplier * leader_rest + joint.mimic_offset
+            )
+        configure_joint_bone(
+            pose_bone, revolute=joint.is_revolute,
+            limits=limits if options.enforce_limits else None,
+        )
+        write_joint_props(
+            pose_bone.bone,
+            joint_name=joint.name,
+            joint_type=joint.joint_type,
+            axis=joint.axis,
+            limits=limits,
+            velocity=joint.velocity,
+            child_link=joint.child_link,
+            link_frame=link_frames[joint.child_link],
+            acceleration=joint.acceleration,
+            jerk=joint.jerk,
+            effort=joint.effort,
+            mimic=(leader.name, joint.mimic_multiplier, joint.mimic_offset),
+        )
+        drive_mimic(
+            armature_object, pose_bone,
+            leader=bones_of[leader.name], leader_revolute=leader.is_revolute,
+            revolute=joint.is_revolute, multiplier=joint.mimic_multiplier,
+            offset=joint.mimic_offset,
+            leader_limits=(
+                (leader.lower, leader.upper)
+                if options.enforce_limits and leader.has_limits else None
+            ),
+        )
 
     if ROOT_BONE in pose.bones:
         root = pose.bones[ROOT_BONE]
@@ -476,7 +565,7 @@ def configure_joint_bone(pose_bone, *, revolute: bool, limits) -> None:
 
 def write_joint_props(
     bone, *, joint_name: str, joint_type: str, axis, limits, velocity, child_link: str,
-    link_frame, acceleration=None, jerk=None, effort=None,
+    link_frame, acceleration=None, jerk=None, effort=None, mimic=None,
 ) -> None:
     """The facts a joint bone carries, so the rig describes itself.
 
@@ -485,8 +574,19 @@ def write_joint_props(
     at rest, in armature space; what is stored is the constant bone -> link
     correction, which lets the solver turn a bone-space goal into the link-space
     goal PyRoki expects.
+
+    ``mimic``, ``(joint, multiplier, offset)`` as its <mimic> gives them, makes it
+    a mimic joint's bone: named by PROP_MIMIC_JOINT rather than PROP_JOINT_NAME,
+    with what it follows.
     """
-    bone[PROP_JOINT_NAME] = joint_name
+    if mimic is None:
+        bone[PROP_JOINT_NAME] = joint_name
+    else:
+        leader, multiplier, offset = mimic
+        bone[PROP_MIMIC_JOINT] = joint_name
+        bone[PROP_MIMIC_OF] = leader
+        bone[PROP_MIMIC_MULTIPLIER] = float(multiplier)
+        bone[PROP_MIMIC_OFFSET] = float(offset)
     bone[PROP_JOINT_TYPE] = joint_type
     bone[PROP_AXIS] = [float(v) for v in axis]
     if limits is not None:
@@ -507,8 +607,13 @@ def write_joint_props(
     bone[PROP_LINK_CORRECTION] = [float(v) for v in correction.flatten()]
 
 
-def _warn_if_zero_is_forbidden(joint: JointSpec, result: RigBuildResult) -> None:
+def _warn_if_zero_is_forbidden(
+    joint: JointSpec, result: RigBuildResult, rest: float = 0.0
+) -> None:
     """Say so when the URDF's own zero configuration breaks a joint's limits.
+
+    ``rest`` is where the joint stands in that configuration: zero for a joint
+    the user moves, and for a mimic what its driver gives with its leader at rest.
 
     Real robots have axes that cannot reach zero -- a KUKA quantec's A2 is
     limited to [-140 deg, -5 deg] -- and a URDF records that faithfully. Kinema
@@ -519,11 +624,11 @@ def _warn_if_zero_is_forbidden(joint: JointSpec, result: RigBuildResult) -> None
     does not stand where the description says it does, and Rest Pose cannot
     make it.
     """
-    if joint.lower <= 0.0 <= joint.upper:
+    if joint.lower <= rest <= joint.upper:
         return
-    nearest = joint.lower if joint.lower > 0.0 else joint.upper
+    nearest = joint.lower if joint.lower > rest else joint.upper
     result.warnings.append(
-        f"{joint.name}: the URDF's zero pose is outside its limits "
+        f"{joint.name}: the URDF's zero pose puts it at {rest:.4g}, outside its limits "
         f"[{joint.lower:.4g}, {joint.upper:.4g}], so the rig rests at "
         f"{nearest:.4g} instead. Import with \"Enforce Joint Limits\" off to "
         f"see the URDF's own zero pose."
@@ -557,7 +662,8 @@ def _attach_visuals_iter(
     a progress bar that restarts half way through is worse than no bar.
     """
     link_frames = model.link_frames()
-    owner_of_link = model.nearest_actuated_ancestor()
+    owner_of_link = model.nearest_actuated_ancestor(mimics=True)
+    bones_of = {**result.joint_bones, **result.mimic_bones}
 
     #: (object, placement, owning bone, link it draws), filled as meshes load
     #: and drained by the two-pass parent-then-place block at the end.
@@ -577,9 +683,7 @@ def _attach_visuals_iter(
             if not geometry:
                 continue
             owner_joint = owner_of_link.get(link_name)
-            bone_name = (
-                result.joint_bones.get(owner_joint) if owner_joint else ROOT_BONE
-            )
+            bone_name = bones_of.get(owner_joint) if owner_joint else ROOT_BONE
 
             for index, visual in enumerate(geometry):
                 label = visual.name or (
@@ -981,6 +1085,112 @@ def is_kinema_rig(obj: bpy.types.Object | None) -> bool:
     return bool(
         obj is not None and obj.type == "ARMATURE" and obj.get(PROP_IS_RIG, False)
     )
+
+
+def channel_of(revolute: bool) -> str:
+    """The pose channel a joint bone moves on, at index 1: its Y, the joint axis."""
+    return "rotation_euler" if revolute else "location"
+
+
+def _read_as_a_turn(leader: JointSpec, options: RigBuildOptions) -> bool:
+    """Whether a mimic's driver reads ``leader`` off its evaluated transform -- a
+    turn wrapped to half a turn either way -- as :func:`drive_mimic` decides."""
+    return (
+        options.enforce_limits
+        and leader.has_limits
+        and leader.is_revolute
+        and -math.pi <= leader.lower
+        and leader.upper <= math.pi
+    )
+
+
+def drive_mimic(
+    armature_object, pose_bone, *, leader: str, leader_revolute: bool, revolute: bool,
+    multiplier: float, offset: float, leader_limits=None,
+) -> None:
+    """Move ``pose_bone``'s joint channel by a driver on the ``leader`` bone's:
+    ``multiplier * value + offset``, as URDF's <mimic> says.
+
+    The value is where the leader stands. One limited by ``leader_limits`` within
+    half a turn either way -- every joint that slides, most that turn -- is read from
+    its evaluated transform, in its own space, after its constraints: Blender's own
+    limit, cyclic for a turn, and whatever has become of the constraint since,
+    rather than a copy of it. A leader that is a mimic itself is read the same way,
+    so a limit partway down a chain of mimics holds.
+
+    A turn read off a matrix is wrapped to half a turn either way, though, so a
+    leader whose limits reach past that -- a 350-degree wrist -- or that has none, a
+    continuous joint, is read off its channel instead, keeping its turns. Limited to
+    less than a whole turn, it is held there in the expression as Blender's Limit
+    Rotation holds it, around the circle (``solver.chain.held_turn_expression``). A whole
+    turn or more, Blender holds nothing.
+
+    A driver, not Kinema code: Blender keeps it right in FK, IK, playback, a bake
+    and a render, with nothing of Kinema's running. Its expression is one Blender
+    evaluates without Python, so it runs where scripts may not. Every channel is
+    locked, since a driver overwrites whatever is typed in.
+    """
+    pose_bone.lock_location = (True, True, True)
+    pose_bone.lock_rotation = (True, True, True)
+    pose_bone.lock_rotation_w = True
+    pose_bone.lock_scale = (True, True, True)
+    path = f'pose.bones["{bpy.utils.escape_identifier(pose_bone.name)}"].{channel_of(revolute)}'
+    armature_object.driver_remove(path, 1)
+    fcurve = armature_object.driver_add(path, 1)
+    driver = fcurve.driver
+    driver.type = "SCRIPTED"
+    variable = driver.variables.new()
+    variable.name = "q"
+    value = "q"
+    wide = False
+    if leader_limits is not None and leader_revolute:
+        lower, upper = (float(v) for v in leader_limits)
+        wide = lower < -math.pi or upper > math.pi
+        if wide and upper - lower < 2.0 * math.pi:
+            from ..solver.chain import held_turn_expression
+
+            value = held_turn_expression(lower, upper)
+    if leader_limits is not None and not wide:
+        variable.type = "TRANSFORMS"
+        target = variable.targets[0]
+        target.id = armature_object
+        target.bone_target = leader
+        target.transform_space = "LOCAL_SPACE"
+        if leader_revolute:
+            target.transform_type = "ROT_Y"
+            # The turn about the joint axis alone, whatever else the matrix holds.
+            target.rotation_mode = "SWING_TWIST_Y"
+        else:
+            target.transform_type = "LOC_Y"
+    else:
+        variable.type = "SINGLE_PROP"
+        target = variable.targets[0]
+        target.id_type = "OBJECT"
+        target.id = armature_object
+        target.data_path = (
+            f'pose.bones["{bpy.utils.escape_identifier(leader)}"]'
+            f".{channel_of(leader_revolute)}[1]"
+        )
+    from ..solver.chain import mimic_expression
+
+    driver.expression = mimic_expression(multiplier, offset, value)
+
+
+def mimic_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:
+    """Pose bones for mimic joints: moved by a driver from the joint each follows."""
+    if not is_kinema_rig(armature_object):
+        return []
+    return [
+        pose_bone
+        for pose_bone in armature_object.pose.bones
+        if PROP_MIMIC_JOINT in pose_bone.bone
+    ]
+
+
+def moving_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:
+    """Every bone a joint moves, the user's and the drivers': what a check of the
+    joints' limits and speeds measures."""
+    return joint_bones(armature_object) + mimic_bones(armature_object)
 
 
 def joint_bones(armature_object: bpy.types.Object) -> list[bpy.types.PoseBone]:

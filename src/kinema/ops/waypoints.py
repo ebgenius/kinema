@@ -1726,7 +1726,8 @@ def _along(span, placement):
 
 
 def check_joints(rig) -> list[motion_check.Joint]:
-    """The rig's joints as the check measures them, in rig order, with their limits."""
+    """The rig's joints as the check measures them, with their limits: the joint
+    bones in rig order, then the mimic bones."""
     return [
         motion_check.Joint(
             name=pose_bone.name,
@@ -1737,7 +1738,9 @@ def check_joints(rig) -> list[motion_check.Joint]:
             velocity=limit_of(pose_bone),
             acceleration=acceleration_limit_of(pose_bone),
         )
-        for pose_bone in builder.joint_bones(rig)
+        # A mimic joint too: its driver moves it as far and as fast as the
+        # multiplier says, against limits of its own.
+        for pose_bone in builder.moving_bones(rig)
     ]
 
 
@@ -1754,7 +1757,8 @@ def play_job(context, rig, plan) -> list[motion_check.Sample] | None:
     TCP to read the tool from.
     """
     scene = context.scene
-    bones = builder.joint_bones(rig)
+    # In check_joints' order: the samples are measured against its limits.
+    bones = builder.moving_bones(rig)
     tool = _tool_bone(rig)
     if tool not in rig.pose.bones:
         return None

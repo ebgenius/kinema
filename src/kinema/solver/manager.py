@@ -658,6 +658,8 @@ def get_solver(rig, ik_bone: str | None = None) -> RigSolver | None:
         and cached.tip_bone == tip
         and tip in rig.pose.bones
     ):
+        # A mimic the chain doesn't solve stands where its leader puts it now.
+        chain_mod.refresh_held_mimics(rig, cached.chain)
         return cached
     # Anything that changes the rig's bones -- rebuilding it, or moving the
     # TCP -- calls invalidate(), so a stale entry here is not silently reused.

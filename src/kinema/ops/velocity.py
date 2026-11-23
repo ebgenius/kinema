@@ -364,10 +364,14 @@ class KINEMA_OT_load_joint_limits(Operator, ImportHelper):
             return {"CANCELLED"}
 
         # By URDF joint name, which is what the file uses. The bone is usually
-        # called the same, but Blender renames a bone whose name is taken.
+        # called the same, but Blender renames a bone whose name is taken. A mimic
+        # joint's too: the Motion Check measures it against its own limits.
         by_joint = {
-            pose_bone.bone.get(builder.PROP_JOINT_NAME, pose_bone.name): pose_bone
-            for pose_bone in builder.joint_bones(rig)
+            pose_bone.bone.get(
+                builder.PROP_JOINT_NAME,
+                pose_bone.bone.get(builder.PROP_MIMIC_JOINT, pose_bone.name),
+            ): pose_bone
+            for pose_bone in builder.moving_bones(rig)
         }
         matched = [name for name in limits if name in by_joint]
         if not matched:
