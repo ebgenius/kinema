@@ -1172,8 +1172,9 @@ def _held_on(rig, span) -> str:
 
 
 def lines_into_limits(rig, plan, placement=None, solver=None) -> list:
-    """``(span, joint names, frame)`` for each linear move of ``plan`` whose line
-    runs a joint into its limit: what Generate Motion warns of.
+    """``(span, joint names, frame, stop)`` for each linear move of ``plan`` whose
+    line runs a joint into its limit: what Generate Motion warns of, and where it
+    stops the robot (see :func:`settle_configurations`).
 
     Walked as Generate Motion walks the job, from the joints it finds at each
     marker, by ``solver`` (see :func:`settle_configurations`). Writes nothing.

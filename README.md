@@ -263,7 +263,9 @@ limit, and suggests a joint move, which can turn the joint the other way round. 
 generated all the same. In playback the robot stops where the line meets the limit, as a
 controller's LIN stops at a software limit, and stands there while the IK target goes on, so
 the tool visibly leaves the line. On the move's last frame it is at its end waypoint. The
-Motion Check flags the move.
+Motion Check flags the move. A hold on an object that moves the tool where a joint can't
+follow is named with the object instead, and stops the same way. A joint move wouldn't change
+its path, so move the object less while the tool is held there.
 
 Nothing about the result is special, which is the point, and Blender's own graph editor
 shapes it afterwards. Linear moves come out LINEAR, so the tool's speed changes all at once
