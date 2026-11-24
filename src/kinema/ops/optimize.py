@@ -24,7 +24,9 @@ timing: the line's targets are where Generate Motion put the tool on each
 frame, so it still runs along the line at a steady speed, and the joint moves
 either side ease into it and out of it. A move that can't
 keep within its limits in the frames it has comes out as close as it gets,
-and the Motion Check says about how many frames it needs.
+and the Motion Check says about how many frames it needs. A linear move whose
+line runs a joint into its limit can't be kept to in any number of frames, and
+is refused before compiling, named as Generate Motion names it (#75).
 
 **Regenerating replaces it.** The keys are in the range Generate Motion owns,
 so the next Generate Motion clears them as it clears its own. It optimises the
@@ -158,6 +160,19 @@ def prepare(context, rig) -> Job:
             "The waypoints or motions have changed since the job was generated: "
             "Generate Motion again, then optimize"
         )
+    placement = wp.place_job(context, rig, plan)
+    # Before the compile, which is the slow part: the joint limits are kept, so
+    # no trajectory keeps to a line that runs a joint into one.
+    limited = wp.lines_into_limits(rig, plan, placement)
+    if limited:
+        moves = "; ".join(wp.limit_text(*found) for found in limited)
+        several = len(limited) != 1
+        raise Refused(
+            f"{moves}, so no motion within the limits keeps to "
+            f"{'those lines' if several else 'that line'}. Make "
+            f"{'them joint moves' if several else 'it a joint move'}, "
+            f"Generate Motion, then optimize"
+        )
     solver, pyroki = _model(rig)
     first, last = plan[0].start_frame, plan[-1].end_frame
     steering = steers_clear(rig, context.scene)
@@ -184,7 +199,6 @@ def prepare(context, rig) -> Job:
     samples = wp.play_job(context, rig, plan)
     if samples is None:
         raise Refused("This rig has no tool bone to aim by")
-    placement = wp.place_job(context, rig, plan)
     problem, free = assemble(
         rig, plan, samples, solver, pyroki, 1.0 / wp.scene_fps(context.scene), placement
     )

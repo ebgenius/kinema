@@ -380,3 +380,24 @@ class TestUnpinned:
         chain.lower[0], chain.upper[0] = lower, upper
         assert chain.limited[0]
         assert chain_mod.unpinned(chain, np.array([at, 0.0, 0.0])) is None
+
+
+class TestPinned:
+    """#75: which joints sit at a limit, for naming the one a line runs into."""
+
+    def test_a_joint_within_a_hundredth_of_either_limit_is_pinned(self):
+        q = np.array([0.3, 2.0 - 0.005, -2.0 + 0.02])
+        assert chain_mod.pinned(make_chain(), q).tolist() == [False, True, False]
+
+    def test_a_joint_limited_on_one_side_is_pinned_at_that_side(self):
+        chain = make_chain()
+        chain.upper[0] = np.inf
+        assert chain_mod.pinned(chain, np.array([-2.0, 0.0, 0.0])).tolist() == [True, False, False]
+        assert not chain_mod.pinned(chain, np.array([1e6, 0.0, 0.0])).any()
+
+    def test_held_and_unlimited_joints_are_never_pinned(self):
+        chain = make_chain()
+        chain.limited = np.array([False, True, True])
+        held = np.array([False, True, False])
+        q = np.array([2.0, 2.0, 2.0])
+        assert chain_mod.pinned(chain, q, held).tolist() == [False, False, True]

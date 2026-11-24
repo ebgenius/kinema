@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import re
 
 import numpy as np
 import pytest
@@ -896,6 +897,79 @@ class TestConfiguration:
         assert worst < 0.03, f"a joint jumped {worst:.3f} rad in a frame"
         bpy.context.scene.frame_set(22)
         assert np.allclose(_tool(builder, wide6), np.array(moved.translation), atol=1e-4)
+
+
+#: joint6 either side of its +-3.14 stop on arm6: as a line, the tool turns the
+#: short way, 0.68 rad across the stop, reaching it about halfway, on frame 11 of
+#: 1-21. As a joint move, joint6 turns the long way round, inside its range (#75).
+ACROSS_THE_STOP = (WRIST + [2.8], WRIST + [-2.8])
+
+
+class TestALineIntoALimit:
+    @pytest.mark.parametrize("move", ["LINEAR", "JOINT"])
+    def test_generate_motion_names_the_joint_and_the_frame(self, arm6, builder, wp_ops, move):
+        """Said before anything plays, with what to do about it; generated all the
+        same, since it plays, and the Motion Check flags it. A joint move between
+        the same two waypoints stays inside the limits, and isn't warned of."""
+        import bpy
+
+        _teach(builder, arm6, 1, ACROSS_THE_STOP[0], "JOINT", "a")
+        _teach(builder, arm6, 21, ACROSS_THE_STOP[1], move, "b")
+
+        outcome = wp_ops.generate_job(bpy.context, arm6)
+
+        assert outcome.done, outcome.message
+        assert _curves(arm6), "nothing was keyed"
+        if move == "JOINT":
+            assert "into its limit" not in outcome.message, outcome.message
+            return
+        assert outcome.level == "WARNING"
+        found = re.search(
+            r"'b': the line runs joint6 into its limit near frame (\d+)", outcome.message
+        )
+        assert found, outcome.message
+        assert 9 <= int(found.group(1)) <= 13, outcome.message
+        assert "a joint move can get there inside the limits" in outcome.message
+
+    def test_a_joint_at_its_limit_from_the_start_isn_t_blamed(
+        self, arm6, builder, wp_ops, monkeypatch
+    ):
+        """A line that can't be followed for another reason -- here a step made to
+        fail -- while joint5 rests at its limit throughout, as taught at both ends:
+        the line didn't run joint5 there, so nothing names it."""
+        from dataclasses import replace
+
+        import bpy
+
+        real_arrival, real_solve = wp_ops._arrival, wp_ops.numpy_backend.solve
+        failed = []
+
+        def arrival(*args, **kwargs):
+            calls = []
+
+            def solve(chain, seed, goal, held=None):
+                result = real_solve(chain, seed, goal, held=held)
+                calls.append(1)
+                if len(calls) == 3:  # the end's reference, a step, then this one
+                    failed.append(result.q)
+                    return replace(result, converged=False)
+                return result
+
+            monkeypatch.setattr(wp_ops.numpy_backend, "solve", solve)
+            try:
+                return real_arrival(*args, **kwargs)
+            finally:
+                monkeypatch.setattr(wp_ops.numpy_backend, "solve", real_solve)
+
+        monkeypatch.setattr(wp_ops, "_arrival", arrival)
+        _teach(builder, arm6, 1, [0.4, -0.7, 1.1, 0.2, 2.0, 0.0], "JOINT", "a")
+        _teach(builder, arm6, 21, [0.5, -0.75, 1.15, 0.25, 2.0, 0.1], "LINEAR", "b")
+
+        outcome = wp_ops.generate_job(bpy.context, arm6)
+
+        assert failed, "precondition: a step along the line failed"
+        assert failed[0][4] > 2.0 - 0.01, "precondition: joint5 is at its limit there"
+        assert "into its limit" not in outcome.message, outcome.message
 
 
 class TestBakingAJob:

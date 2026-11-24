@@ -188,6 +188,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     crosses over its speed limit, and a waypoint taught 8.7 mm from a post, with 50 mm asked,
     is left at the pace it has with Avoid Obstacles off.
 
+- **A linear move into a joint limit is named** (#75). Where a line turns the tool across a
+  joint's stop, Generate Motion says which joint and about which frame, and that a joint
+  move can get there inside the limits. It still generates the job. Optimize Motion refuses
+  such a job before compiling, naming the move the same way, since no motion within the
+  limits keeps to that line.
+
 ### Changed
 
 - **The TCP bone is the Tool bone** (#103). A robot imported now has a bone, and a bone

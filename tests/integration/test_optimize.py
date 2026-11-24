@@ -30,7 +30,8 @@ import numpy as np
 import pytest
 
 from ..conftest import requires_bpy
-from .test_waypoints import _retime
+from .test_waypoints import ACROSS_THE_STOP, _retime
+from .test_waypoints import _teach as _teach_at
 
 pytestmark = requires_bpy
 
@@ -621,6 +622,33 @@ class TestRefusing:
         _retime(arm6, arm6.kinema_waypoints[1], 70)
         with pytest.raises(RuntimeError, match="Generate Motion again"):
             bpy.ops.kinema.optimize_motion()
+        assert _keys(modules, arm6) == before
+
+    def test_a_line_into_a_joint_limit_is_refused_before_compiling(
+        self, arm6, builder, modules, monkeypatch
+    ):
+        """The limits are kept, so no trajectory keeps to a line that runs a joint
+        into one: said, naming the move, the joint and the frame, without the
+        seconds a compile takes (#75)."""
+        import bpy
+
+        optimize = modules("ops.optimize")
+        _teach_at(builder, arm6, 1, ACROSS_THE_STOP[0], "JOINT", "a")
+        _teach_at(builder, arm6, 21, ACROSS_THE_STOP[1], "LINEAR", "b")
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        before = _keys(modules, arm6)
+        compiled = []
+        real = optimize.trajectory.optimizer
+        monkeypatch.setattr(
+            optimize.trajectory, "optimizer", lambda *a, **k: compiled.append(1) or real(*a, **k)
+        )
+        with pytest.raises(
+            RuntimeError,
+            match=r"'b': the line runs joint6 into its limit near frame \d+, so no motion "
+            r"within the limits keeps to that line\. Make it a joint move",
+        ):
+            bpy.ops.kinema.optimize_motion()
+        assert compiled == [], "compiled before refusing"
         assert _keys(modules, arm6) == before
 
 

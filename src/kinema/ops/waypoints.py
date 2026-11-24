@@ -101,7 +101,7 @@ from ..rig.waypoints import (
     plan as plan_motions,
 )
 from ..solver import branches, manager, numpy_backend
-from ..solver.chain import chain_from_rig
+from ..solver.chain import chain_from_rig, pinned
 from ..ui.panel import active_rig
 from . import collision as collision_ops
 from . import references, strips, velocity
@@ -1002,10 +1002,10 @@ def generate_job(context, rig) -> Outcome:
         )
     changed = {waypoint.as_pointer(): values for waypoint, values in followed}
     changed.update(visits)
-    refused, turned, shared, changed = (
+    refused, turned, shared, limited, changed = (
         settle_configurations(rig, plan, changed, placement)
         if needs_ik
-        else ([], [], [], changed)
+        else ([], [], [], [], changed)
     )
     if shared:
         names = ", ".join(f"'{name}'" for name in shared)
@@ -1128,7 +1128,36 @@ def generate_job(context, rig) -> Outcome:
             f"arrives, and keeps the turn it arrives with ({description}). "
             f"Re-teach it to change that"
         )
-    return Outcome(True, "WARNING" if flagged or job.notes else "INFO", message, flagged)
+    for span, names, frame in limited:
+        message += (
+            f". {limit_text(span, names, frame)}; a joint move can get there inside the limits"
+        )
+    level = "WARNING" if flagged or job.notes or limited else "INFO"
+    return Outcome(True, level, message, flagged)
+
+
+def limit_text(span, names, frame) -> str:
+    """A linear move that runs joints into their limits, in words."""
+    joints = " and ".join(names)
+    return (
+        f"'{span.label}': the line runs {joints} into "
+        f"{'its limit' if len(names) == 1 else 'their limits'} near frame {frame}"
+    )
+
+
+def lines_into_limits(rig, plan, placement=None) -> list:
+    """``(span, joint names, frame)`` for each linear move of ``plan`` whose line
+    runs a joint into its limit: what Generate Motion warns of.
+
+    Walked as Generate Motion walks the job, from the joints it finds at each
+    marker. Writes nothing.
+    """
+    if not any(keyed_as(span, placement) == MOVE_LINEAR for span in plan):
+        return []
+    _, followed, visits = follow_markers(rig, plan, placement)
+    changed = {waypoint.as_pointer(): values for waypoint, values in followed}
+    changed.update(visits)
+    return settle_configurations(rig, plan, changed, placement)[3]
 
 
 def _key_joint_span(rig, span, changed) -> None:
@@ -1430,8 +1459,9 @@ def _walk(chain, held, to_solver, columns, taught, start: Matrix, end: Matrix):
 # --------------------------------------------------------------------------
 # a linear move keeps its configuration
 # --------------------------------------------------------------------------
-#: How a linear move's end compares with the configuration it was taught in.
-SAME, TURNS, BRANCH = "SAME", "TURNS", "BRANCH"
+#: How a linear move's end compares with the configuration it was taught in --
+#: or, for LIMIT, that the line runs a joint into its limit before the end.
+SAME, TURNS, BRANCH, LIMIT = "SAME", "TURNS", "BRANCH", "LIMIT"
 
 
 def settle_configurations(rig, plan, overrides=None, placement=None):
@@ -1443,8 +1473,8 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
     relative to an object is under ``(as_pointer(), frame)``, as
     :func:`values_at` reads them, and so is what it arrives with.
 
-    Returns ``(refused, turned, shared, settled)`` and writes nothing, so a
-    refusal leaves the waypoints exactly as they were:
+    Returns ``(refused, turned, shared, limited, settled)`` and writes nothing,
+    so a refusal leaves the waypoints exactly as they were:
 
     - ``refused``: the linear moves whose two ends were taught in different
       configurations, named by the waypoint each arrives at. A straight line
@@ -1461,6 +1491,11 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
       an earlier linear move started or ended there with the turns as they
       were. A waypoint holds one set of joint values for every motion that
       uses it, so changing it would leave the earlier line a whole turn off.
+    - ``limited``: ``(span, joint names, frame)`` for each linear move whose line
+      runs a joint into its limit, about on that frame. The line can't be
+      followed past it, as a controller's LIN stops at a software limit; a
+      joint move can get there inside the limits. Not refused: it plays, off
+      the line, and the motion check says so.
     - ``settled``: ``overrides`` with what this found: each end's turns as its
       line arrives, and a pause ending as it began.
 
@@ -1475,9 +1510,9 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
     # solver is aiming something else at it, and the walk would prove nothing.
     changed = dict(overrides or {})
     if solver is None or solver.tip_bone != _tool_bone(rig):
-        return [], [], [], changed
+        return [], [], [], [], changed
     chain = solver.chain
-    refused, turned, shared = [], [], []
+    refused, turned, shared, limited = [], [], [], []
     lined = set()  # waypoints an earlier linear move started or ended at
     for span in plan:
         start_key = _visit_key(rig, span.start, span.start_frame)
@@ -1494,7 +1529,9 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
             lined.update((start_key, end_key))
             continue
         kind, values = arrival
-        if kind == BRANCH:
+        if kind == LIMIT:
+            limited.append((span, *values))
+        elif kind == BRANCH:
             refused.append(span.end.name)
         elif kind == TURNS and end_key in lined:
             if span.end.name not in shared:
@@ -1505,7 +1542,7 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
                 (span.end, values, _turn_description(rig, chain, span, end, values), span.end_frame)
             )
         lined.update((start_key, end_key))
-    return refused, turned, shared, changed
+    return refused, turned, shared, limited, changed
 
 
 def _arrival(rig, span, chain, start_values, end_values, placement=None):
@@ -1519,7 +1556,10 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
     - on the same branch but with a joint whole turns away, which a comparison
       modulo a turn cannot see: TURNS, with the end's stored values carrying
       the turns the walk arrived with;
-    - otherwise SAME.
+    - otherwise SAME;
+    - or, where a step along the line can't be solved with a joint left at a
+      limit it wasn't at when the line began: LIMIT, with those joints' names
+      and about the frame it happens on.
 
     Solved with the NumPy backend, which needs no compile and answers the same
     question: can the arm follow this line without changing configuration?
@@ -1529,8 +1569,8 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
     - a redundant arm, where the end of a line is a whole family of
       configurations and which one the walk lands on says nothing about a
       branch;
-    - a line the arm cannot follow at all, which the motion check reports in
-      its own terms.
+    - a line the arm cannot follow for any other reason -- out of reach, say --
+      which the motion check reports in its own terms.
     """
     columns = _chain_columns(rig, chain, span)
     if columns is None:
@@ -1556,13 +1596,20 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
         return None
 
     q = q_start
+    already = pinned(chain, q_start, held)
     for fraction, pose in steps:
         seed = q.copy()
         # Held joints are not solved for; they go where their keys take them.
         seed[held] = q_start[held] + (q_end[held] - q_start[held]) * fraction
         result = solve(seed, pose)
         if not result.converged:
-            return None
+            # The NumPy solver clamps into the limits, so a joint the line
+            # pushes past one is left exactly at it.
+            stopped = pinned(chain, result.q, held) & ~already
+            if not stopped.any():
+                return None
+            names = [name for name, at in zip(chain.bone_names, stopped, strict=True) if at]
+            return LIMIT, (names, span.start_frame + round(fraction * span.frames))
         q = result.q
 
     if (

@@ -292,23 +292,36 @@ class Chain:
 PINNED = 0.01
 
 
+def pinned(chain: Chain, q: np.ndarray, held: np.ndarray | None = None) -> np.ndarray:
+    """Which free joints of ``q`` sit at one of their limits, as a mask.
+
+    A joint limited on one side only can sit at that one.
+    """
+    q = np.asarray(q, dtype=float)
+    at_lower = np.isfinite(chain.lower) & (q - chain.lower < PINNED)
+    at_upper = np.isfinite(chain.upper) & (chain.upper - q < PINNED)
+    mask = chain.limited & (at_lower | at_upper)
+    if held is not None:
+        mask &= ~np.asarray(held, dtype=bool)
+    return mask
+
+
 def unpinned(chain: Chain, q: np.ndarray, held: np.ndarray | None = None) -> np.ndarray | None:
     """``q`` with each free joint that sits at a limit moved halfway to the middle of
     its range, or None when none does.
 
     Halfway, not a nudge: measured on the Franka's elbow pinned just short of
     straight (tests/fixtures/fer_kinematics.urdf), a tenth or a quarter of the way
-    still stalled 75 mm off, and half the way converged.
+    still stalled 75 mm off, and half the way converged. Only a joint limited on
+    both sides has a middle to move toward.
     """
     q = np.asarray(q, dtype=float)
-    bounded = chain.limited & np.isfinite(chain.lower) & np.isfinite(chain.upper)
-    pinned = bounded & ((q - chain.lower < PINNED) | (chain.upper - q < PINNED))
-    if held is not None:
-        pinned &= ~np.asarray(held, dtype=bool)
-    if not pinned.any():
+    bounded = np.isfinite(chain.lower) & np.isfinite(chain.upper)
+    moved = pinned(chain, q, held) & bounded
+    if not moved.any():
         return None
-    middle = (chain.lower + chain.upper) / 2.0
-    return np.where(pinned, q + 0.5 * (middle - q), q)
+    middle = np.where(bounded, (chain.lower + chain.upper) / 2.0, q)
+    return np.where(moved, q + 0.5 * (middle - q), q)
 
 
 def pose_error(current: np.ndarray, target: np.ndarray) -> np.ndarray:
