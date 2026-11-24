@@ -24,7 +24,9 @@ timing: the line's targets are where Generate Motion put the tool on each
 frame, so it still runs along the line at a steady speed, and the joint moves
 either side ease into it and out of it. A move that can't
 keep within its limits in the frames it has comes out as close as it gets,
-and the Motion Check says about how many frames it needs.
+and the Motion Check says about how many frames it needs. A linear move whose
+line runs a joint into its limit can't be kept to in any number of frames, and
+is refused before compiling, named as Generate Motion names it (#75).
 
 **Regenerating replaces it.** The keys are in the range Generate Motion owns,
 so the next Generate Motion clears them as it clears its own. It optimises the
@@ -159,6 +161,18 @@ def prepare(context, rig) -> Job:
             "Generate Motion again, then optimize"
         )
     solver, pyroki = _model(rig)
+    placement = wp.place_job(context, rig, plan)
+    # Before the compile, which is the slow part: the joint limits are kept, so
+    # no trajectory keeps to a line that runs a joint into one. Walked by the
+    # solver aimed at the tool, as the optimizer is.
+    limited = wp.lines_into_limits(rig, plan, placement, solver)
+    if limited:
+        moves = "; ".join(
+            f"{wp.limit_text(rig, span, names, frame)}, so no motion within the limits "
+            f"keeps to it: {wp.limit_remedy(rig, span)}"
+            for span, names, frame in limited
+        )
+        raise Refused(f"{moves}. Generate Motion once that's changed, then optimize")
     first, last = plan[0].start_frame, plan[-1].end_frame
     steering = steers_clear(rig, context.scene)
     if steering and collision_ops.capsules_stale(rig):
@@ -184,7 +198,6 @@ def prepare(context, rig) -> Job:
     samples = wp.play_job(context, rig, plan)
     if samples is None:
         raise Refused("This rig has no tool bone to aim by")
-    placement = wp.place_job(context, rig, plan)
     problem, free = assemble(
         rig, plan, samples, solver, pyroki, 1.0 / wp.scene_fps(context.scene), placement
     )

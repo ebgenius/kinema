@@ -30,7 +30,8 @@ import numpy as np
 import pytest
 
 from ..conftest import requires_bpy
-from .test_waypoints import _retime
+from .test_waypoints import ACROSS_THE_STOP, _held_across_the_stop, _retime
+from .test_waypoints import _teach as _teach_at
 
 pytestmark = requires_bpy
 
@@ -623,6 +624,47 @@ class TestRefusing:
             bpy.ops.kinema.optimize_motion()
         assert _keys(modules, arm6) == before
 
+    @pytest.mark.parametrize("case", ["line", "line, IK tip on joint6", "hold", "linear pause"])
+    def test_a_move_into_a_joint_limit_is_refused_before_compiling(
+        self, arm6, builder, modules, monkeypatch, case
+    ):
+        """The limits are kept, so no trajectory keeps to a line that runs a joint
+        into one: said, naming the move, the joint and the frame, without the
+        seconds a compile takes (#75). Walked to the tool, as the optimizer aims,
+        with live IK's tip on another bone too. A hold on an object that turns the
+        joint there is named as a hold."""
+        import bpy
+
+        optimize = modules("ops.optimize")
+        if case in ("hold", "linear pause"):
+            pause = "LINEAR" if case == "linear pause" else None
+            label = _held_across_the_stop(builder, modules("ops.ik"), arm6, pause)
+            expected = (
+                rf"'{label}': following 'Turntable' runs joint6 into its limit near "
+                r"frame \d+, so no motion within the limits keeps to it: 'Turntable' takes "
+                r"the tool where the robot can't follow it"
+            )
+        else:
+            _teach_at(builder, arm6, 1, ACROSS_THE_STOP[0], "JOINT", "a")
+            _teach_at(builder, arm6, 21, ACROSS_THE_STOP[1], "LINEAR", "b")
+            expected = (
+                r"'b': the line runs joint6 into its limit near frame \d+, so no motion "
+                r"within the limits keeps to it: a joint move can get there inside the limits"
+            )
+        assert "FINISHED" in bpy.ops.kinema.generate_motion()
+        if case.endswith("joint6"):
+            arm6.kinema_ik_tip = 5
+            assert modules("solver.manager").tip_bone(arm6) == "joint6", "precondition"
+        before = _keys(modules, arm6)
+        compiled = []
+        real = optimize.trajectory.optimizer
+        monkeypatch.setattr(
+            optimize.trajectory, "optimizer", lambda *a, **k: compiled.append(1) or real(*a, **k)
+        )
+        with pytest.raises(RuntimeError, match=expected):
+            bpy.ops.kinema.optimize_motion()
+        assert compiled == [], "compiled before refusing"
+        assert _keys(modules, arm6) == before
 
 def _in_the_way(builder, modules, rig, frame=31, up=None, size=0.03, shape="BOX"):
     """An obstacle by the arm's outermost capsule on ``frame``, mid-way through move B.

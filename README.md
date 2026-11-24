@@ -257,6 +257,11 @@ LIN ignores its target's Turn. Generate Motion says which joint and both values,
 move's row in the Motion Check keeps saying so. Re-teach that waypoint if you meant the
 other turn.
 
+Nor can it take a joint past its limit. Where the line turns the tool across a joint's stop,
+such as joint 6 at ±180°, Generate Motion names the joint and about the frame it reaches its
+limit, and suggests a joint move, which can turn the joint the other way round. The job is
+generated all the same, and the Motion Check flags the move.
+
 Nothing about the result is special, which is the point, and Blender's own graph editor
 shapes it afterwards. Linear moves come out LINEAR, so the tool's speed changes all at once
 at each waypoint. Easing them is up to you:
@@ -330,6 +335,10 @@ Where a move hasn't the frames to keep within its limits, it comes out over them
 as the waypoints leave room for, and its row in the Motion Check says about how many frames it
 needs. Give its motion more frames and optimize again: waypoints are never moved, and the job
 is never retimed.
+- A linear move that runs a joint into its limit can't be kept to in any number of frames,
+  so it is refused before compiling, naming the move, the joint and the frame. Make it a
+  joint move. A hold on an object that moves the tool where a joint can't follow is refused
+  the same way, naming the object.
 - It optimizes the job as generated, so after editing the waypoints or motions, Generate
   Motion again first. Generate Motion afterwards replaces it.
 - Acceleration limits come from a `joint_limits.yaml` (Load Joint Limits). Without them, it
