@@ -977,20 +977,23 @@ class TestALineIntoALimit:
         assert failed[0][1][4] > 2.0 - 0.01, "precondition: joint5 is at its limit there"
         assert "into its limit" not in outcome.message, outcome.message
 
+    @pytest.mark.parametrize("pause", [None, "LINEAR"], ids=["gap", "linear pause"])
     def test_a_hold_on_an_object_that_turns_it_into_a_limit_is_named_as_a_hold(
-        self, arm6, builder, wp_ops, ik_ops
+        self, arm6, builder, wp_ops, ik_ops, pause
     ):
         """A hold is keyed as a line when its object moves, and walked as one, but
-        it is no linear move: a joint move is no answer, so none is suggested."""
+        it is no linear move: a joint move is no answer, so none is suggested. A
+        pause -- a motion from the waypoint to itself -- is one too, set to Linear
+        or not: as a joint move it would follow the object all the same."""
         import bpy
 
-        _held_across_the_stop(builder, ik_ops, arm6)
+        label = _held_across_the_stop(builder, ik_ops, arm6, pause)
 
         outcome = wp_ops.generate_job(bpy.context, arm6)
 
         assert outcome.done, outcome.message
         found = re.search(
-            r"'hold at place': following 'Turntable' runs joint6 into its limit "
+            rf"'{label}': following 'Turntable' runs joint6 into its limit "
             r"near frame (\d+); 'Turntable' takes the tool where the robot can't "
             r"follow it",
             outcome.message,
@@ -1000,11 +1003,14 @@ class TestALineIntoALimit:
         assert "joint move" not in outcome.message, outcome.message
 
 
-def _held_across_the_stop(builder, ik, rig):
+def _held_across_the_stop(builder, ik, rig, pause=None):
     """'place' taught on an Empty at joint6, which turns about joint6's axis, 0.68
     rad joint6's way and back, while the tool is held there over frames 21-41.
     Following it, joint6 goes from 2.8 across its 3.14 stop near frame 26, and
-    is back by 41, so the job meets the waypoint where it was taught."""
+    is back by 41, so the job meets the waypoint where it was taught.
+
+    Held by a gap in the job, or with ``pause`` by a motion "wait" from 'place'
+    to itself with that move. Returns the hold's name in the Motion Check."""
     import bpy
     from mathutils import Matrix
 
@@ -1025,10 +1031,15 @@ def _held_across_the_stop(builder, ik, rig):
         for curve in container:
             for point in curve.keyframe_points:
                 point.interpolation = "LINEAR"
+    if pause is not None:
+        wait = rig.kinema_motions.add()
+        wait.name, wait.start, wait.end = "wait", place.uid, place.uid
+        wait.frame_start, wait.frame_end, wait.move = 21, 41, pause
     leave = rig.kinema_motions.add()
     leave.name, leave.start, leave.end = "leave", place.uid, rig.kinema_waypoints["pick"].uid
     leave.frame_start, leave.frame_end = 41, 61
     bpy.context.scene.frame_set(1)
+    return "hold at place" if pause is None else "wait"
 
 
 class TestBakingAJob:

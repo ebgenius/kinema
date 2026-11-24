@@ -624,7 +624,7 @@ class TestRefusing:
             bpy.ops.kinema.optimize_motion()
         assert _keys(modules, arm6) == before
 
-    @pytest.mark.parametrize("case", ["line", "line, IK tip on joint6", "hold"])
+    @pytest.mark.parametrize("case", ["line", "line, IK tip on joint6", "hold", "linear pause"])
     def test_a_move_into_a_joint_limit_is_refused_before_compiling(
         self, arm6, builder, modules, monkeypatch, case
     ):
@@ -636,10 +636,11 @@ class TestRefusing:
         import bpy
 
         optimize = modules("ops.optimize")
-        if case == "hold":
-            _held_across_the_stop(builder, modules("ops.ik"), arm6)
+        if case in ("hold", "linear pause"):
+            pause = "LINEAR" if case == "linear pause" else None
+            label = _held_across_the_stop(builder, modules("ops.ik"), arm6, pause)
             expected = (
-                r"'hold at place': following 'Turntable' runs joint6 into its limit near "
+                rf"'{label}': following 'Turntable' runs joint6 into its limit near "
                 r"frame \d+, so no motion within the limits keeps to it: 'Turntable' takes "
                 r"the tool where the robot can't follow it"
             )

@@ -1138,7 +1138,7 @@ def limit_text(rig, span, names, frame) -> str:
     """A linear move, or a hold on an object that moves, that runs joints into
     their limits, in words."""
     joints = " and ".join(names)
-    what = "the line" if span.move == MOVE_LINEAR else f"following {_held_on(rig, span)}"
+    what = "the line" if _is_line(span) else f"following {_held_on(rig, span)}"
     return (
         f"'{span.label}': {what} runs {joints} into "
         f"{'its limit' if len(names) == 1 else 'their limits'} near frame {frame}"
@@ -1148,12 +1148,18 @@ def limit_text(rig, span, names, frame) -> str:
 def limit_remedy(rig, span) -> str:
     """What to do about :func:`limit_text`'s move. A hold is keyed as a line only
     because its object moves, so a joint move wouldn't change it."""
-    if span.move == MOVE_LINEAR:
+    if _is_line(span):
         return "a joint move can get there inside the limits"
     return (
         f"{_held_on(rig, span)} takes the tool where the robot can't follow it; "
         f"move it less while the tool is held there"
     )
+
+
+def _is_line(span) -> bool:
+    """Whether ``span`` is a linear move between two places, rather than a hold:
+    a pause, a motion from a waypoint to itself, is one whatever its move says."""
+    return span.move == MOVE_LINEAR and not is_still(span)
 
 
 def _held_on(rig, span) -> str:
