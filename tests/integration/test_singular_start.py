@@ -82,6 +82,11 @@ class TestFromAPinnedElbow:
         modules("handlers").solve_rig(fer, force=True)
         bpy.context.view_layer.update()
         assert manager.get_solver(fer).last_result.converged, "precondition"
+        # A reached goal leaves no joint at a limit, so offer a seed anyway: only
+        # the converged check can stop the retry.
+        monkeypatch.setattr(
+            manager.chain_mod, "unpinned", lambda chain, q, held=None: np.asarray(q, float)
+        )
         calls = []
         real = manager.RigSolver._solve_pyroki
 
