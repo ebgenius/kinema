@@ -353,3 +353,30 @@ class TestWoundLeader:
         )
         assert m.gain(np.array([200 * np.pi + 1.001])) == 0.0
         assert m.gain(np.array([200 * np.pi + 0.5])) == pytest.approx(-1.0)
+
+
+class TestUnpinned:
+    """#56: a joint a missed solve left at a limit is moved off it for a retry."""
+
+    def test_a_pinned_joint_goes_halfway_to_the_middle_of_its_range(self):
+        chain = make_chain()
+        q = np.array([0.3, 2.0 - 0.001, -2.0 + 0.004])
+        start = chain_mod.unpinned(chain, q)
+        np.testing.assert_allclose(start, [0.3, (2.0 - 0.001) / 2.0, (-2.0 + 0.004) / 2.0])
+
+    def test_none_when_no_joint_is_at_a_limit(self):
+        assert chain_mod.unpinned(make_chain(), np.array([0.3, 1.9, -1.5])) is None
+
+    def test_a_held_joint_stays_where_it_is(self):
+        held = np.array([False, True, False])
+        start = chain_mod.unpinned(make_chain(), np.array([0.3, 2.0, -2.0]), held)
+        np.testing.assert_allclose(start, [0.3, 2.0, -1.0])
+
+    @pytest.mark.parametrize("lower, upper, at", [(-2.0, np.inf, -2.0), (-np.inf, 2.0, 2.0)])
+    def test_a_joint_limited_on_one_side_only_is_never_pinned(self, lower, upper, at):
+        # A rig can carry a lower limit with no upper one, and still reads as limited;
+        # the middle of its range is infinite, so moving toward it is no seed at all.
+        chain = make_chain()
+        chain.lower[0], chain.upper[0] = lower, upper
+        assert chain.limited[0]
+        assert chain_mod.unpinned(chain, np.array([at, 0.0, 0.0])) is None
