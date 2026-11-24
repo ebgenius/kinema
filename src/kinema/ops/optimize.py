@@ -160,20 +160,19 @@ def prepare(context, rig) -> Job:
             "The waypoints or motions have changed since the job was generated: "
             "Generate Motion again, then optimize"
         )
+    solver, pyroki = _model(rig)
     placement = wp.place_job(context, rig, plan)
     # Before the compile, which is the slow part: the joint limits are kept, so
-    # no trajectory keeps to a line that runs a joint into one.
-    limited = wp.lines_into_limits(rig, plan, placement)
+    # no trajectory keeps to a line that runs a joint into one. Walked by the
+    # solver aimed at the tool, as the optimizer is.
+    limited = wp.lines_into_limits(rig, plan, placement, solver)
     if limited:
-        moves = "; ".join(wp.limit_text(*found) for found in limited)
-        several = len(limited) != 1
-        raise Refused(
-            f"{moves}, so no motion within the limits keeps to "
-            f"{'those lines' if several else 'that line'}. Make "
-            f"{'them joint moves' if several else 'it a joint move'}, "
-            f"Generate Motion, then optimize"
+        moves = "; ".join(
+            f"{wp.limit_text(rig, span, names, frame)}, so no motion within the limits "
+            f"keeps to it: {wp.limit_remedy(rig, span)}"
+            for span, names, frame in limited
         )
-    solver, pyroki = _model(rig)
+        raise Refused(f"{moves}. Generate Motion once that's changed, then optimize")
     first, last = plan[0].start_frame, plan[-1].end_frame
     steering = steers_clear(rig, context.scene)
     if steering and collision_ops.capsules_stale(rig):

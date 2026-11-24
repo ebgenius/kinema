@@ -337,7 +337,8 @@ needs. Give its motion more frames and optimize again: waypoints are never moved
 is never retimed.
 - A linear move that runs a joint into its limit can't be kept to in any number of frames,
   so it is refused before compiling, naming the move, the joint and the frame. Make it a
-  joint move.
+  joint move. A hold on an object that moves the tool where a joint can't follow is refused
+  the same way, naming the object.
 - It optimizes the job as generated, so after editing the waypoints or motions, Generate
   Motion again first. Generate Motion afterwards replaces it.
 - Acceleration limits come from a `joint_limits.yaml` (Load Joint Limits). Without them, it

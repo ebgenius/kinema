@@ -101,7 +101,7 @@ from ..rig.waypoints import (
     plan as plan_motions,
 )
 from ..solver import branches, manager, numpy_backend
-from ..solver.chain import chain_from_rig, pinned
+from ..solver.chain import chain_from_rig
 from ..ui.panel import active_rig
 from . import collision as collision_ops
 from . import references, strips, velocity
@@ -1129,35 +1129,52 @@ def generate_job(context, rig) -> Outcome:
             f"Re-teach it to change that"
         )
     for span, names, frame in limited:
-        message += (
-            f". {limit_text(span, names, frame)}; a joint move can get there inside the limits"
-        )
+        message += f". {limit_text(rig, span, names, frame)}; {limit_remedy(rig, span)}"
     level = "WARNING" if flagged or job.notes or limited else "INFO"
     return Outcome(True, level, message, flagged)
 
 
-def limit_text(span, names, frame) -> str:
-    """A linear move that runs joints into their limits, in words."""
+def limit_text(rig, span, names, frame) -> str:
+    """A linear move, or a hold on an object that moves, that runs joints into
+    their limits, in words."""
     joints = " and ".join(names)
+    what = "the line" if span.move == MOVE_LINEAR else f"following {_held_on(rig, span)}"
     return (
-        f"'{span.label}': the line runs {joints} into "
+        f"'{span.label}': {what} runs {joints} into "
         f"{'its limit' if len(names) == 1 else 'their limits'} near frame {frame}"
     )
 
 
-def lines_into_limits(rig, plan, placement=None) -> list:
+def limit_remedy(rig, span) -> str:
+    """What to do about :func:`limit_text`'s move. A hold is keyed as a line only
+    because its object moves, so a joint move wouldn't change it."""
+    if span.move == MOVE_LINEAR:
+        return "a joint move can get there inside the limits"
+    return (
+        f"{_held_on(rig, span)} takes the tool where the robot can't follow it; "
+        f"move it less while the tool is held there"
+    )
+
+
+def _held_on(rig, span) -> str:
+    """The object a hold is on, by name."""
+    reference = references.reference_of(rig, span.start)
+    return f"'{reference.name}'" if reference is not None else "its object"
+
+
+def lines_into_limits(rig, plan, placement=None, solver=None) -> list:
     """``(span, joint names, frame)`` for each linear move of ``plan`` whose line
     runs a joint into its limit: what Generate Motion warns of.
 
     Walked as Generate Motion walks the job, from the joints it finds at each
-    marker. Writes nothing.
+    marker, by ``solver`` (see :func:`settle_configurations`). Writes nothing.
     """
     if not any(keyed_as(span, placement) == MOVE_LINEAR for span in plan):
         return []
     _, followed, visits = follow_markers(rig, plan, placement)
     changed = {waypoint.as_pointer(): values for waypoint, values in followed}
     changed.update(visits)
-    return settle_configurations(rig, plan, changed, placement)[3]
+    return settle_configurations(rig, plan, changed, placement, solver)[3]
 
 
 def _key_joint_span(rig, span, changed) -> None:
@@ -1464,7 +1481,7 @@ def _walk(chain, held, to_solver, columns, taught, start: Matrix, end: Matrix):
 SAME, TURNS, BRANCH, LIMIT = "SAME", "TURNS", "BRANCH", "LIMIT"
 
 
-def settle_configurations(rig, plan, overrides=None, placement=None):
+def settle_configurations(rig, plan, overrides=None, placement=None, solver=None):
     """Check every linear move's end against the configuration it was taught in.
 
     ``overrides`` maps a waypoint's ``as_pointer()`` to joint values to use in
@@ -1499,13 +1516,16 @@ def settle_configurations(rig, plan, overrides=None, placement=None):
     - ``settled``: ``overrides`` with what this found: each end's turns as its
       line arrives, and a pause ending as it began.
 
+    ``solver`` is the live one unless given: Optimize Motion gives the one
+    aimed at the tool, whichever bone live IK's tip is.
+
     Settled in time order, so a move that starts where an earlier one's turns
     were changed walks from the changed values. A hold on an object that moves
     is walked as a line is, since its goal is keyed on every frame as a line's
     is; one on an object standing still ends with the joints it began with,
     which a visit walked afresh from the taught joints need not have.
     """
-    solver = manager.get_solver(rig, ik_bone_name(rig))
+    solver = solver or manager.get_solver(rig, ik_bone_name(rig))
     # A waypoint's pose is the TCP's. With the tip handed to another bone the
     # solver is aiming something else at it, and the walk would prove nothing.
     changed = dict(overrides or {})
@@ -1557,8 +1577,8 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
       modulo a turn cannot see: TURNS, with the end's stored values carrying
       the turns the walk arrived with;
     - otherwise SAME;
-    - or, where a step along the line can't be solved with a joint left at a
-      limit it wasn't at when the line began: LIMIT, with those joints' names
+    - or, where a step along the line can't be solved but can be with the
+      limits taken away: LIMIT, with the names of the joints past theirs then,
       and about the frame it happens on.
 
     Solved with the NumPy backend, which needs no compile and answers the same
@@ -1583,9 +1603,9 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
     q_end = np.array(end_values, dtype=float)[columns]
     to_solver = np.linalg.inv(manager.root_pose(rig))
 
-    def solve(seed, pose: Matrix):
+    def solve(seed, pose: Matrix, on=chain):
         goal = to_solver @ np.array(pose, dtype=float)
-        return numpy_backend.solve(chain, seed, goal, held=held)
+        return numpy_backend.solve(on, seed, goal, held=held)
 
     steps = _line_steps(span, placement)
     # The end's configuration solved for where its marker is: the same thing
@@ -1595,20 +1615,26 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
     if not reference.converged:
         return None
 
+    # The same chain without its limits, which a failed step is solved again on.
+    unlimited = replace(chain, limited=np.zeros_like(chain.limited))
     q = q_start
-    already = pinned(chain, q_start, held)
     for fraction, pose in steps:
         seed = q.copy()
         # Held joints are not solved for; they go where their keys take them.
         seed[held] = q_start[held] + (q_end[held] - q_start[held]) * fraction
         result = solve(seed, pose)
         if not result.converged:
-            # The NumPy solver clamps into the limits, so a joint the line
-            # pushes past one is left exactly at it.
-            stopped = pinned(chain, result.q, held) & ~already
-            if not stopped.any():
+            # The limits are the only difference: if the step can be solved
+            # without them, they were in the way, and the joints past theirs
+            # are the ones the line runs into them. A clamped joint alone
+            # proves nothing, since the solver clamps on any failure.
+            free = solve(seed, pose, on=unlimited)
+            if not free.converged:
                 return None
-            names = [name for name, at in zip(chain.bone_names, stopped, strict=True) if at]
+            past = chain.limited & ~held & ((free.q < chain.lower) | (free.q > chain.upper))
+            if not past.any():
+                return None
+            names = [name for name, at in zip(chain.bone_names, past, strict=True) if at]
             return LIMIT, (names, span.start_frame + round(fraction * span.frames))
         q = result.q
 

@@ -931,12 +931,13 @@ class TestALineIntoALimit:
         assert 9 <= int(found.group(1)) <= 13, outcome.message
         assert "a joint move can get there inside the limits" in outcome.message
 
-    def test_a_joint_at_its_limit_from_the_start_isn_t_blamed(
+    def test_a_step_that_fails_without_the_limits_too_isn_t_put_down_to_them(
         self, arm6, builder, wp_ops, monkeypatch
     ):
-        """A line that can't be followed for another reason -- here a step made to
-        fail -- while joint5 rests at its limit throughout, as taught at both ends:
-        the line didn't run joint5 there, so nothing names it."""
+        """A line that can't be followed for another reason -- out of reach, say;
+        here a step made to fail with the limits and without them -- while joint5
+        rests at its limit, as taught at both ends. The solver clamps on any
+        failure, so joint5 sits at its limit there; nothing names it."""
         from dataclasses import replace
 
         import bpy
@@ -950,8 +951,10 @@ class TestALineIntoALimit:
             def solve(chain, seed, goal, held=None):
                 result = real_solve(chain, seed, goal, held=held)
                 calls.append(1)
-                if len(calls) == 3:  # the end's reference, a step, then this one
-                    failed.append(result.q)
+                # The end's reference, a step, then the next step: with the
+                # limits, and solved again without them.
+                if len(calls) in (3, 4):
+                    failed.append((bool(chain.limited.any()), result.q))
                     return replace(result, converged=False)
                 return result
 
@@ -967,9 +970,65 @@ class TestALineIntoALimit:
 
         outcome = wp_ops.generate_job(bpy.context, arm6)
 
-        assert failed, "precondition: a step along the line failed"
-        assert failed[0][4] > 2.0 - 0.01, "precondition: joint5 is at its limit there"
+        assert outcome.done, outcome.message
+        assert [limited for limited, _ in failed] == [True, False], (
+            "precondition: a step failed, and was solved again without the limits"
+        )
+        assert failed[0][1][4] > 2.0 - 0.01, "precondition: joint5 is at its limit there"
         assert "into its limit" not in outcome.message, outcome.message
+
+    def test_a_hold_on_an_object_that_turns_it_into_a_limit_is_named_as_a_hold(
+        self, arm6, builder, wp_ops, ik_ops
+    ):
+        """A hold is keyed as a line when its object moves, and walked as one, but
+        it is no linear move: a joint move is no answer, so none is suggested."""
+        import bpy
+
+        _held_across_the_stop(builder, ik_ops, arm6)
+
+        outcome = wp_ops.generate_job(bpy.context, arm6)
+
+        assert outcome.done, outcome.message
+        found = re.search(
+            r"'hold at place': following 'Turntable' runs joint6 into its limit "
+            r"near frame (\d+); 'Turntable' takes the tool where the robot can't "
+            r"follow it",
+            outcome.message,
+        )
+        assert found, outcome.message
+        assert 24 <= int(found.group(1)) <= 28, outcome.message
+        assert "joint move" not in outcome.message, outcome.message
+
+
+def _held_across_the_stop(builder, ik, rig):
+    """'place' taught on an Empty at joint6, which turns about joint6's axis, 0.68
+    rad joint6's way and back, while the tool is held there over frames 21-41.
+    Following it, joint6 goes from 2.8 across its 3.14 stop near frame 26, and
+    is back by 41, so the job meets the waypoint where it was taught."""
+    import bpy
+    from mathutils import Matrix
+
+    _teach(builder, rig, 1, REACH_A, "JOINT", "pick")
+    place = _teach(builder, rig, 21, ACROSS_THE_STOP[0], "JOINT", "place")
+    empty = bpy.data.objects.new("Turntable", None)
+    bpy.context.scene.collection.objects.link(empty)
+    empty.rotation_mode = "QUATERNION"
+    rest = rig.matrix_world @ builder.joint_bones(rig)[5].matrix
+    empty.matrix_world = rest
+    bpy.context.view_layer.update()
+    place.reference = empty
+    assert place.marker.parent == empty
+    for frame, angle in ((21, 0.0), (31, 0.68), (41, 0.0)):
+        empty.matrix_world = rest @ Matrix.Rotation(angle, 4, "Y")
+        empty.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+    for container in ik.own_fcurve_containers(empty):
+        for curve in container:
+            for point in curve.keyframe_points:
+                point.interpolation = "LINEAR"
+    leave = rig.kinema_motions.add()
+    leave.name, leave.start, leave.end = "leave", place.uid, rig.kinema_waypoints["pick"].uid
+    leave.frame_start, leave.frame_end = 41, 61
+    bpy.context.scene.frame_set(1)
 
 
 class TestBakingAJob:
