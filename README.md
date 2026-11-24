@@ -260,7 +260,10 @@ other turn.
 Nor can it take a joint past its limit. Where the line turns the tool across a joint's stop,
 such as joint 6 at ±180°, Generate Motion names the joint and about the frame it reaches its
 limit, and suggests a joint move, which can turn the joint the other way round. The job is
-generated all the same, and the Motion Check flags the move.
+generated all the same. In playback the robot stops where the line meets the limit, as a
+controller's LIN stops at a software limit, and stands there while the IK target goes on, so
+the tool visibly leaves the line. On the move's last frame it is at its end waypoint. The
+Motion Check flags the move.
 
 Nothing about the result is special, which is the point, and Blender's own graph editor
 shapes it afterwards. Linear moves come out LINEAR, so the tool's speed changes all at once

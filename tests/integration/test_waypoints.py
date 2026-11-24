@@ -1002,6 +1002,75 @@ class TestALineIntoALimit:
         assert 24 <= int(found.group(1)) <= 28, outcome.message
         assert "joint move" not in outcome.message, outcome.message
 
+    @pytest.mark.parametrize("what", ["line", "hold"])
+    def test_playback_stops_where_the_limit_is_met_until_the_move_ends(
+        self, arm6, builder, wp_ops, ik_ops, what
+    ):
+        """As a controller's LIN stops at a software limit, rather than losing the
+        line there and then turning joint6 a whole turn to the far side of its
+        range in one frame. The goal goes on, so the tool visibly leaves it, and
+        the Motion Check says so. On the move's last frame the robot is at its
+        end waypoint, as the moves after it need."""
+        import bpy
+
+        if what == "line":
+            _teach(builder, arm6, 1, ACROSS_THE_STOP[0], "JOINT", "a")
+            _teach(builder, arm6, 21, ACROSS_THE_STOP[1], "LINEAR", "b")
+            label, first, last, met, end = "b", 1, 21, (11, 13), ACROSS_THE_STOP[1]
+        else:
+            label = _held_across_the_stop(builder, ik_ops, arm6)
+            first, last, met, end = 21, 41, (25, 29), ACROSS_THE_STOP[0]
+
+        outcome = wp_ops.generate_job(bpy.context, arm6)
+
+        assert outcome.done and "into its limit" in outcome.message, outcome.message
+        played = {}
+        for frame in range(first, last + 1):
+            bpy.context.scene.frame_set(frame)
+            played[frame] = (bool(arm6.kinema_ik_enabled), _q(builder, arm6))
+        for frame in range(first + 1, last):
+            step = abs(played[frame][1][5] - played[frame - 1][1][5])
+            assert step < 0.1, f"joint6 jumped {step:.2f} rad on frame {frame}"
+        # The last frame is the next move's first, which keys live IK its own way.
+        stopped = [frame for frame, (ik, _) in played.items() if not ik and frame < last]
+        assert stopped, "the robot never stopped"
+        assert stopped == list(range(stopped[0], last)), stopped
+        assert met[0] <= stopped[0] <= met[1], stopped
+        stood = played[stopped[0]][1]
+        for frame in stopped:
+            assert np.allclose(played[frame][1], stood, atol=1e-6), f"moved on frame {frame}"
+        # Within a step of the walk's, 2 degrees of the tool's turn, of the stop.
+        assert stood[5] > 3.14 - math.radians(2.0), stood
+        assert np.allclose(played[last][1], end, atol=1e-3), played[last][1]
+        row = next(row for row in arm6.kinema_motion_check if row.name == label)
+        assert row.twist_error > 0.2, row.twist_error
+
+    def test_a_stop_made_a_joint_move_is_cleared(self, arm6, builder, wp_ops):
+        """The stop is on the channels the move keys anyway, so regenerating takes
+        it away with the rest."""
+        import bpy
+
+        _teach(builder, arm6, 1, ACROSS_THE_STOP[0], "JOINT", "a")
+        _teach(builder, arm6, 21, ACROSS_THE_STOP[1], "LINEAR", "b")
+        outcome = wp_ops.generate_job(bpy.context, arm6)
+        assert outcome.done and "into its limit" in outcome.message, outcome.message
+        arm6.kinema_motions[-1].move = "JOINT"
+
+        outcome = wp_ops.generate_job(bpy.context, arm6)
+
+        assert outcome.done, outcome.message
+        keyed = sorted(
+            int(point.co[0])
+            for curve in _curves(arm6)
+            if curve.data_path == 'pose.bones["joint6"].rotation_euler'
+            and curve.array_index == 1
+            for point in curve.keyframe_points
+        )
+        assert keyed == [1, 21], keyed
+        for frame in range(1, 22):
+            bpy.context.scene.frame_set(frame)
+            assert not arm6.kinema_ik_enabled, f"live IK is on on frame {frame}"
+
 
 def _held_across_the_stop(builder, ik, rig, pause=None):
     """'place' taught on an Empty at joint6, which turns about joint6's axis, 0.68
@@ -1714,3 +1783,4 @@ def _curves(rig):
             for curve in bag.fcurves
         ]
     return list(action.fcurves)
+
