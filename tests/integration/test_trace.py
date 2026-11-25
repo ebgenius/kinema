@@ -196,6 +196,45 @@ class TestTracing:
         third = _traced(trace, job)
         assert tuple(third.motion_path.color) != tuple(second.motion_path.color)
 
+    def test_a_new_colour_is_the_whole_traces(self, job, trace):
+        """Set from the panel's row: the path either side of the current frame, and the
+        empty, all take it."""
+        import bpy
+
+        empty = _traced(trace, job)
+        bpy.context.scene.frame_set(80)
+        empty.kinema_trace_colour = (0.2, 0.3, 0.4)
+        path = empty.motion_path
+        for shown in (path.color, path.color_post, empty.color[:3]):
+            assert tuple(shown) == pytest.approx((0.2, 0.3, 0.4))
+
+    def test_tracing_leaves_the_scene_at_the_time_it_found_it(self, job, trace):
+        import bpy
+
+        scene = bpy.context.scene
+        scene.frame_set(50, subframe=0.25)
+        _traced(trace, job)
+        assert (scene.frame_current, scene.frame_subframe) == (50, pytest.approx(0.25))
+
+    def test_a_trace_goes_in_the_scene_it_was_made_in(self, job, trace):
+        """The robot linked into a second scene through a collection of that scene's:
+        traced there, the trace is in that scene and its list."""
+        import bpy
+
+        other = bpy.data.scenes.new("Other")
+        other.render.fps = bpy.context.scene.render.fps
+        other.frame_start, other.frame_end = TIGHT[0], TIGHT[-1]
+        there = bpy.data.collections.new("There")
+        other.collection.children.link(there)
+        there.objects.link(job)
+        assert job.users_collection[0] not in other.collection.children_recursive, (
+            "precondition: the robot's first collection is in the first scene"
+        )
+        with bpy.context.temp_override(scene=other, view_layer=other.view_layers[0]):
+            assert "FINISHED" in bpy.ops.kinema.trace_tool()
+        (made,) = trace.traces_of(other, job)
+        assert made.users_collection[0] == there
+
     def test_a_trace_after_optimizing_matches_playback_and_eases_into_the_line(
         self, job, builder, trace
     ):
@@ -225,5 +264,5 @@ def test_the_motions_panel_offers_the_button_and_lists_the_rigs_traces(job, trac
     _traced(trace, job), _traced(trace, job)
     drawn = _drawn(panel.KINEMA_PT_motions, bpy.context)
     assert drawn.count(("prop", "name")) == 2
-    assert drawn.count(("prop", "color")) == 2
+    assert drawn.count(("prop", "kinema_trace_colour")) == 2
     assert drawn.count(("operator", "kinema.remove_trace")) == 2

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import bpy
 import numpy as np
-from bpy.props import PointerProperty, StringProperty
+from bpy.props import FloatVectorProperty, PointerProperty, StringProperty
 from bpy.types import Operator
 from mathutils import Matrix
 
@@ -61,7 +61,8 @@ def tool_poses(context, rig, first: int, last: int) -> list[np.ndarray]:
     scene = context.scene
     tool = builder.tool_bone_name(rig)
     poses = []
-    original = scene.frame_current
+    # The subframe too: tracing leaves the scene at the time it found it.
+    original, subframe = scene.frame_current, scene.frame_subframe
     window = context.window_manager
     window.progress_begin(first, last)
     try:
@@ -77,7 +78,7 @@ def tool_poses(context, rig, first: int, last: int) -> list[np.ndarray]:
             window.progress_update(frame)
     finally:
         window.progress_end()
-        scene.frame_set(original)
+        scene.frame_set(original, subframe=subframe)
     return poses
 
 
@@ -106,14 +107,14 @@ def trace_tool(context, rig) -> Outcome:
     extent = max(rig.dimensions) if any(rig.dimensions) else 1.0
     empty.empty_display_size = max(extent * MARKER_SCALE, 0.01)
     empty.rotation_mode = "QUATERNION"
-    empty.color = (*colour, 1.0)
     empty.kinema_trace_of = rig
     empty["kinema_trace_index"] = index
-    collection = rig.users_collection[0] if rig.users_collection else scene.collection
-    collection.objects.link(empty)
+    _collection(scene, rig).objects.link(empty)
 
     _key(empty, first, poses[1:-1], measured)
-    _path(context, empty, first, last, colour)
+    _path(context, empty, first, last)
+    # Its update colours the empty and both sides of its path.
+    empty.kinema_trace_colour = colour
     return Outcome(
         True, "INFO", f"Traced '{rig.name}' over frames {first}-{last} as '{empty.name}'"
     )
@@ -161,9 +162,19 @@ def _key(empty, first: int, poses, measured) -> None:
 _LINEAR = bpy.types.Keyframe.bl_rna.properties["interpolation"].enum_items["LINEAR"].value
 
 
-def _path(context, empty, first: int, last: int, colour) -> None:
-    """``empty``'s motion path over its frames, in ``colour``. Worked out once: its keys
-    never change."""
+def _collection(scene, rig):
+    """Where a trace of ``rig`` goes: a collection of the rig's in ``scene``, else the
+    scene's own. A rig linked into two scenes can have its first collection in the
+    other one, where the trace would be missing from this scene and its list."""
+    here = scene.collection.children_recursive
+    for collection in rig.users_collection:
+        if collection == scene.collection or collection in here:
+            return collection
+    return scene.collection
+
+
+def _path(context, empty, first: int, last: int) -> None:
+    """``empty``'s motion path over its frames. Worked out once: its keys never change."""
     settings = empty.animation_visualization.motion_path
     settings.type = "RANGE"
     settings.frame_start, settings.frame_end = first, last
@@ -177,9 +188,15 @@ def _path(context, empty, first: int, last: int, colour) -> None:
         selected_objects=[empty], selected_editable_objects=[empty],
     ):
         bpy.ops.object.paths_calculate(display_type="RANGE", range="MANUAL")
+
+
+def _recoloured(empty, _context) -> None:
+    """A trace's colour, on its empty and its path either side of the current frame,
+    so it reads as one trace however its colour was changed."""
+    colour = tuple(empty.kinema_trace_colour)
+    empty.color = (*colour, 1.0)
     path = empty.motion_path
     if path is not None:
-        # The same colour either side of the current frame, so a trace reads as one.
         path.use_custom_color = True
         path.color = path.color_post = colour
 
@@ -242,7 +259,7 @@ def draw_traces(layout, context, rig) -> None:
         if obj.motion_path is not None:
             colour = row.row(align=True)
             colour.ui_units_x = 1.5
-            colour.prop(obj.motion_path, "color", text="")
+            colour.prop(obj, "kinema_trace_colour", text="")
         row.prop(obj, "name", text="")
         row.operator("kinema.remove_trace", text="", icon="X").name = obj.name
 
@@ -253,9 +270,21 @@ def register_props() -> None:
         name="Trace Of",
         description="The rig whose tool this empty traces",
     )
+    bpy.types.Object.kinema_trace_colour = FloatVectorProperty(
+        name="Colour",
+        description="The trace's colour: its path's, either side of the current frame, "
+        "and its empty's",
+        subtype="COLOR",
+        size=3,
+        min=0.0,
+        max=1.0,
+        default=COLOURS[0],
+        update=_recoloured,
+    )
 
 
 def unregister_props() -> None:
+    del bpy.types.Object.kinema_trace_colour
     del bpy.types.Object.kinema_trace_of
 
 

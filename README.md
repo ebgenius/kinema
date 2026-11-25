@@ -359,9 +359,9 @@ is never retimed.
 
 **Trace Tool**, under Graph Editor in the Motions panel, keeps where the tool went, to
 compare a job before and after optimizing, or after a retime. It plays the scene's frames,
-or its preview range, as playback does, and keys an empty beside the robot with the tool's
-pose on every frame: in the tool's own frame, Z out of the tool, with quaternion rotations
-that turn smoothly where Euler angles would jump.
+or its preview range, as playback does, and keys an empty, in the robot's collection, to
+follow the tool's pose on every frame: in the tool's own frame, Z out of the tool, with
+quaternion rotations that turn smoothly where Euler angles would jump.
 - **Speeds.** The empty has four properties keyed on every frame, to compare in the Graph
   Editor in real units with Normalize off. *Speed* (m/s) is measured over the frame before,
   and *Acceleration* (m/s²) from the frames either side, so it counts a change of direction
