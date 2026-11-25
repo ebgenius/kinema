@@ -1172,9 +1172,9 @@ def _held_on(rig, span) -> str:
 
 
 def lines_into_limits(rig, plan, placement=None, solver=None) -> list:
-    """``(span, joint names, frame, stop)`` for each linear move of ``plan`` whose
-    line runs a joint into its limit: what Generate Motion warns of, and where it
-    stops the robot (see :func:`settle_configurations`).
+    """``(span, joint names, frame, stop)`` for each linear move of ``plan``, or
+    hold on an object that moves, that runs a joint into its limit: what Generate
+    Motion warns of, and where it stops the robot (see :func:`settle_configurations`).
 
     Walked as Generate Motion walks the job, from the joints it finds at each
     marker, by ``solver`` (see :func:`settle_configurations`). Writes nothing.
@@ -1542,13 +1542,13 @@ def settle_configurations(rig, plan, overrides=None, placement=None, solver=None
       an earlier linear move started or ended there with the turns as they
       were. A waypoint holds one set of joint values for every motion that
       uses it, so changing it would leave the earlier line a whole turn off.
-    - ``limited``: ``(span, joint names, frame, stop)`` for each linear move whose
-      line runs a joint into its limit, about on that frame. The line can't be
-      followed past it, as a controller's LIN stops at a software limit; a
-      joint move can get there inside the limits. Not refused: it plays,
-      stopped there, off the line, and the motion check says so. ``stop`` is
-      ``(first frame, joint values)`` it stands still on and in, or None when
-      the limit is met on its last frame (see :func:`_key_stop`).
+    - ``limited``: ``(span, joint names, frame, stop)`` for each linear move, or
+      hold on an object that moves, that runs a joint into its limit, about on
+      that frame. It can't be followed past there, as a controller's LIN stops
+      at a software limit. Not refused: it plays, stopped there, and the motion
+      check says so. ``stop`` is ``(first frame, joint values)`` it stands still
+      on and in, or None when the limit is met on its last frame (see
+      :func:`_key_stop`). :func:`limit_remedy` says what to do about it.
     - ``settled``: ``overrides`` with what this found: each end's turns as its
       line arrives, and a pause ending as it began.
 
