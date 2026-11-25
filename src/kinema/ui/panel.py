@@ -109,6 +109,7 @@ class KinemaSceneProps(PropertyGroup):
     show_ik_swivel: BoolProperty(name="Elbow Swivel", default=False)
     show_ik_statistics: BoolProperty(name="IK Solver Statistics", default=False)
     show_motion_check: BoolProperty(name="Motion Check", default=True)
+    show_traces: BoolProperty(name="Traces", default=True)
     last_import: StringProperty(
         name="Last Import",
         description="Most recently imported robot description",
@@ -956,6 +957,7 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
         # What live IK plays, as keys: with the job it is made of.
         actions.operator("kinema.bake_ik", text="Bake to Keyframes", icon="RENDER_ANIMATION")
         layout.operator("kinema.graph_editor", text="Graph Editor", icon="GRAPH")
+        layout.operator("kinema.trace_tool", text="Trace Tool", icon="CURVE_PATH")
 
         # The same test the operator makes, not a truthier one: a rig whose IK
         # bone was deleted keeps the property, and checking only that would
@@ -967,6 +969,10 @@ class KINEMA_PT_motions(KinemaPanelBase, Panel):
 
         if len(checks):
             _draw_motion_check(layout, context, rig)
+
+        from ..ops.trace import draw_traces
+
+        draw_traces(layout, context, rig)
 
 
 def motions_note(rig) -> tuple[str, str]:

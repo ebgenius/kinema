@@ -28,6 +28,7 @@ from .ops import (
     optimize,
     pose,
     tcp,
+    trace,
     velocity,
     waypoints,
 )
@@ -40,10 +41,11 @@ from .ui import axis_preview, collision_overlay, overlay, panel, tcp_preview
 # velocity after ik for the same reason. tcp after pose, whose Set TCP it runs.
 # external_axes after the others: it builds on all of them. graph_editor,
 # whose panel sits in the Graph Editor rather than under Kinema's, has no
-# order to keep, and optimize only adds an operator to waypoints' panel.
+# order to keep, and optimize only adds an operator to waypoints' panel, as
+# trace adds one and its list.
 _MODULES = (
     prefs, panel, import_dae, import_robot, locate, pose, tcp, ik, attach, collision, waypoints,
-    velocity, external_axes, graph_editor, optimize,
+    velocity, external_axes, graph_editor, optimize, trace,
 )
 
 

@@ -168,6 +168,12 @@ BUTTONS: dict[str, Button] = {
         "RENDER_ANIMATION",
         _operator("kinema.bake_ik", "Bake IK", "RENDER_ANIMATION"),
     ),
+    "TRACE_TOOL": Button(
+        "Trace Tool",
+        "Keep the tool's path, speed and acceleration in an empty, to compare",
+        "CURVE_PATH",
+        _operator("kinema.trace_tool", "Trace Tool", "CURVE_PATH"),
+    ),
 }
 
 
