@@ -222,18 +222,53 @@ class TestTracing:
         import bpy
 
         other = bpy.data.scenes.new("Other")
-        other.render.fps = bpy.context.scene.render.fps
-        other.frame_start, other.frame_end = TIGHT[0], TIGHT[-1]
         there = bpy.data.collections.new("There")
-        other.collection.children.link(there)
-        there.objects.link(job)
-        assert job.users_collection[0] not in other.collection.children_recursive, (
-            "precondition: the robot's first collection is in the first scene"
-        )
-        with bpy.context.temp_override(scene=other, view_layer=other.view_layers[0]):
-            assert "FINISHED" in bpy.ops.kinema.trace_tool()
-        (made,) = trace.traces_of(other, job)
-        assert made.users_collection[0] == there
+        try:
+            other.render.fps = bpy.context.scene.render.fps
+            other.frame_start, other.frame_end = TIGHT[0], TIGHT[-1]
+            other.collection.children.link(there)
+            there.objects.link(job)
+            assert job.users_collection[0] not in other.collection.children_recursive, (
+                "precondition: the robot's first collection is in the first scene"
+            )
+            with bpy.context.temp_override(scene=other, view_layer=other.view_layers[0]):
+                assert "FINISHED" in bpy.ops.kinema.trace_tool()
+            (made,) = trace.traces_of(other, job)
+            assert made.users_collection[0] == there
+        finally:
+            # clean_scene purges objects, not scenes or collections.
+            bpy.data.scenes.remove(other)
+            bpy.data.collections.remove(there)
+
+    def test_a_trace_goes_in_a_collection_the_view_layer_includes(self, job, trace):
+        """The robot's first collection excluded from the view layer, the robot shown
+        through another: the trace goes in that one, where it shows."""
+        import bpy
+
+        view_layer = bpy.context.view_layer
+        first = job.users_collection[0]
+        shown = bpy.data.collections.new("Shown")
+        try:
+            bpy.context.scene.collection.children.link(shown)
+            shown.objects.link(job)
+            layer = next(
+                child for child in view_layer.layer_collection.children
+                if child.collection == first
+            )
+            layer.exclude = True
+            assert job.users_collection[0] == first, (
+                "precondition: the excluded collection is the robot's first"
+            )
+            assert job.visible_get(), "precondition: the robot still shows"
+            made = _traced(trace, job)
+            assert made.users_collection[0] == shown
+            assert made.visible_get()
+        finally:
+            for child in view_layer.layer_collection.children:
+                child.exclude = False
+            for obj in list(shown.objects):
+                shown.objects.unlink(obj)
+            bpy.data.collections.remove(shown)
 
     def test_a_trace_after_optimizing_matches_playback_and_eases_into_the_line(
         self, job, builder, trace

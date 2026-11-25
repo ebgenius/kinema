@@ -109,7 +109,7 @@ def trace_tool(context, rig) -> Outcome:
     empty.rotation_mode = "QUATERNION"
     empty.kinema_trace_of = rig
     empty["kinema_trace_index"] = index
-    _collection(scene, rig).objects.link(empty)
+    _collection(context.view_layer, rig).objects.link(empty)
 
     _key(empty, first, poses[1:-1], measured)
     _path(context, empty, first, last)
@@ -162,15 +162,23 @@ def _key(empty, first: int, poses, measured) -> None:
 _LINEAR = bpy.types.Keyframe.bl_rna.properties["interpolation"].enum_items["LINEAR"].value
 
 
-def _collection(scene, rig):
-    """Where a trace of ``rig`` goes: a collection of the rig's in ``scene``, else the
-    scene's own. A rig linked into two scenes can have its first collection in the
-    other one, where the trace would be missing from this scene and its list."""
-    here = scene.collection.children_recursive
+def _collection(view_layer, rig):
+    """Where a trace of ``rig`` goes: a collection of the rig's that ``view_layer``
+    includes, else its scene's own. A rig's first collection can be another scene's, or
+    excluded here while the rig shows through another, and a trace there would be
+    missing from this scene, or hidden."""
+    included = []
+    pending = [view_layer.layer_collection]
+    while pending:
+        layer = pending.pop()
+        if layer.exclude:
+            continue
+        included.append(layer.collection)
+        pending.extend(layer.children)
     for collection in rig.users_collection:
-        if collection == scene.collection or collection in here:
+        if collection in included:
             return collection
-    return scene.collection
+    return view_layer.layer_collection.collection
 
 
 def _path(context, empty, first: int, last: int) -> None:
