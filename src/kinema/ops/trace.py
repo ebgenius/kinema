@@ -46,6 +46,9 @@ COLOURS = (
 )
 #: The trace's empty, as large as a waypoint's marker is for the same robot.
 MARKER_SCALE = 0.08
+#: Each trace's number among its rig's; marks the empty as a trace whether or not
+#: its rig is still there.
+PROP_INDEX = "kinema_trace_index"
 
 
 def frames(scene) -> tuple[int, int]:
@@ -85,7 +88,7 @@ def tool_poses(context, rig, first: int, last: int) -> list[np.ndarray]:
 def traces_of(scene, rig) -> list:
     """The traces of ``rig`` in ``scene``, oldest first."""
     found = [obj for obj in scene.objects if obj.kinema_trace_of == rig]
-    return sorted(found, key=lambda obj: obj.get("kinema_trace_index", 0))
+    return sorted(found, key=lambda obj: obj.get(PROP_INDEX, 0))
 
 
 def trace_tool(context, rig) -> Outcome:
@@ -100,7 +103,7 @@ def trace_tool(context, rig) -> Outcome:
     fps = scene.render.fps / scene.render.fps_base
     measured = rates_of.rates(poses, fps)
 
-    index = 1 + max((obj.get("kinema_trace_index", 0) for obj in traces_of(scene, rig)), default=0)
+    index = 1 + max((obj.get(PROP_INDEX, 0) for obj in traces_of(scene, rig)), default=0)
     colour = COLOURS[(index - 1) % len(COLOURS)]
     empty = bpy.data.objects.new(f"{rig.name}.Trace {index}", None)
     empty.empty_display_type = "ARROWS"
@@ -108,7 +111,7 @@ def trace_tool(context, rig) -> Outcome:
     empty.empty_display_size = max(extent * MARKER_SCALE, 0.01)
     empty.rotation_mode = "QUATERNION"
     empty.kinema_trace_of = rig
-    empty["kinema_trace_index"] = index
+    empty[PROP_INDEX] = index
     _collection(context.view_layer, rig).objects.link(empty)
 
     _key(empty, first, poses[1:-1], measured)
@@ -164,14 +167,16 @@ _LINEAR = bpy.types.Keyframe.bl_rna.properties["interpolation"].enum_items["LINE
 
 def _collection(view_layer, rig):
     """Where a trace of ``rig`` goes: a collection of the rig's that ``view_layer``
-    includes, else its scene's own. A rig's first collection can be another scene's, or
-    excluded here while the rig shows through another, and a trace there would be
-    missing from this scene, or hidden."""
+    shows, else its scene's own. A rig's first collection can be another scene's, or
+    excluded or hidden here while the rig shows through another, and a trace there
+    would be missing from this scene, or out of view."""
     included = []
     pending = [view_layer.layer_collection]
     while pending:
         layer = pending.pop()
-        if layer.exclude:
+        # Excluded, hidden in the view layer or off in viewports: the trace would
+        # be out of view there, and so would all of it below.
+        if layer.exclude or layer.hide_viewport or layer.collection.hide_viewport:
             continue
         included.append(layer.collection)
         pending.extend(layer.children)
@@ -244,7 +249,8 @@ class KINEMA_OT_remove_trace(Operator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         obj = bpy.data.objects.get(self.name)
-        if obj is None or obj.kinema_trace_of is None:
+        # A trace outlives its rig, as the snapshot it is, and is still removable.
+        if obj is None or PROP_INDEX not in obj:
             self.report({"ERROR"}, f"No trace called '{self.name}'")
             return {"CANCELLED"}
         remove_trace(obj)

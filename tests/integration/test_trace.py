@@ -240,9 +240,11 @@ class TestTracing:
             bpy.data.scenes.remove(other)
             bpy.data.collections.remove(there)
 
-    def test_a_trace_goes_in_a_collection_the_view_layer_includes(self, job, trace):
-        """The robot's first collection excluded from the view layer, the robot shown
-        through another: the trace goes in that one, where it shows."""
+    @pytest.mark.parametrize("how", ["excluded", "hidden", "disabled"])
+    def test_a_trace_goes_in_a_collection_the_view_layer_shows(self, job, trace, how):
+        """The robot's first collection excluded from the view layer, hidden in it, or
+        disabled in viewports, the robot shown through another: the trace goes in that
+        one, where it shows."""
         import bpy
 
         view_layer = bpy.context.view_layer
@@ -255,7 +257,12 @@ class TestTracing:
                 child for child in view_layer.layer_collection.children
                 if child.collection == first
             )
-            layer.exclude = True
+            if how == "excluded":
+                layer.exclude = True
+            elif how == "hidden":
+                layer.hide_viewport = True
+            else:
+                first.hide_viewport = True
             assert job.users_collection[0] == first, (
                 "precondition: the excluded collection is the robot's first"
             )
@@ -265,10 +272,29 @@ class TestTracing:
             assert made.visible_get()
         finally:
             for child in view_layer.layer_collection.children:
-                child.exclude = False
+                child.exclude = child.hide_viewport = False
+            first.hide_viewport = False
             for obj in list(shown.objects):
                 shown.objects.unlink(obj)
             bpy.data.collections.remove(shown)
+
+    def test_a_trace_whose_robot_is_gone_can_still_be_removed(self, job, trace):
+        import bpy
+
+        made = _traced(trace, job)
+        name = made.name
+        bpy.data.objects.remove(job)
+        assert made.kinema_trace_of is None, "precondition: the trace's robot is gone"
+        assert "FINISHED" in bpy.ops.kinema.remove_trace(name=name)
+        assert name not in bpy.data.objects
+
+    def test_remove_trace_refuses_an_object_that_isnt_one(self, job):
+        import bpy
+
+        assert "kinema_trace_index" not in job
+        with pytest.raises(RuntimeError):
+            bpy.ops.kinema.remove_trace(name=job.name)
+        assert job.name in bpy.data.objects
 
     def test_a_trace_after_optimizing_matches_playback_and_eases_into_the_line(
         self, job, builder, trace
