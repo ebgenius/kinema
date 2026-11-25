@@ -170,7 +170,7 @@ def prepare(context, rig) -> Job:
         moves = "; ".join(
             f"{wp.limit_text(rig, span, names, frame)}, so no motion within the limits "
             f"keeps to it: {wp.limit_remedy(rig, span)}"
-            for span, names, frame in limited
+            for span, names, frame, _ in limited
         )
         raise Refused(f"{moves}. Generate Motion once that's changed, then optimize")
     first, last = plan[0].start_frame, plan[-1].end_frame

@@ -249,6 +249,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A linear move into a joint limit jumped a whole turn in playback** (#75). Live IK
+  followed the line to the joint's stop, lost it, and then turned the joint a whole turn
+  to the far side of its range in one frame. A move Generate Motion names as running into
+  a limit now stops where the line meets it, as a controller's LIN stops at a software
+  limit, and stands there until the move's last frame, where it is at its end waypoint.
+  The goal goes on along the line, so the tool visibly leaves it, and the Motion Check
+  flags the move. A hold on an object that moves stops the same way.
 - **Live IK stalled with a joint pinned at its limit** (#56). On a Franka at rest the
   elbow is held at its limit just short of straight, where the arm is singular, and
   PyRoki stopped about 75 mm short of a target it could reach, on every solve, until

@@ -1067,6 +1067,7 @@ def generate_job(context, rig) -> Outcome:
         # The target's last keyed rotation, so the next is keyed in the same
         # hemisphere: see _key_linear_span.
         previous = None
+        stops = {id(span): stop for span, _, _, stop in limited if stop is not None}
         for span in plan:
             if keyed_as(span, placement) == MOVE_JOINT:
                 _key_joint_span(rig, span, changed)
@@ -1074,6 +1075,8 @@ def generate_job(context, rig) -> Outcome:
                 previous = _key_linear_span(
                     rig, span, ik_name, previous, placement, changed
                 )
+                if id(span) in stops:
+                    _key_stop(rig, span, *stops[id(span)])
         if ends_linear:
             # Leave the switch off past the end. Without this the last
             # linear span's "on" key is the final one on the channel, so
@@ -1128,7 +1131,7 @@ def generate_job(context, rig) -> Outcome:
             f"arrives, and keeps the turn it arrives with ({description}). "
             f"Re-teach it to change that"
         )
-    for span, names, frame in limited:
+    for span, names, frame, _ in limited:
         message += f". {limit_text(rig, span, names, frame)}; {limit_remedy(rig, span)}"
     level = "WARNING" if flagged or job.notes or limited else "INFO"
     return Outcome(True, level, message, flagged)
@@ -1169,8 +1172,9 @@ def _held_on(rig, span) -> str:
 
 
 def lines_into_limits(rig, plan, placement=None, solver=None) -> list:
-    """``(span, joint names, frame)`` for each linear move of ``plan`` whose line
-    runs a joint into its limit: what Generate Motion warns of.
+    """``(span, joint names, frame, stop)`` for each linear move of ``plan``, or
+    hold on an object that moves, that runs a joint into its limit: what Generate
+    Motion warns of, and where it stops the robot (see :func:`settle_configurations`).
 
     Walked as Generate Motion walks the job, from the joints it finds at each
     marker, by ``solver`` (see :func:`settle_configurations`). Writes nothing.
@@ -1244,6 +1248,30 @@ def _key_linear_span(rig, span, ik_name: str, previous, placement, changed):
         for pose_bone in builder.joint_bones(rig):
             key_joint_value(pose_bone, frame)
     return previous
+
+
+def _key_stop(rig, span, first: int, values) -> None:
+    """Stop the robot where a line runs a joint into its limit, until the move ends.
+
+    A controller's LIN stops there with a software limit error. Left to live
+    IK, the arm would lose the line at the limit and then jump a whole turn
+    to where the joint can reach the goal from the other side of its range.
+    Stopped, it stays where the line met the limit, ``values``, from frame
+    ``first``, while the goal goes on along the line: the tool visibly
+    leaves it. On the move's last frame it is at its end waypoint again, as
+    the moves after it need, with live IK on as a line ends; a move starting
+    there keys its own.
+
+    The same channels as the rest of the move, so regenerating clears them.
+    """
+    rig.kinema_ik_enabled = False
+    rig.keyframe_insert(data_path="kinema_ik_enabled", frame=first)
+    rig.kinema_ik_enabled = True
+    rig.keyframe_insert(data_path="kinema_ik_enabled", frame=span.end_frame)
+    apply_joint_values(rig, values)
+    for frame in sorted({first, span.end_frame - 1}):
+        for pose_bone in builder.joint_bones(rig):
+            key_joint_value(pose_bone, frame)
 
 
 # --------------------------------------------------------------------------
@@ -1514,11 +1542,13 @@ def settle_configurations(rig, plan, overrides=None, placement=None, solver=None
       an earlier linear move started or ended there with the turns as they
       were. A waypoint holds one set of joint values for every motion that
       uses it, so changing it would leave the earlier line a whole turn off.
-    - ``limited``: ``(span, joint names, frame)`` for each linear move whose line
-      runs a joint into its limit, about on that frame. The line can't be
-      followed past it, as a controller's LIN stops at a software limit; a
-      joint move can get there inside the limits. Not refused: it plays, off
-      the line, and the motion check says so.
+    - ``limited``: ``(span, joint names, frame, stop)`` for each linear move, or
+      hold on an object that moves, that runs a joint into its limit, about on
+      that frame. It can't be followed past there, as a controller's LIN stops
+      at a software limit. Not refused: it plays, stopped there, and the motion
+      check says so. ``stop`` is ``(first frame, joint values)`` it stands still
+      on and in, or None when the limit is met on its last frame (see
+      :func:`_key_stop`). :func:`limit_remedy` says what to do about it.
     - ``settled``: ``overrides`` with what this found: each end's turns as its
       line arrives, and a pause ending as it began.
 
@@ -1585,7 +1615,9 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
     - otherwise SAME;
     - or, where a step along the line can't be solved but can be with the
       limits taken away: LIMIT, with the names of the joints past theirs then,
-      and about the frame it happens on.
+      about the frame it happens on, and where the robot stops: from the first
+      frame after the last step solved, in that step's joint values, or None
+      if that frame is the move's last.
 
     Solved with the NumPy backend, which needs no compile and answers the same
     question: can the arm follow this line without changing configuration?
@@ -1623,7 +1655,7 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
 
     # The same chain without its limits, which a failed step is solved again on.
     unlimited = replace(chain, limited=np.zeros_like(chain.limited))
-    q = q_start
+    q, reached = q_start, 0.0
     for fraction, pose in steps:
         seed = q.copy()
         # Held joints are not solved for; they go where their keys take them.
@@ -1641,8 +1673,9 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
             if not past.any():
                 return None
             names = [name for name, at in zip(chain.bone_names, past, strict=True) if at]
-            return LIMIT, (names, span.start_frame + round(fraction * span.frames))
-        q = result.q
+            frame = span.start_frame + round(fraction * span.frames)
+            return LIMIT, (names, frame, _stop(span, start_values, end_values, columns, q, reached))
+        q, reached = result.q, fraction
 
     if (
         branches.joint_distance(q, reference.q, chain.is_revolute)
@@ -1655,6 +1688,22 @@ def _arrival(rig, span, chain, start_values, end_values, placement=None):
     values = np.array(end_values, dtype=float)
     values[columns] = q_end + turns * 2.0 * math.pi
     return TURNS, values.tolist()
+
+
+def _stop(span, start_values, end_values, columns, q, reached):
+    """Where a walk stopped at a limit stands: ``(first frame, joint values)``.
+
+    The last step solved, ``q`` at ``reached`` along the move, with the joints
+    off the chain where their keys take them by then. From the first frame
+    after it, which a step past it may be on. None if that is the last frame.
+    """
+    first = span.start_frame + math.floor(reached * span.frames + 1e-9) + 1
+    if first >= span.end_frame:
+        return None
+    start = np.array(start_values, dtype=float)
+    values = start + (np.array(end_values, dtype=float) - start) * reached
+    values[columns] = q
+    return first, values.tolist()
 
 
 def _turn_description(rig, chain, span, taught, arrived) -> str:
