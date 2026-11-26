@@ -80,6 +80,19 @@ class TestParsing:
         text = "name:=ur5e ur_type:=ur5e"
         assert xacro_args.format_args(xacro_args.parse_args(text)) == text
 
+    @pytest.mark.parametrize(
+        "value",
+        ["config/robot's/arm's.yaml", 'say:"hi"', "left arm", "it's \"both\"", "C:\\ws\\a.yaml"],
+    )
+    def test_any_value_is_read_back_as_it_was(self, value):
+        """A catalog entry's arguments are written out for the import to read
+        back: an apostrophe or a quote mustn't open a quote."""
+        args = {"name": "arm", "path": value}
+        assert xacro_args.parse_args(xacro_args.format_args(args)) == args
+
+    def test_only_what_needs_it_is_quoted(self):
+        assert xacro_args.format_args({"path": "C:\\ws\\a.yaml"}) == "path:=C:\\ws\\a.yaml"
+
 
 class TestDeclaredArgs:
     def test_it_reads_names_and_defaults(self):

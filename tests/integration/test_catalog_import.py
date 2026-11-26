@@ -132,12 +132,23 @@ class TestPick:
 class TestAssetLibrary:
     @pytest.fixture
     def libraries(self, addon):
+        """The profile's libraries, as they were after: one the tests add is
+        removed, and one there before, a Kinema Catalog say, has its settings
+        back."""
         libraries = bpy.context.preferences.filepaths.asset_libraries
-        before = {library.name for library in libraries}
+        names = ("name", "path", "import_method")
+        before = {
+            library.as_pointer(): {name: getattr(library, name) for name in names}
+            for library in libraries
+        }
         yield libraries
         for library in list(libraries):
-            if library.name not in before:
+            kept = before.get(library.as_pointer())
+            if kept is None:
                 libraries.remove(library)
+            else:
+                for name, value in kept.items():
+                    setattr(library, name, value)
 
     def _ours(self, libraries) -> list:
         prefs = load_addon_module("prefs")

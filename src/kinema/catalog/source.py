@@ -18,10 +18,11 @@ Nothing here uses the network, and nothing here imports ``bpy``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .folder import SOURCES, FolderEntry
+from .folder import SOURCES, FolderEntry, within
 
 #: The clone command for one submodule, over anonymous HTTPS as kinema_catalog's
 #: launcher clones them: every fork is public, and ``.gitmodules`` names SSH URLs,
@@ -30,6 +31,15 @@ CLONE = (
     'git -C "{root}" -c url."https://github.com/".insteadOf=git@github.com: '
     "submodule update --init -- {submodule}"
 )
+
+#: A submodule named so that the command needs no quoting in any shell it may be
+#: pasted into: ``bash``, PowerShell or ``cmd``, whose quoting rules differ. The
+#: catalog's are all like this; another is named with no command.
+_PLAIN_NAME = re.compile(r"^[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*$")
+#: What the catalog's directory, double-quoted, may hold for the same: no quote,
+#: and nothing ``bash`` or PowerShell expands inside double quotes, or ``cmd``
+#: anywhere.
+_QUOTED_PATH = re.compile(r'^[^"$`%!\x00-\x1f]+$')
 
 
 @dataclass(frozen=True)
@@ -53,10 +63,28 @@ def importable(entry: FolderEntry) -> Importable:
     from ..io.xacro_args import format_args
 
     submodule = Path(SOURCES, entry.submodule)
-    if not _has_files(entry.root / submodule):
+    # The schema asks only for strings: a path an index names must stay in it,
+    # or a pick would read files from anywhere.
+    for field, value, path in (
+        ("submodule", entry.submodule, submodule.as_posix()),
+        ("entry", entry.entry, entry.entry),
+        ("mesh_base", entry.mesh_base, entry.mesh_base),
+    ):
+        if path is not None and not within(path):
+            return Importable(
+                entry.path, problem=f"{entry.name}: its {field} {value} is outside the catalog"
+            )
+    try:
+        cloned = _has_files(entry.root / submodule)
+    except OSError as error:
+        return Importable(
+            entry.path, problem=f"{entry.name}: {submodule.as_posix()} can't be read: {error}"
+        )
+    if not cloned:
         # kinema_catalog clones its submodules on demand; an unpacked zip has
         # no git to clone them with.
         is_clone = (entry.root / ".git").exists()
+        plain = _PLAIN_NAME.match(entry.submodule) and _QUOTED_PATH.match(str(entry.root))
         return Importable(
             entry.path,
             problem=(
@@ -66,7 +94,7 @@ def importable(entry: FolderEntry) -> Importable:
             ),
             command=(
                 CLONE.format(root=entry.root, submodule=submodule.as_posix())
-                if is_clone
+                if is_clone and plain
                 else ""
             ),
         )
@@ -81,8 +109,8 @@ def importable(entry: FolderEntry) -> Importable:
 
 def _has_files(directory: Path) -> bool:
     """Whether ``directory`` holds anything: a submodule not yet cloned is an
-    empty directory, or none."""
+    empty directory, or none. Raises OSError where it can't be looked into."""
     try:
         return any(directory.iterdir())
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return False

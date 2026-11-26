@@ -213,10 +213,14 @@ def mesh_base(path: str | Path) -> Path | None:
     """Where relative mesh paths in ``path``, a catalog entry's file, start, as
     the entry's ``mesh_base`` says. None for a file no catalog entry names, or
     one whose entry doesn't say."""
-    from ..catalog.folder import containing
+    from ..catalog.folder import containing, within
 
     found = containing(path)
-    if found is None or found[1] is None or not found[1].mesh_base:
+    if found is None or found[1] is None or found[1].mesh_base is None:
+        return None
+    # "" is the catalog's top. One outside the catalog isn't followed; the
+    # import says why.
+    if not within(found[1].mesh_base):
         return None
     return found[0] / found[1].mesh_base
 
