@@ -52,6 +52,10 @@ KIND_LABELS = {
     "scene": "Scene",
 }
 
+#: What a problem says of an index or directory that couldn't be read, which may
+#: be so only for the moment.
+UNREAD = "can't be read"
+
 _NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _ENTRY = re.compile(r"\.(xacro|urdf)$")
 _NO_SPACE = re.compile(r"^[^ ]*$")
@@ -212,8 +216,10 @@ def read_index(
     entries and one problem."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        return [], [f"{path}: can't be read ({error})"]
+    except OSError as error:
+        return [], [f"{path}: {UNREAD} ({error})"]
+    except ValueError as error:
+        return [], [f"{path}: isn't JSON ({error})"]
     if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
         return [], [f"{path}: has no list of entries"]
     unknown = [name for name in data if name not in INDEX_FIELDS]
@@ -240,24 +246,27 @@ def read_index(
     return entries, problems
 
 
-def find_indexes(folder: Path) -> list[Path]:
+def find_indexes(folder: Path, problems: list | None = None) -> list[Path]:
     """The folder's ``catalog.json``: at its top, else one in each directory one
-    level down, in name order."""
+    level down, in name order. What couldn't be looked into goes in ``problems``."""
+    problems = [] if problems is None else problems
     top = folder / INDEX
-    if _is_file(top):
+    if _is_file(top, problems):
         return [top]
     try:
         children = sorted(folder.iterdir())
-    except OSError:
+    except OSError as error:
+        problems.append(f"{folder}: {UNREAD} ({error})")
         return []
     # One directory that can't be looked into loses only its own index.
-    return [child / INDEX for child in children if _is_file(child / INDEX)]
+    return [child / INDEX for child in children if _is_file(child / INDEX, problems)]
 
 
-def _is_file(path: Path) -> bool:
+def _is_file(path: Path, problems: list) -> bool:
     try:
         return path.is_file()
-    except OSError:
+    except OSError as error:
+        problems.append(f"{path.parent}: {UNREAD} ({error})")
         return False
 
 
@@ -283,18 +292,23 @@ def load(folder: str | Path) -> Folder:
     path = Path(folder).absolute()
     if not str(folder).strip() or not path.is_dir():
         return Folder(path, problems=(f"{path}: not a folder",) if str(folder).strip() else ())
-    indexes = find_indexes(path)
+    probed: list[str] = []
+    indexes = find_indexes(path, probed)
     stamp = _stamp(indexes)
     cached = _cache.get(str(path))
     if cached is not None and cached[0] == stamp:
         return cached[1]
 
-    entries, problems, seen = [], [], {}
+    entries, problems, seen = [], list(probed), {}
+    # An index that couldn't be read may be so only for the moment, and its time
+    # and size don't change when it can be read again. (A directory that can't be
+    # looked into needs nothing of the kind: once it can, its index changes the
+    # stamp.)
     unread = False
     for index in indexes:
         found, wrong = read_index(index, path)
         problems += wrong
-        unread = unread or not found and bool(wrong)
+        unread = unread or any(problem.startswith(f"{index}: {UNREAD}") for problem in wrong)
         for entry in found:
             if entry.id in seen:
                 where = "earlier in it" if seen[entry.id] == index else f"in {seen[entry.id]}"
@@ -308,8 +322,7 @@ def load(folder: str | Path) -> Folder:
         problems.append(f"{path}: no {INDEX} here or one level down")
     entries.sort(key=lambda entry: (entry.maker.lower(), entry.name.lower()))
     result = Folder(path, tuple(indexes), tuple(entries), tuple(problems))
-    # An index that gave nothing may be one that couldn't be read for the moment,
-    # which a later look should try again.
+    # Read again on the next look; one whose entries are wrong is read once.
     if not unread:
         _cache[str(path)] = (stamp, result)
     return result

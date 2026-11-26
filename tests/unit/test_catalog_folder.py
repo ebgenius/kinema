@@ -293,6 +293,11 @@ class TestAFolder:
         monkeypatch.setattr(Path, "is_file", refusing)
         found = folder.load(tmp_path)
         assert [entry.id for entry in found.entries] == ["robot_b"]
+        assert len(found.problems) == 1
+        assert found.problems[0].startswith(f"{tmp_path / 'a'}: can't be read")
+        # Not kept: once it can be looked into, its index is found.
+        monkeypatch.setattr(Path, "is_file", is_file)
+        assert [entry.id for entry in folder.load(tmp_path).entries] == ["robot_a", "robot_b"]
 
     def test_an_invalid_entry_is_left_out_and_the_rest_kept(self, tmp_path):
         (tmp_path / "catalog.json").write_text(
@@ -313,7 +318,7 @@ class TestAFolder:
         (tmp_path / "catalog.json").write_text("{not json", encoding="utf-8")
         found = folder.load(tmp_path)
         assert not found.valid
-        assert "can't be read" in found.problems[0]
+        assert "isn't JSON" in found.problems[0]
 
     def test_a_missing_folder_says_so(self, tmp_path):
         found = folder.load(tmp_path / "nowhere")
@@ -344,17 +349,40 @@ class TestAFolder:
         os.utime(index, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         assert folder.load(tmp_path).entries[0].maker == "Aft3r!"
 
-    def test_an_index_that_gave_nothing_is_tried_again(self, tmp_path):
-        """Even with its time and size as they were: it may have been unreadable for
-        the moment."""
+    def test_an_index_that_couldnt_be_read_is_tried_again(self, tmp_path, monkeypatch):
+        """Its time and size don't change when it can be read again."""
         index = tmp_path / "catalog.json"
-        good = _index([UR5E])
-        index.write_text("x" * len(good), encoding="utf-8")
-        stat = index.stat()
-        assert not folder.load(tmp_path).valid
-        index.write_text(good, encoding="utf-8")
-        os.utime(index, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        index.write_text(_index([UR5E]), encoding="utf-8")
+        read_text = Path.read_text
+
+        def refusing(path, *args, **kwargs):
+            if path == index:
+                raise PermissionError(13, "Permission denied", str(path))
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", refusing)
+        found = folder.load(tmp_path)
+        assert not found.valid
+        assert found.problems[0].startswith(f"{index}: can't be read")
+        monkeypatch.setattr(Path, "read_text", read_text)
         assert folder.load(tmp_path).valid
+
+    def test_an_index_whose_entries_are_wrong_is_read_once(self, tmp_path, monkeypatch):
+        (tmp_path / "catalog.json").write_text(
+            _index([_with(kind="gripper")]), encoding="utf-8"
+        )
+        reads = []
+        read_index = folder.read_index
+        monkeypatch.setattr(
+            folder, "read_index", lambda *args: reads.append(args) or read_index(*args)
+        )
+        assert not folder.load(tmp_path).valid
+        assert not folder.load(tmp_path).valid
+        assert len(reads) == 1
+
+    def test_an_index_that_isnt_json_says_so(self, tmp_path):
+        (tmp_path / "catalog.json").write_text("{not json", encoding="utf-8")
+        assert "isn't JSON" in folder.load(tmp_path).problems[0]
 
     def test_a_relative_folder_is_its_own_in_each_directory(self, tmp_path, monkeypatch):
         # The same size and time, so only the folder tells them apart.
