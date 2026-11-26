@@ -69,8 +69,8 @@ Everything is in the 3D viewport's sidebar (N), on the **Kinema** tab:
   follows, so it is right in FK, IK, playback and render. The Motion Check measures it
   against its own limits. Motions has the job's buttons in a
   box, in the order they are pressed -- **Generate Motion**, **Check Motion**, **Optimize
-  Motion** and **Bake to Keyframes** -- then **Graph Editor**, and under them what the
-  last Motion Check found. It is there before any waypoint is recorded, for Bake and
+  Motion** and **Bake to Keyframes** -- then **Graph Editor** and **Trace Tool**, and
+  under them what the last Motion Check found and the robot's traces. It is there before any waypoint is recorded, for Bake and
   Graph Editor.
 - **Robot Settings** holds what is set once for the robot shown: Reset Meshes and Meshes
   at File Origin, and as subpanels **Bones**, **Tool Centre Point**, **External Axes**,
@@ -356,6 +356,28 @@ is never retimed.
 - The first run for a robot and a job length compiles first, which holds Blender up for
   seconds. JAX's compile cache keeps it for the sessions after.
 - It needs the PyRoki solver, whichever solver live IK uses.
+
+**Trace Tool**, under Graph Editor in the Motions panel, keeps where the tool went, to
+compare a job before and after optimizing, or after a retime. It plays the scene's frames,
+or its preview range, as playback does, and keys an empty, in the robot's collection, to
+follow the tool's pose on every frame: in the tool's own frame, Z out of the tool, with
+quaternion rotations that turn smoothly where Euler angles would jump.
+- **Speeds.** The empty has four properties keyed on every frame, to compare in the Graph
+  Editor in real units with Normalize off. *Speed* (m/s) is measured over the frame before,
+  and *Acceleration* (m/s²) from the frames either side, so it counts a change of direction
+  too. *Angular Speed* (rad/s) and *Angular Acceleration* (rad/s²) are measured the same
+  way.
+- **Path.** Its motion path shows in the viewport, in the trace's own colour, with a dot a
+  frame: the further apart the dots, the faster the tool. It shows whether the trace is
+  selected or not.
+- **A snapshot.** The empty is in world space and parented to nothing, so it keeps its keys
+  and its path when the job or the robot changes. Trace again for another, in the next
+  colour. The Motions panel lists the robot's traces, to rename them, change their colour or
+  remove them, which deletes the empty and its keys.
+
+On arm6 in the tests, optimizing leaves the linear move at its steady 0.129 m/s. The tool
+still enters and leaves the line at full speed, but changes speed there much less hard: 0.35
+m/s² entering it, from 7.9, and 2.9 leaving it, from 5.8.
 
 When the shot is right, **Bake IK to Keyframes** turns the whole thing into plain joint
 curves that render with Kinema uninstalled. Joint moves bake as they play, and linear moves

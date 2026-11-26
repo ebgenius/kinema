@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Trace Tool** (#87), in the Motions panel. It plays the frames as playback does and
+  keeps the tool's path in an empty, to compare a job before and after Optimize Motion:
+  - the tool's pose on every frame, in its own frame, with quaternion rotations;
+  - its speed, acceleration, angular speed and angular acceleration, keyed in real units
+    for the Graph Editor;
+  - a motion path in the trace's own colour, with a dot a frame.
+
+  Traces keep their keys when the job changes. The panel lists them, and removing one
+  deletes its empty. It can also go on the quick bar.
 - **Mimic joints move** (#104). A URDF `<mimic>` joint, such as a parallel gripper's
   second finger, now gets a bone, and its link's meshes ride on it. A driver moves it from
   the joint its `<mimic>` names (`multiplier * value + offset`), so it is right in FK, IK,

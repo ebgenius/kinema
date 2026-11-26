@@ -761,7 +761,8 @@ class TestMotionsBox:
         return calls
 
     def test_the_jobs_buttons_in_a_box_in_the_order_theyre_pressed(self, panel, arm6):
-        """Generate, Check, Optimize and Bake, then the Graph Editor to see the curves."""
+        """Generate, Check, Optimize and Bake, then the Graph Editor to see the curves,
+        and Trace Tool to keep where the tool went."""
         calls = self._drawn(panel)
         names = [name for name, _, _ in calls]
         operators = [
@@ -774,6 +775,7 @@ class TestMotionsBox:
             "kinema.optimize_motion",
             "kinema.bake_ik",
             "kinema.graph_editor",
+            "kinema.trace_tool",
         ]
 
     def test_no_panel_of_its_own_for_the_motion_check(self, panel):
