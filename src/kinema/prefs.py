@@ -159,6 +159,16 @@ class KinemaPreferences(AddonPreferences):
     )
     search_paths: CollectionProperty(type=KinemaSearchPath)
     active_search_path: IntProperty(default=0)
+    catalog_folder: StringProperty(
+        name="Catalog Folder",
+        description=(
+            "A clone of kinema_catalog, or its release zips unpacked side by side: "
+            "the catalog's robots are listed from its catalog.json in place of the "
+            "bundled list"
+        ),
+        subtype="DIR_PATH",
+        default="",
+    )
 
     # Graph Editor, in Joints (FK): see ops/graph_editor.py, whose DEFAULTS
     # repeat these defaults for when there are no preferences to read.
@@ -264,6 +274,9 @@ class KinemaPreferences(AddonPreferences):
             warn.label(text="Kinema falls back to the NumPy solver; IK quality is reduced.")
 
         layout.separator()
+        self._draw_catalog_folder(layout)
+
+        layout.separator()
         layout.label(text="Package Search Paths", icon="FILE_FOLDER")
         row = layout.row()
         row.template_list(
@@ -284,6 +297,32 @@ class KinemaPreferences(AddonPreferences):
             icon="BLANK1",
         )
 
+
+    def _draw_catalog_folder(self, layout) -> None:
+        """The Catalog Folder, and what was found in it."""
+        from .catalog import folder as catalog_folder
+
+        layout.label(text="Catalog", icon="ASSET_MANAGER")
+        layout.prop(self, "catalog_folder")
+        note = layout.column(align=True)
+        if not self.catalog_folder.strip():
+            note.label(text="Not set: the bundled list is searched.", icon="INFO")
+            note.label(text=f"Get the catalog from {CATALOG_URL}", icon="BLANK1")
+            return
+        found = catalog_folder.load(bpy.path.abspath(self.catalog_folder))
+        if found.valid:
+            count = len(found.indexes)
+            note.label(
+                text=f"{len(found.entries)} entries from {count} "
+                f"{catalog_folder.INDEX}{'' if count == 1 else ' files'}",
+                icon="CHECKMARK",
+            )
+        else:
+            note.label(text="Nothing to list here: the bundled list is searched.", icon="ERROR")
+        for problem in found.problems[:3]:
+            note.label(text=problem, icon="BLANK1")
+        if len(found.problems) > 3:
+            note.label(text=f"and {len(found.problems) - 3} more problems", icon="BLANK1")
 
     def _draw_quick_bar(self, layout) -> None:
         """The quick bar's buttons, to put in order, take out and add to."""
@@ -472,6 +511,21 @@ class KINEMA_OT_clear_compile_cache(bpy.types.Operator):
         else:
             self.report({"INFO"}, message)
         return {"FINISHED"}
+
+
+#: Where to get kinema_catalog, for a Catalog Folder that isn't set.
+CATALOG_URL = "github.com/ebgenius/kinema_catalog"
+
+
+def catalog_folder(context: bpy.types.Context | None = None):
+    """The Catalog Folder as read, valid or not; None where it isn't set or the
+    preferences can't be read."""
+    from .catalog import folder
+
+    preferences = get_prefs(context)
+    if preferences is None or not preferences.catalog_folder.strip():
+        return None
+    return folder.load(bpy.path.abspath(preferences.catalog_folder))
 
 
 def get_prefs(context: bpy.types.Context | None = None) -> KinemaPreferences:

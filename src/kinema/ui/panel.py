@@ -179,20 +179,44 @@ def _catalog_tags(_self, _context) -> list:
 def _draw_catalog(layout, context: bpy.types.Context) -> None:
     """The catalogue lookup: search, then what to do with the answer.
 
-    Kinema cannot download the description, so the useful output is the clone
+    With a Catalog Folder set, the search lists its index, and the answer is the
+    entry and the file it names there. Without one, it lists the bundled list,
+    and Kinema cannot download the description, so the useful output is the clone
     command and -- above all -- *which file in the repository to open*. A user
     who clones mujoco_menagerie and is left to find one robot among 2466 files
     has not been helped.
     """
-    from ..catalog import index as catalog
+    from ..ops.import_robot import catalog_folder, picked_entry
+    from ..prefs import CATALOG_URL
 
     props = context.scene.kinema
+    folder = catalog_folder(context)
+
+    if folder is not None and folder.valid:
+        # The Catalog Folder's entries, and the file each one names in it.
+        layout.label(text=f"Catalog Folder: {len(folder.entries)} entries", icon="ASSET_MANAGER")
+        layout.operator("kinema.browse_catalog", text="Search Catalog…", icon="VIEWZOOM")
+        entry = picked_entry(context)
+        if entry is None:
+            return
+        box = layout.box()
+        box.label(text=entry.name, icon="OUTLINER_OB_ARMATURE")
+        column = box.column(align=True)
+        column.label(text=entry.description)
+        if entry.licence_note:
+            column.label(text=entry.licence_note, icon="INFO")
+        column.label(text=entry.entry, icon="FILE_TICK")
+        return
 
     layout.label(text="Kinema does not download robots.", icon="INFO")
+    if folder is None:
+        layout.label(text=f"Catalog Folder: get it from {CATALOG_URL}", icon="ASSET_MANAGER")
+    else:
+        layout.label(text="Catalog Folder: nothing to list there", icon="ERROR")
     layout.operator("kinema.browse_catalog", text="Search Catalog…", icon="VIEWZOOM")
     layout.prop(props, "catalog_show_all")
 
-    entry = catalog.get(props.catalog_pick) if props.catalog_pick else None
+    entry = picked_entry(context)
     if entry is None:
         return
 

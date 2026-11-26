@@ -1,0 +1,42 @@
+{
+  "$schema": "./catalog.schema.json",
+  "schema_version": 1,
+  "generated_from": "catalog/*.yaml",
+  "entries": [
+    {
+      "id": "ur5e",
+      "name": "Universal Robots UR5e",
+      "kind": "robot",
+      "category": "arm",
+      "family": "universal_robots",
+      "maker": "Universal Robots",
+      "tags": [],
+      "licence": "BSD-3-Clause",
+      "submodule": "Universal_Robots_ROS2_Description",
+      "entry": "src/Universal_Robots_ROS2_Description/urdf/ur.urdf.xacro",
+      "format": "xacro",
+      "args": {
+        "ur_type": "ur5e",
+        "name": "ur5e"
+      },
+      "mesh_base": null
+    },
+    {
+      "id": "gripper_2f",
+      "name": "Two-Finger Gripper",
+      "kind": "end_effector",
+      "category": "arm",
+      "family": "universal_robots",
+      "maker": "Example",
+      "tags": [
+        "gripper"
+      ],
+      "licence": "BSD-3-Clause",
+      "submodule": "gripper_description",
+      "entry": "src/gripper_description/urdf/gripper.urdf",
+      "format": "urdf",
+      "args": {},
+      "mesh_base": null
+    }
+  ]
+}

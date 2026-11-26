@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Catalog Folder** (#105), in the preferences: a clone of kinema_catalog, or its release
+  zips unpacked side by side. *Search Catalog* lists its `catalog.json` in place of the
+  bundled list, with each entry's kind, tags and licence, and the pick names the
+  description file in the folder. Entries are checked against kinema_catalog's schema;
+  one that fails is left out, and the preferences say why.
 - **Trace Tool** (#87), in the Motions panel. It plays the frames as playback does and
   keeps the tool's path in an empty, to compare a job before and after Optimize Motion:
   - the tool's pose on every frame, in its own frame, with quaternion rotations;

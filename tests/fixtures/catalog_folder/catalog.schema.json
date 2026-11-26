@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ebgenius/kinema_catalog/catalog.schema.json",
+  "title": "kinema_catalog index",
+  "description": "catalog.json: every robot description in the catalog. Built by `meshkit index` from catalog/*.yaml; do not edit it by hand.",
+  "type": "object",
+  "required": ["schema_version", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": { "const": 1 },
+    "generated_from": { "type": "string" },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["id", "name", "kind", "category", "family", "maker", "tags", "licence",
+                   "submodule", "entry", "format", "args", "mesh_base"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Short name, unique across the catalog; what the launcher takes on its command line.",
+          "type": "string", "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "name": { "description": "Human-readable name.", "type": "string", "minLength": 1 },
+        "kind": { "enum": ["robot", "end_effector", "hand", "base", "scene"] },
+        "category": { "enum": ["arm", "mobile", "legged"] },
+        "family": {
+          "description": "A maker's range: the catalog/<family>.yaml the entry comes from, and the release zip it ships in.",
+          "type": "string", "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "maker": { "type": "string", "minLength": 1 },
+        "tags": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "licence": {
+          "description": "SPDX expression; LicenseRef-* for terms SPDX does not list.",
+          "type": "string", "minLength": 1
+        },
+        "licence_note": {
+          "description": "What the licence restricts, where it restricts anything.",
+          "type": "string", "minLength": 1
+        },
+        "submodule": {
+          "description": "Directory under src/: the fork that holds the description, cloned on demand.",
+          "type": "string", "minLength": 1
+        },
+        "entry": {
+          "description": "The file to open, relative to the repository root. Usually inside the submodule; a wrapper kept in this repository otherwise.",
+          "type": "string", "pattern": "\\.(xacro|urdf)$"
+        },
+        "format": { "enum": ["xacro", "urdf"] },
+        "args": {
+          "description": "xacro arguments, passed as name:=value.",
+          "type": "object",
+          "additionalProperties": { "type": "string", "pattern": "^[^ ]*$" },
+          "propertyNames": { "pattern": "^[^ ]+$" }
+        },
+        "mesh_base": {
+          "description": "For a URDF that names its meshes by relative path: the directory, relative to the repository root, that they resolve against. null when meshes use package://.",
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}
