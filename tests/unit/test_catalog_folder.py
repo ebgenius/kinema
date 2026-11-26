@@ -349,6 +349,45 @@ class TestAFolder:
         os.utime(index, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         assert folder.load(tmp_path).entries[0].maker == "Aft3r!"
 
+    def test_a_directory_without_an_index_that_cant_be_looked_into_is_named(
+        self, tmp_path, monkeypatch
+    ):
+        """And no longer, once it can be again: neither changes an index."""
+        (tmp_path / "a").mkdir()
+        (tmp_path / "a" / "catalog.json").write_text(_index([UR5E]), encoding="utf-8")
+        (tmp_path / "b").mkdir()
+        assert not folder.load(tmp_path).problems
+        locked = tmp_path / "b" / "catalog.json"
+        is_file = Path.is_file
+
+        def refusing(path):
+            if path == locked:
+                raise PermissionError(13, "Permission denied", str(path))
+            return is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", refusing)
+        found = folder.load(tmp_path)
+        assert found.valid
+        assert len(found.problems) == 1
+        assert found.problems[0].startswith(f"{tmp_path / 'b'}: can't be read")
+        monkeypatch.setattr(Path, "is_file", is_file)
+        assert not folder.load(tmp_path).problems
+
+    def test_a_folder_that_cant_be_looked_into_says_only_that(self, tmp_path, monkeypatch):
+        """Not that it has no catalog.json, which nobody could see."""
+        iterdir = Path.iterdir
+
+        def refusing(path):
+            if path == tmp_path:
+                raise PermissionError(13, "Permission denied", str(path))
+            return iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", refusing)
+        found = folder.load(tmp_path)
+        assert not found.valid
+        assert len(found.problems) == 1
+        assert found.problems[0].startswith(f"{tmp_path}: can't be read")
+
     def test_an_index_that_couldnt_be_read_is_tried_again(self, tmp_path, monkeypatch):
         """Its time and size don't change when it can be read again."""
         index = tmp_path / "catalog.json"

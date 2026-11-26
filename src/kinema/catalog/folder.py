@@ -294,16 +294,16 @@ def load(folder: str | Path) -> Folder:
         return Folder(path, problems=(f"{path}: not a folder",) if str(folder).strip() else ())
     probed: list[str] = []
     indexes = find_indexes(path, probed)
-    stamp = _stamp(indexes)
+    # What couldn't be looked into is part of the stamp: a directory without an
+    # index that can't be, or can be again, changes no index.
+    stamp = (_stamp(indexes), tuple(probed))
     cached = _cache.get(str(path))
     if cached is not None and cached[0] == stamp:
         return cached[1]
 
     entries, problems, seen = [], list(probed), {}
     # An index that couldn't be read may be so only for the moment, and its time
-    # and size don't change when it can be read again. (A directory that can't be
-    # looked into needs nothing of the kind: once it can, its index changes the
-    # stamp.)
+    # and size don't change when it can be read again.
     unread = False
     for index in indexes:
         found, wrong = read_index(index, path)
@@ -318,7 +318,7 @@ def load(folder: str | Path) -> Folder:
                 continue
             seen[entry.id] = index
             entries.append(entry)
-    if not indexes:
+    if not indexes and not probed:
         problems.append(f"{path}: no {INDEX} here or one level down")
     entries.sort(key=lambda entry: (entry.maker.lower(), entry.name.lower()))
     result = Folder(path, tuple(indexes), tuple(entries), tuple(problems))
