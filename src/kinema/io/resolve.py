@@ -174,13 +174,51 @@ def package_map(
     root = package_search_root(path)
     if root is not None:
         found.update(_index_packages(root))
-    for extra in extra_search_paths or []:
+    for extra in [*(extra_search_paths or []), *catalog_sources(path, root)]:
         directory = Path(extra).resolve()
         if _is_filesystem_root(directory):
             continue
         for name, package_dir in _index_packages(directory).items():
             found.setdefault(name, package_dir)
     return found
+
+
+def catalog_sources(path: str | Path, searched: Path | None = None) -> list[Path]:
+    """The ``src/`` of the catalog ``path`` is in, to find packages in, unless
+    ``searched`` holds it already; else nothing.
+
+    A catalog's descriptions are its submodules, and each submodule is a
+    checkout, so :func:`package_search_root` stops at its top. One description
+    can still need another's package: TurtleBot 4's includes Create 3's, from
+    another submodule. The whole of ``src/`` is searched for that, which costs
+    about 0.4 s on kinema_catalog's 28 submodules.
+
+    Worked out from the file's place, like the rest of the search, so the
+    solver's later reload of the rig searches it too.
+    """
+    from ..catalog.folder import SOURCES, containing
+
+    found = containing(path)
+    if found is None:
+        return []
+    sources = (found[0] / SOURCES).resolve()
+    if not sources.is_dir():
+        return []
+    if searched is not None and sources.is_relative_to(searched.resolve()):
+        return []
+    return [sources]
+
+
+def mesh_base(path: str | Path) -> Path | None:
+    """Where relative mesh paths in ``path``, a catalog entry's file, start, as
+    the entry's ``mesh_base`` says. None for a file no catalog entry names, or
+    one whose entry doesn't say."""
+    from ..catalog.folder import containing
+
+    found = containing(path)
+    if found is None or found[1] is None or not found[1].mesh_base:
+        return None
+    return found[0] / found[1].mesh_base
 
 
 def _search_roots(urdf_path: Path, extra: list[Path] | None) -> list[Path]:
@@ -218,6 +256,8 @@ def make_mesh_resolver(
     urdf_path = Path(urdf_path).resolve()
     base_dir = urdf_path.parent if urdf_path.is_file() else urdf_path
     extra = [Path(p).resolve() for p in (extra_search_paths or [])]
+    # A catalog entry can say where its relative mesh paths start (#105).
+    relative_base = mesh_base(urdf_path) or base_dir
 
     cache: dict[str, Path] = {}
     package_index: dict[str, Path] | None = None
@@ -300,7 +340,7 @@ def make_mesh_resolver(
             result = Path(path)
         else:
             candidate = Path(raw)
-            result = candidate if candidate.is_absolute() else (base_dir / candidate)
+            result = candidate if candidate.is_absolute() else (relative_base / candidate)
 
         result = Path(os.path.normpath(result))
         if not result.is_file():

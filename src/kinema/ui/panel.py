@@ -198,7 +198,7 @@ def _draw_catalog(layout, context: bpy.types.Context) -> None:
     folder = catalog_folder(context)
 
     if listed(folder):
-        # The Catalog Folder's entries, and the file each one names in it.
+        # The Catalog Folder's entries, imported from it as picked.
         layout.label(text=f"Catalog Folder: {len(folder.entries)} entries", icon="ASSET_MANAGER")
         layout.operator("kinema.browse_catalog", text="Search Catalog…", icon="VIEWZOOM")
         entry = picked_entry(context, folder)
@@ -211,6 +211,7 @@ def _draw_catalog(layout, context: bpy.types.Context) -> None:
         if entry.licence_note:
             column.label(text=entry.licence_note, icon="INFO")
         column.label(text=entry.relative_path, icon="FILE_TICK")
+        box.operator("kinema.import_catalog_pick", text="Import", icon="IMPORT")
         return
 
     layout.label(text="Kinema does not download robots.", icon="INFO")

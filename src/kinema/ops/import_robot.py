@@ -3,10 +3,11 @@
 One import path -- **Import URDF File**: a local URDF, xacro or MJCF, with
 ``package://`` references resolved by searching the file's own tree.
 
-Alongside it sits **Browse Robot Catalog**, which imports nothing. It searches
-the offline catalogue (``catalog.index``) and hands back a ``git clone``
-command plus the path of the description file inside that repository, for the
-user to fetch by hand. Kinema does not download robots.
+Alongside it sits **Browse Robot Catalog**. With a Catalog Folder set, a local
+kinema_catalog, it searches that and imports the pick from it. Without one it
+searches the offline catalogue (``catalog.index``), imports nothing, and hands
+back a ``git clone`` command plus the path of the description file inside that
+repository, for the user to fetch by hand. Kinema does not download robots.
 
 Both hand off to :class:`KINEMA_OT_build_robot`, which does the parse and the
 rig build in one blocking call behind a wait cursor.
@@ -290,24 +291,51 @@ def picked_entry(context, folder=None):
     return folder.get(key) if source else catalog.get(key)
 
 
+def import_entry(operator, context: bpy.types.Context, entry) -> set[str]:
+    """Import ``entry``, a Catalog Folder's, with the sidebar's Import Options
+    and the xacro arguments its index names.
+
+    Where it can't be, ``operator`` reports why; where a submodule only needs
+    cloning, the command to clone it goes on the clipboard, as the bundled list's
+    picks do."""
+    from ..catalog.source import importable
+
+    found = importable(entry)
+    if found.problem:
+        if found.command:
+            context.window_manager.clipboard = found.command
+            operator.report(
+                {"ERROR"}, f"{found.problem}: the command to clone it is on the clipboard"
+            )
+        else:
+            operator.report({"ERROR"}, found.problem)
+        return {"CANCELLED"}
+    values = setting_values(context.scene.kinema)
+    # The index's arguments are this file's; the sidebar's are for whatever file
+    # is imported by hand.
+    values["xacro_args"] = found.xacro_args
+    return bpy.ops.kinema.build_robot(filepath=str(found.path), **values)
+
+
 class KINEMA_OT_browse_catalog(Operator):
     """Look a robot up in the catalog.
 
-    With a Catalog Folder set, the entries are its index's, and the pick names
-    the description file in that folder. Without one, they are the bundled
-    list's, and since Kinema does not download robot descriptions the pick hands
-    back what is hard to find by hand: which repository holds a given robot, at
-    which commit, and which of its files -- out of up to 2466 -- is the one to
-    open.
+    With a Catalog Folder set, the entries are its index's, and the pick is
+    imported from that folder. Without one, they are the bundled list's, and
+    since Kinema does not download robot descriptions the pick hands back what
+    is hard to find by hand: which repository holds a given robot, at which
+    commit, and which of its files -- out of up to 2466 -- is the one to open.
     """
 
     bl_idname = "kinema.browse_catalog"
     bl_label = "Browse Robot Catalog"
     bl_description = (
-        "Search the robot catalog: the Catalog Folder's, or the bundled list while no "
-        "folder is set. A pick from the bundled list copies the git command to download it"
+        "Search the robot catalog. A pick from the Catalog Folder is imported; while "
+        "no folder is set, the bundled list is searched, and a pick from it copies the "
+        "git command to download it"
     )
-    # No UNDO or REGISTER: nothing in the scene changes.
+    # No UNDO or REGISTER, as for Import URDF File: build_robot owns the import's
+    # undo step, and the bundled list's pick changes nothing in the scene.
     bl_options = set()
     # Makes invoke_search_popup show a fuzzy-searchable list of every robot.
     bl_property = "robot_key"
@@ -328,8 +356,7 @@ class KINEMA_OT_browse_catalog(Operator):
                 return {"CANCELLED"}
             context.scene.kinema.catalog_pick = key
             context.scene.kinema.catalog_pick_folder = str(folder.path)
-            self.report({"INFO"}, f"{entry.name}: {entry.relative_path}")
-            return {"FINISHED"}
+            return import_entry(self, context, entry)
 
         entry = catalog.get(key)
         if entry is None:
@@ -343,6 +370,28 @@ class KINEMA_OT_browse_catalog(Operator):
             {"INFO"}, f"{entry.label}: clone command copied — {entry.handoff_hint}"
         )
         return {"FINISHED"}
+
+
+class KINEMA_OT_import_catalog_pick(Operator):
+    """Import the Catalog Folder's pick again: after cloning the submodule it
+    needed, say, or for a second of the same robot."""
+
+    bl_idname = "kinema.import_catalog_pick"
+    bl_label = "Import"
+    bl_description = "Import the picked robot from the Catalog Folder"
+    bl_options = set()
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        folder = catalog_folder(context)
+        return listed(folder) and picked_entry(context, folder) is not None
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        entry = picked_entry(context)
+        if entry is None:
+            self.report({"ERROR"}, "Nothing picked from the Catalog Folder")
+            return {"CANCELLED"}
+        return import_entry(self, context, entry)
 
 
 class KINEMA_OT_open_catalog_repo(Operator):
@@ -486,6 +535,7 @@ def menu_draw(self, context: bpy.types.Context) -> None:
 classes = (
     KINEMA_OT_build_robot,
     KINEMA_OT_browse_catalog,
+    KINEMA_OT_import_catalog_pick,
     KINEMA_OT_open_catalog_repo,
     KINEMA_OT_import_urdf,
 )
