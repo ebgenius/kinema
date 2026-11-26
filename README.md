@@ -1123,8 +1123,9 @@ entry named there is marked a duplicate, broken or partial and hidden from the p
 git, with an index of them, `catalog.json`. Set **Catalog Folder** in Kinema's preferences
 to a clone of it, or to its release zips unpacked side by side, and **Search Catalog…** lists
 that index in place of the bundled list. Each entry shows its kind, category, tags and
-licence, and the pick names its description file from the folder, through the unpacked zip
-it is in. The preferences say how many entries were found, and in how many `catalog.json`
+licence. **A pick is imported** from the folder, with the xacro arguments its entry names
+and the sidebar's Import Options: UR5e is in the scene two clicks after opening the
+panel. The preferences say how many entries were found, and in how many `catalog.json`
 files.
 
 - **Where the index is looked for:** at the folder's top, as in a clone, else one level
@@ -1134,6 +1135,17 @@ files.
   rest are listed; the preferences show the first problems.
 - **Nothing to list,** with no `catalog.json` or only another schema version, falls back
   to the bundled list, and the panel says so.
+- **Packages** are looked for in the whole of the catalog's `src/`, every submodule, since
+  one description can need another's: TurtleBot 4's includes Create 3's. That adds about
+  0.4 s to an import. The solver's reload searches the same way, because it is worked out
+  from where the file is, not from the preferences.
+- **A submodule not yet cloned** can't be imported. kinema_catalog clones its submodules on
+  demand, and Kinema doesn't download. The pick says so and puts the `git` command to clone
+  it on the clipboard. Run it, then press **Import** under the pick.
+- **Add to Asset Browser,** in the preferences, registers the folder as the Asset Library
+  *Kinema Catalog*, set to append. It lists the assets in any `.blend` file in the folder.
+  Nothing there needs the catalog's index, so robots and tools of your own sit in a
+  library of your own and drag in the same way.
 
 ## Known limitations
 
