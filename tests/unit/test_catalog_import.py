@@ -3,6 +3,7 @@ packages and meshes are found, and why an entry can't be imported."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -54,7 +55,7 @@ class TestImportable:
     def test_a_submodule_not_cloned_says_so_and_how_to(self, clone):
         found = source.importable(_entry(clone, "fixture_absent"))
         assert found.problem == "Fixture Absent: src/absent_repo isn't cloned"
-        assert found.command.startswith(f'git -C "{clone}" ')
+        assert found.command.startswith(f'git -C "{clone.as_posix()}" ')
         assert found.command.endswith("submodule update --init -- src/absent_repo")
         # Anonymous HTTPS, as kinema_catalog's launcher clones: .gitmodules names
         # SSH URLs.
@@ -78,18 +79,30 @@ class TestImportable:
         assert found.problem == "Fixture Tool: no src/tool_repo/urdf/tool.urdf"
 
     @pytest.mark.parametrize(
-        "submodule", ["absent; echo unexpected #", "absent && calc", "$(calc)", "a b", "a%PATH%"]
+        "submodule",
+        [
+            "absent; echo unexpected #", "absent && calc", "$(calc)", "a b", "a%PATH%",
+            "absent\n", "absent\ncalc",
+        ],
     )
-    def test_a_submodule_a_shell_would_read_more_into_has_no_command(self, clone, submodule):
+    def test_a_submodule_a_shell_would_read_more_into_has_no_command(
+        self, clone, submodule, monkeypatch
+    ):
         """The command is pasted into a shell: one the catalog names is never
-        anything but git's."""
+        anything but git's. Not cloned, whatever the system makes of the name:
+        Windows refuses one with a newline before it is looked for."""
         _rewrite(clone, "fixture_absent", submodule=submodule)
+        monkeypatch.setattr(source, "_has_files", lambda directory: False)
         found = source.importable(_entry(clone, "fixture_absent"))
         assert found.problem.endswith("isn't cloned")
         assert found.command == ""
 
-    @pytest.mark.parametrize("name", ["cat$HOME", "cat`x`", 'cat"x', "cat%x%", "cat!x"])
+    @pytest.mark.parametrize(
+        "name", ["cat$HOME", "cat`x`", 'cat"x', "cat%x%", "cat!x", "cat\\", "cat\n"]
+    )
     def test_nor_a_catalog_in_a_directory_a_shell_would_expand(self, tmp_path, name):
+        if os.name == "nt" and "\\" in name:
+            pytest.skip("a backslash separates directories on Windows")
         directory = tmp_path / name
         try:
             directory.mkdir()
@@ -104,7 +117,24 @@ class TestImportable:
         directory.mkdir()
         root = catalog_clone(directory)
         found = source.importable(_entry(root, "fixture_absent"))
-        assert found.command.startswith(f'git -C "{root}" ')
+        assert found.command.startswith(f'git -C "{root.as_posix()}" ')
+
+    @pytest.mark.skipif(os.name != "nt", reason="a drive's top is Windows'")
+    def test_a_catalog_at_a_drives_top_has_no_backslash_to_escape_its_quote(
+        self, clone, monkeypatch
+    ):
+        """``"C:\\"`` is an unclosed quote in bash: the directory is written as
+        git takes it everywhere, with forward slashes."""
+        import dataclasses
+
+        top = Path("C:\\")
+        entry = dataclasses.replace(_entry(clone, "fixture_absent"), root=top)
+        real = Path.exists
+        monkeypatch.setattr(Path, "exists", lambda self: self == top / ".git" or real(self))
+        monkeypatch.setattr(source, "_has_files", lambda directory: False)
+        found = source.importable(entry)
+        assert found.command.startswith('git -C "C:/" ')
+        assert "\\" not in found.command
 
     @pytest.mark.parametrize(
         ("field", "value"),

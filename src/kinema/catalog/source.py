@@ -35,11 +35,12 @@ CLONE = (
 #: A submodule named so that the command needs no quoting in any shell it may be
 #: pasted into: ``bash``, PowerShell or ``cmd``, whose quoting rules differ. The
 #: catalog's are all like this; another is named with no command.
-_PLAIN_NAME = re.compile(r"^[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*$")
-#: What the catalog's directory, double-quoted, may hold for the same: no quote,
-#: and nothing ``bash`` or PowerShell expands inside double quotes, or ``cmd``
-#: anywhere.
-_QUOTED_PATH = re.compile(r'^[^"$`%!\x00-\x1f]+$')
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*")
+#: What the catalog's directory, double-quoted and written with forward slashes,
+#: which git takes on every system, may hold for the same: no quote, nothing
+#: ``bash`` or PowerShell expands inside double quotes, or ``cmd`` anywhere, and
+#: no backslash, which ``bash`` reads as an escape there.
+_QUOTED_PATH = re.compile(r'[^"$`%!\\\x00-\x1f]+')
 
 
 @dataclass(frozen=True)
@@ -84,7 +85,8 @@ def importable(entry: FolderEntry) -> Importable:
         # kinema_catalog clones its submodules on demand; an unpacked zip has
         # no git to clone them with.
         is_clone = (entry.root / ".git").exists()
-        plain = _PLAIN_NAME.match(entry.submodule) and _QUOTED_PATH.match(str(entry.root))
+        root = entry.root.as_posix()
+        plain = _PLAIN_NAME.fullmatch(entry.submodule) and _QUOTED_PATH.fullmatch(root)
         return Importable(
             entry.path,
             problem=(
@@ -93,7 +95,7 @@ def importable(entry: FolderEntry) -> Importable:
                 else f"{entry.name}: {submodule.as_posix()} isn't in {entry.root}"
             ),
             command=(
-                CLONE.format(root=entry.root, submodule=submodule.as_posix())
+                CLONE.format(root=root, submodule=submodule.as_posix())
                 if is_clone and plain
                 else ""
             ),
