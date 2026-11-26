@@ -1117,6 +1117,24 @@ sentinel string yields every path relative to the repository root, offline. One 
 entry named there is marked a duplicate, broken or partial and hidden from the picker until
 **Show all variants** is ticked. Everything not named there shows normally.
 
+#### A Catalog Folder
+
+[kinema_catalog](https://github.com/ebgenius/kinema_catalog) keeps robot descriptions in
+git, with an index of them, `catalog.json`. Set **Catalog Folder** in Kinema's preferences
+to a clone of it, or to its release zips unpacked side by side, and **Search Catalog…** lists
+that index in place of the bundled list. Each entry shows its kind, category, tags and
+licence, and the pick names its description file from the folder, through the unpacked zip
+it is in. The preferences say how many entries were found, and in how many `catalog.json`
+files.
+
+- **Where the index is looked for:** at the folder's top, as in a clone, else one level
+  down, one per unpacked zip; several are merged.
+- **What is checked:** each entry, field by field, against what kinema_catalog's
+  `catalog.schema.json` asks (schema version 1). An entry that fails is left out and the
+  rest are listed; the preferences show the first problems.
+- **Nothing to list,** with no `catalog.json` or only another schema version, falls back
+  to the bundled list, and the panel says so.
+
 ## Known limitations
 
 - **Ball joints are rejected.** A 3-DoF spherical joint has no honest single-axis bone

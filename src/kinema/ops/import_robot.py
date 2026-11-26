@@ -222,12 +222,27 @@ class KINEMA_OT_build_robot(Operator):
 # --------------------------------------------------------------------------
 # entry points
 # --------------------------------------------------------------------------
-def _catalog_items(self, context):
-    """Enum items for the catalog search popup.
+#: The search popup's items, kept referenced: Blender reads a dynamic enum's
+#: strings after its callback has returned, so they must outlive the call.
+_CATALOG_ITEMS: list = []
 
-    Built fresh on each invoke: the list is small, and caching Blender enum
-    item strings is a well-known way to get garbage-collected labels.
-    """
+
+def _catalog_items(self, context):
+    """Enum items for the catalog search popup, built afresh on each call and held
+    in :data:`_CATALOG_ITEMS` until the next."""
+    _CATALOG_ITEMS[:] = _catalog_item_list(context)
+    return _CATALOG_ITEMS
+
+
+def _catalog_item_list(context) -> list:
+    folder = catalog_folder(context)
+    if listed(folder):
+        # The Catalog Folder lists what its index lists: the index is curated
+        # where it is built, so there is nothing to hide here.
+        return [
+            (entry.id, entry.name, f"{entry.id} · {entry.format} — {entry.description}")
+            for entry in folder.entries
+        ]
     props = getattr(context.scene, "kinema", None)
     show_all = bool(getattr(props, "catalog_show_all", False))
     # Both filters move together, or the toggle cannot keep its promise: an
@@ -246,19 +261,51 @@ def _catalog_items(self, context):
     ]
 
 
-class KINEMA_OT_browse_catalog(Operator):
-    """Look a robot up and hand back the command to fetch it.
+def catalog_folder(context):
+    """The Catalog Folder as read, or None where none is set."""
+    from ..prefs import catalog_folder as read
 
-    Kinema does not download robot descriptions. What this offers instead is
-    the part that is actually hard to find by hand: which repository holds a
-    given robot, at which commit, and which of its files -- out of up to 2466 --
-    is the one to open.
+    return read(context)
+
+
+def listed(folder) -> bool:
+    """Whether the search lists ``folder``, a Catalog Folder as read, rather than
+    the bundled list."""
+    return folder is not None and folder.valid
+
+
+def picked_entry(context, folder=None):
+    """The entry last picked in the catalog search, from the list searched now:
+    ``folder``'s, the Catalog Folder as read, while it is valid, else the bundled
+    list's. None when nothing is picked, or it was picked from another list.
+
+    Pass the folder the caller already read, so both see one list."""
+    props = context.scene.kinema
+    key = props.catalog_pick
+    if folder is None:
+        folder = catalog_folder(context)
+    source = str(folder.path) if listed(folder) else ""
+    if not key or props.catalog_pick_folder != source:
+        return None
+    return folder.get(key) if source else catalog.get(key)
+
+
+class KINEMA_OT_browse_catalog(Operator):
+    """Look a robot up in the catalog.
+
+    With a Catalog Folder set, the entries are its index's, and the pick names
+    the description file in that folder. Without one, they are the bundled
+    list's, and since Kinema does not download robot descriptions the pick hands
+    back what is hard to find by hand: which repository holds a given robot, at
+    which commit, and which of its files -- out of up to 2466 -- is the one to
+    open.
     """
 
     bl_idname = "kinema.browse_catalog"
     bl_label = "Browse Robot Catalog"
     bl_description = (
-        "Search 186 robot descriptions and copy the git command to download one"
+        "Search the robot catalog: the Catalog Folder's, or the bundled list while no "
+        "folder is set. A pick from the bundled list copies the git command to download it"
     )
     # No UNDO or REGISTER: nothing in the scene changes.
     bl_options = set()
@@ -273,6 +320,17 @@ class KINEMA_OT_browse_catalog(Operator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         key = self.robot_key
+        folder = catalog_folder(context)
+        if listed(folder):
+            entry = folder.get(key)
+            if entry is None:
+                self.report({"ERROR"}, f"No '{key}' in the Catalog Folder")
+                return {"CANCELLED"}
+            context.scene.kinema.catalog_pick = key
+            context.scene.kinema.catalog_pick_folder = str(folder.path)
+            self.report({"INFO"}, f"{entry.name}: {entry.relative_path}")
+            return {"FINISHED"}
+
         entry = catalog.get(key)
         if entry is None:
             self.report({"ERROR"}, f"Unknown robot '{key}'")
@@ -280,6 +338,7 @@ class KINEMA_OT_browse_catalog(Operator):
 
         context.window_manager.clipboard = entry.clone_command
         context.scene.kinema.catalog_pick = key
+        context.scene.kinema.catalog_pick_folder = ""
         self.report(
             {"INFO"}, f"{entry.label}: clone command copied — {entry.handoff_hint}"
         )
@@ -294,8 +353,13 @@ class KINEMA_OT_open_catalog_repo(Operator):
     bl_description = "Open this robot's source repository in your web browser"
     bl_options = set()
 
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        # A Catalog Folder's entries are in the folder: no repository to open.
+        return not listed(catalog_folder(context))
+
     def execute(self, context: bpy.types.Context) -> set[str]:
-        entry = catalog.get(context.scene.kinema.catalog_pick)
+        entry = picked_entry(context)
         if entry is None:
             self.report({"ERROR"}, "No robot picked")
             return {"CANCELLED"}

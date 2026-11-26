@@ -434,6 +434,7 @@ dependencies = [
 dev = [
     { name = "debugpy" },
     { name = "fake-bpy-module-latest" },
+    { name = "jsonschema" },
     { name = "mujoco" },
     { name = "pip" },
     { name = "pytest" },
@@ -464,6 +465,7 @@ requires-dist = [
 dev = [
     { name = "debugpy" },
     { name = "fake-bpy-module-latest" },
+    { name = "jsonschema", specifier = ">=4.26" },
     { name = "mujoco" },
     { name = "pip" },
     { name = "pytest" },
