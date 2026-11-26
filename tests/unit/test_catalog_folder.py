@@ -6,7 +6,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+from pathlib import Path
 
+import jsonschema
 import pytest
 
 from ..conftest import FIXTURE_DIR, load_addon_module
@@ -106,7 +108,6 @@ RECORDS = {
 @pytest.mark.parametrize("name", list(RECORDS))
 def test_kinemas_checks_agree_with_the_schema(name):
     """Valid by the schema exactly when Kinema finds nothing wrong."""
-    jsonschema = pytest.importorskip("jsonschema")
     record = RECORDS[name]
     validator = jsonschema.Draft202012Validator(
         {**ENTRY_SCHEMA, "$defs": SCHEMA["$defs"]}
@@ -120,7 +121,6 @@ def test_kinemas_checks_agree_with_the_schema(name):
 def test_both_kinds_of_record_are_covered():
     """The agreement above means something only if the schema both accepts and
     refuses some of the records."""
-    jsonschema = pytest.importorskip("jsonschema")
     validator = jsonschema.Draft202012Validator({**ENTRY_SCHEMA, "$defs": SCHEMA["$defs"]})
     verdicts = {validator.is_valid(record) for record in RECORDS.values()}
     assert verdicts == {True, False}
@@ -128,8 +128,35 @@ def test_both_kinds_of_record_are_covered():
 
 @pytest.mark.parametrize("path", sorted(FIXTURES.rglob("catalog.json")), ids=str)
 def test_the_fixture_indexes_are_valid(path):
-    jsonschema = pytest.importorskip("jsonschema")
     jsonschema.validate(json.loads(path.read_text(encoding="utf-8")), SCHEMA)
+
+
+#: Whole indexes, around one valid entry, to hold the index's own checks to.
+INDEXES = {
+    "as it is": {"schema_version": 1, "entries": [UR5E]},
+    "with its schema and source": {
+        "$schema": "./catalog.schema.json", "schema_version": 1,
+        "generated_from": "catalog/*.yaml", "entries": [UR5E],
+    },
+    "another version": {"schema_version": 2, "entries": [UR5E]},
+    "a version that's true": {"schema_version": True, "entries": [UR5E]},
+    "a version that's text": {"schema_version": "1", "entries": [UR5E]},
+    "no version": {"entries": [UR5E]},
+    "no entries": {"schema_version": 1},
+    "entries that aren't a list": {"schema_version": 1, "entries": {"ur5e": UR5E}},
+    "an unknown field": {"schema_version": 1, "entries": [UR5E], "robots": []},
+    "a schema that isn't text": {"$schema": 1, "schema_version": 1, "entries": [UR5E]},
+    "a source that isn't text": {"generated_from": [], "schema_version": 1, "entries": [UR5E]},
+}
+
+
+@pytest.mark.parametrize("name", list(INDEXES))
+def test_an_index_is_read_exactly_when_the_schema_accepts_it(name, tmp_path):
+    index = tmp_path / "catalog.json"
+    index.write_text(json.dumps(INDEXES[name]), encoding="utf-8")
+    entries, problems = folder.read_index(index)
+    assert bool(entries) == jsonschema.Draft202012Validator(SCHEMA).is_valid(INDEXES[name])
+    assert bool(problems) != bool(entries), problems
 
 
 def test_a_problem_names_the_field():
@@ -162,6 +189,17 @@ class TestAnEntry:
     def test_its_description_has_kind_category_tags_and_licence(self):
         gripper = folder.load(FIXTURES / "clone").get("gripper_2f")
         assert gripper.description == "End Effector · arm · gripper · BSD-3-Clause"
+
+    def test_its_file_from_a_clone_is_as_the_index_names_it(self):
+        ur5e = folder.load(FIXTURES / "clone").get("ur5e")
+        assert ur5e.relative_path == "src/Universal_Robots_ROS2_Description/urdf/ur.urdf.xacro"
+
+    def test_its_file_from_an_unpacked_zip_goes_through_the_zip(self):
+        ur5e = folder.load(FIXTURES / "zips").get("ur5e")
+        assert ur5e.relative_path == (
+            "universal_robots/src/Universal_Robots_ROS2_Description/urdf/ur.urdf.xacro"
+        )
+        assert FIXTURES / "zips" / ur5e.relative_path == ur5e.path
 
     def test_a_licence_note_is_kept(self):
         aura = folder.load(FIXTURES / "clone").get("aura")
@@ -222,7 +260,39 @@ class TestAFolder:
             )
         found = folder.load(tmp_path)
         assert [entry.maker for entry in found.entries] == ["First"]
-        assert len(found.problems) == 1 and "ur5e" in found.problems[0]
+        assert found.problems == (
+            f"{tmp_path / 'b' / 'catalog.json'}: entry ur5e is in "
+            f"{tmp_path / 'a' / 'catalog.json'} too; the first is used",
+        )
+
+    def test_an_id_twice_in_one_index_keeps_the_first(self, tmp_path):
+        index = tmp_path / "catalog.json"
+        index.write_text(_index([UR5E, _with(maker="Second")]), encoding="utf-8")
+        found = folder.load(tmp_path)
+        assert [entry.maker for entry in found.entries] == ["Universal Robots"]
+        assert found.problems == (
+            f"{index}: entry ur5e is earlier in it too; the first is used",
+        )
+
+    def test_a_directory_that_cant_be_looked_into_loses_only_its_own(
+        self, tmp_path, monkeypatch
+    ):
+        for name in ("a", "b"):
+            (tmp_path / name).mkdir()
+            (tmp_path / name / "catalog.json").write_text(
+                _index([_with(id=f"robot_{name}")]), encoding="utf-8"
+            )
+        locked = tmp_path / "a" / "catalog.json"
+        is_file = Path.is_file
+
+        def refusing(path):
+            if path == locked:
+                raise PermissionError(13, "Permission denied", str(path))
+            return is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", refusing)
+        found = folder.load(tmp_path)
+        assert [entry.id for entry in found.entries] == ["robot_b"]
 
     def test_an_invalid_entry_is_left_out_and_the_rest_kept(self, tmp_path):
         (tmp_path / "catalog.json").write_text(
@@ -263,3 +333,37 @@ class TestAFolder:
         stat = index.stat()
         os.utime(index, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         assert len(folder.load(tmp_path).entries) == 2
+
+    def test_an_index_of_the_same_size_is_read_again_when_its_time_changes(self, tmp_path):
+        index = tmp_path / "catalog.json"
+        index.write_text(_index([_with(maker="Before")]), encoding="utf-8")
+        assert folder.load(tmp_path).entries[0].maker == "Before"
+        stat = index.stat()
+        index.write_text(_index([_with(maker="Aft3r!")]), encoding="utf-8")
+        assert index.stat().st_size == stat.st_size
+        os.utime(index, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        assert folder.load(tmp_path).entries[0].maker == "Aft3r!"
+
+    def test_an_index_that_gave_nothing_is_tried_again(self, tmp_path):
+        """Even with its time and size as they were: it may have been unreadable for
+        the moment."""
+        index = tmp_path / "catalog.json"
+        good = _index([UR5E])
+        index.write_text("x" * len(good), encoding="utf-8")
+        stat = index.stat()
+        assert not folder.load(tmp_path).valid
+        index.write_text(good, encoding="utf-8")
+        os.utime(index, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        assert folder.load(tmp_path).valid
+
+    def test_a_relative_folder_is_its_own_in_each_directory(self, tmp_path, monkeypatch):
+        # The same size and time, so only the folder tells them apart.
+        for name, maker in (("one", "First"), ("two", "Other")):
+            (tmp_path / name / "catalog").mkdir(parents=True)
+            index = tmp_path / name / "catalog" / "catalog.json"
+            index.write_text(_index([_with(maker=maker)]), encoding="utf-8")
+            os.utime(index, ns=(1_700_000_000_000_000_000,) * 2)
+        monkeypatch.chdir(tmp_path / "one")
+        assert folder.load("catalog").entries[0].maker == "First"
+        monkeypatch.chdir(tmp_path / "two")
+        assert folder.load("catalog").entries[0].maker == "Other"

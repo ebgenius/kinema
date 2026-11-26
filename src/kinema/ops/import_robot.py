@@ -222,14 +222,21 @@ class KINEMA_OT_build_robot(Operator):
 # --------------------------------------------------------------------------
 # entry points
 # --------------------------------------------------------------------------
-def _catalog_items(self, context):
-    """Enum items for the catalog search popup.
+#: The search popup's items, kept referenced: Blender reads a dynamic enum's
+#: strings after its callback has returned, so they must outlive the call.
+_CATALOG_ITEMS: list = []
 
-    Built fresh on each invoke: the list is small, and caching Blender enum
-    item strings is a well-known way to get garbage-collected labels.
-    """
+
+def _catalog_items(self, context):
+    """Enum items for the catalog search popup, built afresh on each call and held
+    in :data:`_CATALOG_ITEMS` until the next."""
+    _CATALOG_ITEMS[:] = _catalog_item_list(context)
+    return _CATALOG_ITEMS
+
+
+def _catalog_item_list(context) -> list:
     folder = catalog_folder(context)
-    if folder is not None and folder.valid:
+    if listed(folder):
         # The Catalog Folder lists what its index lists: the index is curated
         # where it is built, so there is nothing to hide here.
         return [
@@ -261,17 +268,26 @@ def catalog_folder(context):
     return read(context)
 
 
-def picked_entry(context):
-    """The entry last picked in the catalog search: the Catalog Folder's while it
-    is valid, else the bundled list's. None when nothing is picked, or the pick
-    isn't in the list searched now."""
-    key = context.scene.kinema.catalog_pick
-    if not key:
+def listed(folder) -> bool:
+    """Whether the search lists ``folder``, a Catalog Folder as read, rather than
+    the bundled list."""
+    return folder is not None and folder.valid
+
+
+def picked_entry(context, folder=None):
+    """The entry last picked in the catalog search, from the list searched now:
+    ``folder``'s, the Catalog Folder as read, while it is valid, else the bundled
+    list's. None when nothing is picked, or it was picked from another list.
+
+    Pass the folder the caller already read, so both see one list."""
+    props = context.scene.kinema
+    key = props.catalog_pick
+    if folder is None:
+        folder = catalog_folder(context)
+    source = str(folder.path) if listed(folder) else ""
+    if not key or props.catalog_pick_folder != source:
         return None
-    folder = catalog_folder(context)
-    if folder is not None and folder.valid:
-        return folder.get(key)
-    return catalog.get(key)
+    return folder.get(key) if source else catalog.get(key)
 
 
 class KINEMA_OT_browse_catalog(Operator):
@@ -288,8 +304,8 @@ class KINEMA_OT_browse_catalog(Operator):
     bl_idname = "kinema.browse_catalog"
     bl_label = "Browse Robot Catalog"
     bl_description = (
-        "Search the robot catalog: the Catalog Folder's, or else the bundled list, "
-        "whose pick copies the git command to download it"
+        "Search the robot catalog: the Catalog Folder's, or the bundled list while no "
+        "folder is set. A pick from the bundled list copies the git command to download it"
     )
     # No UNDO or REGISTER: nothing in the scene changes.
     bl_options = set()
@@ -305,13 +321,14 @@ class KINEMA_OT_browse_catalog(Operator):
     def execute(self, context: bpy.types.Context) -> set[str]:
         key = self.robot_key
         folder = catalog_folder(context)
-        if folder is not None and folder.valid:
+        if listed(folder):
             entry = folder.get(key)
             if entry is None:
                 self.report({"ERROR"}, f"No '{key}' in the Catalog Folder")
                 return {"CANCELLED"}
             context.scene.kinema.catalog_pick = key
-            self.report({"INFO"}, f"{entry.name}: {entry.entry}")
+            context.scene.kinema.catalog_pick_folder = str(folder.path)
+            self.report({"INFO"}, f"{entry.name}: {entry.relative_path}")
             return {"FINISHED"}
 
         entry = catalog.get(key)
@@ -321,6 +338,7 @@ class KINEMA_OT_browse_catalog(Operator):
 
         context.window_manager.clipboard = entry.clone_command
         context.scene.kinema.catalog_pick = key
+        context.scene.kinema.catalog_pick_folder = ""
         self.report(
             {"INFO"}, f"{entry.label}: clone command copied — {entry.handoff_hint}"
         )
@@ -338,11 +356,10 @@ class KINEMA_OT_open_catalog_repo(Operator):
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
         # A Catalog Folder's entries are in the folder: no repository to open.
-        folder = catalog_folder(context)
-        return folder is None or not folder.valid
+        return not listed(catalog_folder(context))
 
     def execute(self, context: bpy.types.Context) -> set[str]:
-        entry = catalog.get(context.scene.kinema.catalog_pick)
+        entry = picked_entry(context)
         if entry is None:
             self.report({"ERROR"}, "No robot picked")
             return {"CANCELLED"}

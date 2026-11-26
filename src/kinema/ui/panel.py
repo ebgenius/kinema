@@ -125,6 +125,11 @@ class KinemaSceneProps(PropertyGroup):
         description="Robot most recently looked up in the catalog",
         default="",
     )
+    catalog_pick_folder: StringProperty(
+        name="Catalog Pick Folder",
+        description="The Catalog Folder the pick came from; empty for the bundled list",
+        default="",
+    )
     catalog_show_all: BoolProperty(
         name="Show All Variants",
         description=(
@@ -186,17 +191,17 @@ def _draw_catalog(layout, context: bpy.types.Context) -> None:
     who clones mujoco_menagerie and is left to find one robot among 2466 files
     has not been helped.
     """
-    from ..ops.import_robot import catalog_folder, picked_entry
+    from ..ops.import_robot import catalog_folder, listed, picked_entry
     from ..prefs import CATALOG_URL
 
     props = context.scene.kinema
     folder = catalog_folder(context)
 
-    if folder is not None and folder.valid:
+    if listed(folder):
         # The Catalog Folder's entries, and the file each one names in it.
         layout.label(text=f"Catalog Folder: {len(folder.entries)} entries", icon="ASSET_MANAGER")
         layout.operator("kinema.browse_catalog", text="Search Catalog…", icon="VIEWZOOM")
-        entry = picked_entry(context)
+        entry = picked_entry(context, folder)
         if entry is None:
             return
         box = layout.box()
@@ -205,7 +210,7 @@ def _draw_catalog(layout, context: bpy.types.Context) -> None:
         column.label(text=entry.description)
         if entry.licence_note:
             column.label(text=entry.licence_note, icon="INFO")
-        column.label(text=entry.entry, icon="FILE_TICK")
+        column.label(text=entry.relative_path, icon="FILE_TICK")
         return
 
     layout.label(text="Kinema does not download robots.", icon="INFO")
@@ -216,7 +221,7 @@ def _draw_catalog(layout, context: bpy.types.Context) -> None:
     layout.operator("kinema.browse_catalog", text="Search Catalog…", icon="VIEWZOOM")
     layout.prop(props, "catalog_show_all")
 
-    entry = picked_entry(context)
+    entry = picked_entry(context, folder)
     if entry is None:
         return
 

@@ -25,9 +25,11 @@ def props(addon, clean_scene):
     scene = bpy.context.scene
     scene.kinema.catalog_show_all = False
     scene.kinema.catalog_pick = ""
+    scene.kinema.catalog_pick_folder = ""
     yield scene.kinema
     scene.kinema.catalog_show_all = False
     scene.kinema.catalog_pick = ""
+    scene.kinema.catalog_pick_folder = ""
 
 
 def item_keys(props) -> set[str]:
@@ -178,7 +180,7 @@ class TestCatalogFolder:
 
     def test_the_panel_shows_the_pick_from_the_folder(self, clone, props):
         panel = load_addon_module("ui.panel")
-        props.catalog_pick = "aura"
+        assert bpy.ops.kinema.browse_catalog(robot_key="aura") == {"FINISHED"}
         texts = _texts(panel._draw_catalog, bpy.context)
         assert texts[0] == "Catalog Folder: 5 entries"
         assert "Comau AURA" in texts
@@ -186,6 +188,50 @@ class TestCatalogFolder:
         assert any("BSD-2-Clause" in text for text in texts)
         assert any(text.endswith("aura_robot.urdf.xacro") for text in texts)
         assert "Kinema does not download robots." not in texts
+
+    def test_the_file_shown_goes_through_its_unpacked_zip(
+        self, preferences, fixture_dir, props
+    ):
+        preferences.catalog_folder = str(fixture_dir / "catalog_folder" / "zips")
+        assert bpy.ops.kinema.browse_catalog(robot_key="ur5e") == {"FINISHED"}
+        panel = load_addon_module("ui.panel")
+        assert (
+            "universal_robots/src/Universal_Robots_ROS2_Description/urdf/ur.urdf.xacro"
+            in _texts(panel._draw_catalog, bpy.context)
+        )
+
+    def test_a_pick_belongs_to_the_list_it_was_picked_from(
+        self, clone, preferences, fixture_dir, props
+    ):
+        """A pick is no pick once another list is searched, even where its id is
+        in both."""
+        assert bpy.ops.kinema.browse_catalog(robot_key="ur5e") == {"FINISHED"}
+        assert import_robot.picked_entry(bpy.context).id == "ur5e"
+        preferences.catalog_folder = str(fixture_dir / "catalog_folder" / "zips")
+        assert import_robot.picked_entry(bpy.context) is None
+        preferences.catalog_folder = ""
+        assert import_robot.picked_entry(bpy.context) is None
+        assert bpy.ops.kinema.browse_catalog(robot_key="panda_description") == {"FINISHED"}
+        assert import_robot.picked_entry(bpy.context).key == "panda_description"
+        preferences.catalog_folder = str(fixture_dir / "catalog_folder" / "clone")
+        assert import_robot.picked_entry(bpy.context) is None
+
+    def test_a_folder_pick_is_never_read_from_the_bundled_list(
+        self, clone, preferences, props
+    ):
+        """A pick made from the folder, of an id only the bundled list has."""
+        catalog_folder = import_robot.catalog_folder(bpy.context)
+        shared = next(e.key for e in catalog.all_entries() if e.key)
+        props.catalog_pick = shared
+        props.catalog_pick_folder = str(catalog_folder.path)
+        # Not in the folder: no pick, rather than the bundled entry of that id.
+        assert import_robot.picked_entry(bpy.context) is None
+
+    def test_the_items_outlive_the_call(self, clone):
+        """Blender reads a dynamic enum's strings after its callback returns."""
+        items = import_robot._catalog_items(None, bpy.context)
+        assert items is import_robot._CATALOG_ITEMS
+        assert len(items) == 5
 
     def test_the_preferences_say_what_was_found(self, clone):
         assert "5 entries from 1 catalog.json" in _texts(clone._draw_catalog_folder)

@@ -31,6 +31,8 @@ INDEX = "catalog.json"
 #: The index's schema version that this module reads.
 SCHEMA_VERSION = 1
 
+#: The fields an index may have at its top; ``schema_version`` and ``entries`` it must.
+INDEX_FIELDS = ("$schema", "schema_version", "generated_from", "entries")
 #: Every field an entry must have; ``licence_note`` is the one optional field.
 REQUIRED = (
     "id", "name", "kind", "category", "family", "maker", "tags", "licence",
@@ -76,6 +78,8 @@ class FolderEntry:
     #: The directory holding the index this entry came from, which ``entry`` and
     #: ``mesh_base`` are relative to.
     root: Path
+    #: The Catalog Folder it was found in: ``root``, or the directory above it.
+    folder: Path
     licence_note: str = ""
 
     @property
@@ -99,6 +103,12 @@ class FolderEntry:
     def path(self) -> Path:
         """The description file to import."""
         return self.root / self.entry
+
+    @property
+    def relative_path(self) -> str:
+        """The description file from the Catalog Folder, through the unpacked zip
+        it is in, if any, with forward slashes."""
+        return Path(self.root.relative_to(self.folder), self.entry).as_posix()
 
 
 @dataclass(frozen=True)
@@ -172,7 +182,7 @@ def entry_problems(record) -> list[str]:
     return problems
 
 
-def _entry(record: dict, root: Path) -> FolderEntry:
+def _entry(record: dict, root: Path, folder: Path) -> FolderEntry:
     return FolderEntry(
         id=record["id"],
         name=record["name"],
@@ -189,10 +199,13 @@ def _entry(record: dict, root: Path) -> FolderEntry:
         args=tuple(record["args"].items()),
         mesh_base=record["mesh_base"],
         root=root,
+        folder=folder,
     )
 
 
-def read_index(path: Path) -> tuple[list[FolderEntry], list[str]]:
+def read_index(
+    path: Path, folder: Path | None = None
+) -> tuple[list[FolderEntry], list[str]]:
     """The valid entries of one ``catalog.json``, and the problems with the rest.
 
     An index that can't be read, or that has another schema version, gives no
@@ -203,7 +216,15 @@ def read_index(path: Path) -> tuple[list[FolderEntry], list[str]]:
         return [], [f"{path}: can't be read ({error})"]
     if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
         return [], [f"{path}: has no list of entries"]
-    if data.get("schema_version") != SCHEMA_VERSION:
+    unknown = [name for name in data if name not in INDEX_FIELDS]
+    if unknown:
+        return [], [f"{path}: unknown field '{unknown[0]}'"]
+    for name in ("$schema", "generated_from"):
+        if name in data and not isinstance(data[name], str):
+            return [], [f"{path}: '{name}' is not a string"]
+    version = data.get("schema_version")
+    # JSON's true is no version, though Python's True == 1.
+    if isinstance(version, bool) or version != SCHEMA_VERSION:
         return [], [
             f"{path}: schema version {data.get('schema_version')!r}; "
             f"Kinema reads version {SCHEMA_VERSION}"
@@ -215,7 +236,7 @@ def read_index(path: Path) -> tuple[list[FolderEntry], list[str]]:
             name = record.get("id") if isinstance(record, dict) else None
             problems.append(f"{path}: entry {name or position}: {'; '.join(wrong)}")
         else:
-            entries.append(_entry(record, path.parent))
+            entries.append(_entry(record, path.parent, folder or path.parent))
     return entries, problems
 
 
@@ -223,13 +244,21 @@ def find_indexes(folder: Path) -> list[Path]:
     """The folder's ``catalog.json``: at its top, else one in each directory one
     level down, in name order."""
     top = folder / INDEX
-    if top.is_file():
+    if _is_file(top):
         return [top]
     try:
-        below = sorted(child / INDEX for child in folder.iterdir() if child.is_dir())
+        children = sorted(folder.iterdir())
     except OSError:
         return []
-    return [index for index in below if index.is_file()]
+    # One directory that can't be looked into loses only its own index.
+    return [child / INDEX for child in children if _is_file(child / INDEX)]
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
 
 
 def _stamp(indexes) -> tuple:
@@ -251,7 +280,7 @@ def load(folder: str | Path) -> Folder:
 
     Entries keep the first index's where two share an id; the second is named in
     the problems."""
-    path = Path(folder)
+    path = Path(folder).absolute()
     if not str(folder).strip() or not path.is_dir():
         return Folder(path, problems=(f"{path}: not a folder",) if str(folder).strip() else ())
     indexes = find_indexes(path)
@@ -261,13 +290,16 @@ def load(folder: str | Path) -> Folder:
         return cached[1]
 
     entries, problems, seen = [], [], {}
+    unread = False
     for index in indexes:
-        found, wrong = read_index(index)
+        found, wrong = read_index(index, path)
         problems += wrong
+        unread = unread or not found and bool(wrong)
         for entry in found:
             if entry.id in seen:
+                where = "earlier in it" if seen[entry.id] == index else f"in {seen[entry.id]}"
                 problems.append(
-                    f"{index}: entry {entry.id} is in {seen[entry.id]} too; that one is used"
+                    f"{index}: entry {entry.id} is {where} too; the first is used"
                 )
                 continue
             seen[entry.id] = index
@@ -276,5 +308,8 @@ def load(folder: str | Path) -> Folder:
         problems.append(f"{path}: no {INDEX} here or one level down")
     entries.sort(key=lambda entry: (entry.maker.lower(), entry.name.lower()))
     result = Folder(path, tuple(indexes), tuple(entries), tuple(problems))
-    _cache[str(path)] = (stamp, result)
+    # An index that gave nothing may be one that couldn't be read for the moment,
+    # which a later look should try again.
+    if not unread:
+        _cache[str(path)] = (stamp, result)
     return result

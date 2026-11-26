@@ -45,6 +45,9 @@ dev = [
     # and writes src/kinema/catalog/robots.json; the add-on never imports it,
     # and it is not in the wheel payload.
     "robot-descriptions",
+    # Holds catalog/folder.py's field checks to kinema_catalog's schema in
+    # tests/unit/test_catalog_folder.py. Blender carries no validator.
+    "jsonschema>=4.26",
 ]
 
 [tool.uv]

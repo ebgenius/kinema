@@ -1121,10 +1121,11 @@ entry named there is marked a duplicate, broken or partial and hidden from the p
 
 [kinema_catalog](https://github.com/ebgenius/kinema_catalog) keeps robot descriptions in
 git, with an index of them, `catalog.json`. Set **Catalog Folder** in Kinema's preferences
-to a clone of it, or to its release zips unpacked side by side, and *Search Catalog* lists
+to a clone of it, or to its release zips unpacked side by side, and **Search Catalog…** lists
 that index in place of the bundled list. Each entry shows its kind, category, tags and
-licence, and the pick names its description file in the folder. The preferences say how
-many entries were found, and in how many `catalog.json` files.
+licence, and the pick names its description file from the folder, through the unpacked zip
+it is in. The preferences say how many entries were found, and in how many `catalog.json`
+files.
 
 - **Where the index is looked for:** at the folder's top, as in a clone, else one level
   down, one per unpacked zip; several are merged.

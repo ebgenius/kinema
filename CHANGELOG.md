@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Catalog Folder** (#105), in the preferences: a clone of kinema_catalog, or its release
-  zips unpacked side by side. *Search Catalog* lists its `catalog.json` in place of the
+  zips unpacked side by side. **Search Catalog…** lists its `catalog.json` in place of the
   bundled list, with each entry's kind, tags and licence, and the pick names the
   description file in the folder. Entries are checked against kinema_catalog's schema;
   one that fails is left out, and the preferences say why.
