@@ -37,10 +37,11 @@ CLONE = (
 #: catalog's are all like this; another is named with no command.
 _PLAIN_NAME = re.compile(r"[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*")
 #: What the catalog's directory, double-quoted and written with forward slashes,
-#: which git takes on every system, may hold for the same: no quote, nothing
-#: ``bash`` or PowerShell expands inside double quotes, or ``cmd`` anywhere, and
-#: no backslash, which ``bash`` reads as an escape there.
-_QUOTED_PATH = re.compile(r'[^"$`%!\\\x00-\x1f]+')
+#: which git takes on every system, may hold for the same: no quote, nor the
+#: typographic double quotes PowerShell reads as one, nothing ``bash`` or
+#: PowerShell expands inside double quotes, or ``cmd`` anywhere, and no
+#: backslash, which ``bash`` reads as an escape there.
+_QUOTED_PATH = re.compile(r'[^"\u201c\u201d\u201e$`%!\\\x00-\x1f]+')
 
 
 @dataclass(frozen=True)

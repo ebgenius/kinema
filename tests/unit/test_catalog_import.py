@@ -98,7 +98,12 @@ class TestImportable:
         assert found.command == ""
 
     @pytest.mark.parametrize(
-        "name", ["cat$HOME", "cat`x`", 'cat"x', "cat%x%", "cat!x", "cat\\", "cat\n"]
+        "name",
+        [
+            "cat$HOME", "cat`x`", 'cat"x', "cat%x%", "cat!x", "cat\\", "cat\n",
+            # PowerShell's double quotes, as well as its ASCII one.
+            "cat\u201c; calc; #", "cat\u201d; calc; #", "cat\u201e; calc; #",
+        ],
     )
     def test_nor_a_catalog_in_a_directory_a_shell_would_expand(self, tmp_path, name):
         if os.name == "nt" and "\\" in name:
