@@ -22,12 +22,17 @@ Nothing here uses the network, and nothing here imports ``bpy``.
 from __future__ import annotations
 
 import json
+import os
+import posixpath
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 #: The index's file name, at the top of a catalog or of each unpacked zip.
 INDEX = "catalog.json"
+#: The directory beside an index holding its descriptions' repositories, one
+#: submodule each.
+SOURCES = "src"
 #: The index's schema version that this module reads.
 SCHEMA_VERSION = 1
 
@@ -326,3 +331,49 @@ def load(folder: str | Path) -> Folder:
     if not unread:
         _cache[str(path)] = (stamp, result)
     return result
+
+
+def containing(path: str | Path) -> tuple[Path, FolderEntry | None] | None:
+    """The catalog a description file is in: the directory of the nearest index
+    above it, and the first entry naming the file there, or None for a file it
+    doesn't name. None when no index is above it. Entries naming one file, the
+    UR arms say, differ in their arguments, not in their ``mesh_base``.
+
+    Found from the file's place alone, so the solver's later reload of a rig
+    finds what its import found, whatever the preferences say by then. A
+    ``catalog.json`` that lists nothing Kinema reads isn't a catalog's, and the
+    search goes on above it."""
+    path = Path(path).resolve()
+    for root in path.parents:
+        index = root / INDEX
+        if not _is_file(index, []):
+            continue
+        found = load(root)
+        if not found.valid or found.indexes != (index,):
+            continue
+        name = _same(path.relative_to(root))
+        for entry in found.entries:
+            if _same(entry.entry) == name:
+                return root, entry
+        # Spelled differently, through a link say: the same file once resolved.
+        target = _same(path)
+        for entry in found.entries:
+            if _same((root / entry.entry).resolve()) == target:
+                return root, entry
+        return root, None
+    return None
+
+
+def within(relative: str) -> bool:
+    """Whether a path an index names, relative to its directory, stays in it:
+    not absolute, and not climbing out with ``..``. Read the same on every
+    system, since an index is written on one and read on another."""
+    if PureWindowsPath(relative).anchor or PurePosixPath(relative).anchor:
+        return False
+    return posixpath.normpath(relative.replace("\\", "/")).split("/")[0] != ".."
+
+
+def _same(path) -> str:
+    """A path as compared: one spelling of its separators and, on Windows, of
+    its case."""
+    return os.path.normcase(os.path.normpath(path))

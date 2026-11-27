@@ -77,8 +77,23 @@ def parse_args(text: str) -> dict[str, str]:
 
 
 def format_args(args: dict[str, str]) -> str:
-    """The inverse, for storing on a rig and showing it back."""
-    return " ".join(f"{name}{_ASSIGNMENT}{value}" for name, value in args.items())
+    """The inverse, for storing on a rig and showing it back.
+
+    An assignment holding a quote or a space is quoted, so that it is read back
+    as it was: ``config/robot's/arm.yaml`` would otherwise open a quote and
+    lose its apostrophe. Any other is written as it is, backslashes and all.
+    """
+    return " ".join(_assignment(name, value) for name, value in args.items())
+
+
+def _assignment(name: str, value: str) -> str:
+    text = f"{name}{_ASSIGNMENT}{value}"
+    if not any(char in text for char in "'\"") and not any(char.isspace() for char in text):
+        return text
+    # Single quotes hold everything but themselves; one is closed, written in
+    # double quotes, and opened again. Without an escape character, as
+    # _tokenise reads.
+    return "'" + text.replace("'", "'\"'\"'") + "'"
 
 
 def declared_args(path: str | Path) -> dict[str, str]:

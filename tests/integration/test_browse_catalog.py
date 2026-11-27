@@ -129,6 +129,14 @@ def _texts(draw, *args) -> list[str]:
     return [kwargs.get("text", "") for name, _args, kwargs in calls if name == "label"]
 
 
+def _pick(key: str) -> None:
+    """Pick ``key`` from the Catalog Folder, as the search does. These fixtures
+    hold no description files, so the import that follows the pick fails; the
+    pick stays, to import again once the files are there."""
+    with pytest.raises(RuntimeError, match="isn't in"):
+        bpy.ops.kinema.browse_catalog(robot_key=key)
+
+
 class TestCatalogFolder:
     """With a Catalog Folder set, the search lists its index instead (#105)."""
 
@@ -162,7 +170,7 @@ class TestCatalogFolder:
         assert item_keys(props) == {"irb1200", "ur5e", "gripper_2f"}
 
     def test_picking_records_the_folders_entry(self, clone, props, fixture_dir):
-        assert bpy.ops.kinema.browse_catalog(robot_key="ur5e") == {"FINISHED"}
+        _pick("ur5e")
         assert props.catalog_pick == "ur5e"
         entry = import_robot.picked_entry(bpy.context)
         assert entry.path == (
@@ -180,7 +188,7 @@ class TestCatalogFolder:
 
     def test_the_panel_shows_the_pick_from_the_folder(self, clone, props):
         panel = load_addon_module("ui.panel")
-        assert bpy.ops.kinema.browse_catalog(robot_key="aura") == {"FINISHED"}
+        _pick("aura")
         texts = _texts(panel._draw_catalog, bpy.context)
         assert texts[0] == "Catalog Folder: 5 entries"
         assert "Comau AURA" in texts
@@ -193,7 +201,7 @@ class TestCatalogFolder:
         self, preferences, fixture_dir, props
     ):
         preferences.catalog_folder = str(fixture_dir / "catalog_folder" / "zips")
-        assert bpy.ops.kinema.browse_catalog(robot_key="ur5e") == {"FINISHED"}
+        _pick("ur5e")
         panel = load_addon_module("ui.panel")
         assert (
             "universal_robots/src/Universal_Robots_ROS2_Description/urdf/ur.urdf.xacro"
@@ -205,7 +213,7 @@ class TestCatalogFolder:
     ):
         """A pick is no pick once another list is searched, even where its id is
         in both."""
-        assert bpy.ops.kinema.browse_catalog(robot_key="ur5e") == {"FINISHED"}
+        _pick("ur5e")
         assert import_robot.picked_entry(bpy.context).id == "ur5e"
         preferences.catalog_folder = str(fixture_dir / "catalog_folder" / "zips")
         assert import_robot.picked_entry(bpy.context) is None

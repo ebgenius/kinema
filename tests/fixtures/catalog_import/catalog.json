@@ -1,0 +1,67 @@
+{
+  "$schema": "./catalog.schema.json",
+  "schema_version": 1,
+  "generated_from": "tests/fixtures/catalog_import",
+  "entries": [
+    {
+      "id": "fixture_arm",
+      "name": "Fixture Arm",
+      "kind": "robot",
+      "category": "arm",
+      "family": "fixture",
+      "maker": "Fixture",
+      "tags": ["arm"],
+      "licence": "MIT",
+      "submodule": "robot_repo",
+      "entry": "src/robot_repo/fixture_robot/urdf/arm.urdf.xacro",
+      "format": "xacro",
+      "args": {},
+      "mesh_base": null
+    },
+    {
+      "id": "fixture_named",
+      "name": "Fixture Named",
+      "kind": "robot",
+      "category": "arm",
+      "family": "fixture",
+      "maker": "Fixture",
+      "tags": ["arm"],
+      "licence": "MIT",
+      "submodule": "named_repo",
+      "entry": "src/named_repo/Renamed_Package_Dir/urdf/needs_args.urdf.xacro",
+      "format": "xacro",
+      "args": {"name": "fixture_named", "segment_length": "0.25"},
+      "mesh_base": null
+    },
+    {
+      "id": "fixture_tool",
+      "name": "Fixture Tool",
+      "kind": "end_effector",
+      "category": "arm",
+      "family": "fixture",
+      "maker": "Fixture",
+      "tags": ["gripper"],
+      "licence": "MIT",
+      "submodule": "tool_repo",
+      "entry": "src/tool_repo/urdf/tool.urdf",
+      "format": "urdf",
+      "args": {},
+      "mesh_base": "src/tool_repo"
+    },
+    {
+      "id": "fixture_absent",
+      "name": "Fixture Absent",
+      "kind": "robot",
+      "category": "arm",
+      "family": "fixture",
+      "maker": "Fixture",
+      "tags": ["arm"],
+      "licence": "MIT",
+      "submodule": "absent_repo",
+      "entry": "src/absent_repo/urdf/absent.urdf",
+      "format": "urdf",
+      "args": {},
+      "mesh_base": null
+    }
+  ]
+}

@@ -323,6 +323,11 @@ class KinemaPreferences(AddonPreferences):
             note.label(text=problem, icon="BLANK1")
         if len(found.problems) > 3:
             note.label(text=f"and {len(found.problems) - 3} more problems", icon="BLANK1")
+        library = catalog_library()
+        if library is not None and _same_path(library.path, found.path):
+            note.label(text=f"In the Asset Browser as {library.name}", icon="ASSET_MANAGER")
+        else:
+            layout.operator(KINEMA_OT_add_catalog_library.bl_idname, icon="ASSET_MANAGER")
 
     def _draw_quick_bar(self, layout) -> None:
         """The quick bar's buttons, to put in order, take out and add to."""
@@ -528,6 +533,80 @@ def catalog_folder(context: bpy.types.Context | None = None):
     return folder.load(bpy.path.abspath(preferences.catalog_folder))
 
 
+#: The Asset Library the Catalog Folder is registered as.
+CATALOG_LIBRARY = "Kinema Catalog"
+
+
+def catalog_library(context: bpy.types.Context | None = None):
+    """The Asset Library the Catalog Folder was registered as, by its name;
+    None where there is none."""
+    libraries = (context or bpy.context).preferences.filepaths.asset_libraries
+    return next((library for library in libraries if library.name == CATALOG_LIBRARY), None)
+
+
+def _same_path(one, other) -> bool:
+    import os
+
+    def spelled(path):
+        return os.path.normcase(os.path.normpath(bpy.path.abspath(str(path))))
+
+    return spelled(one) == spelled(other)
+
+
+class KINEMA_OT_add_catalog_library(bpy.types.Operator):
+    """Register the Catalog Folder as an Asset Library (#105).
+
+    The Asset Browser then lists every asset in a ``.blend`` file anywhere in the
+    folder: kinema_catalog's built robots, once its release zips carry them
+    (#118), unpacked beside the indexes, and anything else put there. Nothing
+    about it is particular to the catalog's index. A robot or tool of the user's
+    own lives in a library of their own, and Kinema treats every library alike.
+
+    Assets arrive **appended**: a collection asset linked or instanced can't be
+    posed."""
+
+    bl_idname = "kinema.add_catalog_library"
+    bl_label = "Add to Asset Browser"
+    bl_description = (
+        f"Register the Catalog Folder as the Asset Library {CATALOG_LIBRARY!r}, so the "
+        "assets in its .blend files can be dragged into a scene"
+    )
+    # Preferences, which undo doesn't cover.
+    bl_options = set()
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        from pathlib import Path
+
+        preferences = get_prefs(context)
+        if preferences is None or not preferences.catalog_folder.strip():
+            cls.poll_message_set("No Catalog Folder is set")
+            return False
+        if not Path(bpy.path.abspath(preferences.catalog_folder)).is_dir():
+            cls.poll_message_set("The Catalog Folder isn't a folder")
+            return False
+        return True
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        from pathlib import Path
+
+        path = str(Path(bpy.path.abspath(get_prefs(context).catalog_folder)).absolute())
+        # Once only: pressed again, say after the folder moved, it moves the
+        # library with it instead of adding a second.
+        library = catalog_library(context)
+        if library is None:
+            library = context.preferences.filepaths.asset_libraries.new(
+                name=CATALOG_LIBRARY, directory=path
+            )
+        else:
+            library.path = path
+        library.import_method = "APPEND"
+        # So Blender saves it with the preferences.
+        context.preferences.is_dirty = True
+        self.report({"INFO"}, f"{CATALOG_LIBRARY}: {path} is in the Asset Browser")
+        return {"FINISHED"}
+
+
 def get_prefs(context: bpy.types.Context | None = None) -> KinemaPreferences:
     """Fetch this add-on's preferences, or None if it is being unregistered."""
     context = context or bpy.context
@@ -550,4 +629,5 @@ classes = (
     KINEMA_OT_quick_button_remove,
     KINEMA_OT_quick_button_add,
     KINEMA_OT_quick_button_reset,
+    KINEMA_OT_add_catalog_library,
 )

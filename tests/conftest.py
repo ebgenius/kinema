@@ -125,6 +125,25 @@ def fixture_dir() -> Path:
     return FIXTURE_DIR
 
 
+def catalog_clone(directory: Path, git: bool = True) -> Path:
+    """``fixtures/catalog_import`` copied into ``directory``, laid out as a clone
+    of kinema_catalog is: ``.git`` at its top and in each submodule, which git
+    won't keep in a repository, and the directory of a submodule not yet cloned,
+    empty. Without ``git``, as an unpacked release zip: neither."""
+    import shutil
+
+    root = directory / "kinema_catalog"
+    shutil.copytree(FIXTURE_DIR / "catalog_import", root)
+    if git:
+        (root / ".git").mkdir()
+        for submodule in (root / "src").iterdir():
+            (submodule / ".git").write_text(
+                f"gitdir: ../../.git/modules/{submodule.name}", encoding="utf-8"
+            )
+        (root / "src" / "absent_repo").mkdir()
+    return root
+
+
 # --------------------------------------------------------------------------
 # running a share of the suite, and timing it: tools/dev.py test -j, --record-durations
 # --------------------------------------------------------------------------
