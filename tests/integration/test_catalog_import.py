@@ -25,6 +25,8 @@ def props(addon, clean_scene):
     kinema.catalog_pick = ""
     kinema.catalog_pick_folder = ""
     yield kinema
+    # Read again: an undo in the test leaves the scene a new one.
+    kinema = bpy.context.scene.kinema
     for name, value in before.items():
         setattr(kinema, name, value)
     kinema.catalog_pick = ""
@@ -127,6 +129,35 @@ class TestPick:
         assert ("kinema.import_catalog_pick",) in [
             args for name, args, _kwargs in calls if name == "operator"
         ]
+
+
+class TestUndo:
+    """Run as a click runs them, for the undo step: one Blender pushes only for
+    an operator run that way, and never for one called from Python."""
+
+    @pytest.mark.parametrize("run", ["search", "import"])
+    def test_an_import_is_one_step(self, clone, run):
+        """Measured with an edit pushed just before: without the step, Ctrl+Z
+        took the robot and the edit, and Ctrl+Shift+Z didn't bring it back."""
+        if run == "import":
+            bpy.ops.kinema.browse_catalog(robot_key="fixture_tool")
+        bpy.ops.ed.undo_push(message="start")
+        bpy.context.scene["kinema_test_edit"] = 1
+        bpy.ops.ed.undo_push(message="an edit")
+        before = len(_rigs())
+        if run == "search":
+            result = bpy.ops.kinema.browse_catalog("EXEC_DEFAULT", True, robot_key="fixture_tool")
+        else:
+            result = bpy.ops.kinema.import_catalog_pick("EXEC_DEFAULT", True)
+        assert result == {"FINISHED"}
+        assert len(_rigs()) == before + 1, "precondition: imported"
+
+        bpy.ops.ed.undo()
+        assert len(_rigs()) == before
+        assert bpy.context.scene.get("kinema_test_edit") == 1, "the edit before it undone too"
+        bpy.ops.ed.redo()
+        assert len(_rigs()) == before + 1
+        del bpy.context.scene["kinema_test_edit"]
 
 
 class TestAssetLibrary:

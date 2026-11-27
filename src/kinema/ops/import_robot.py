@@ -334,9 +334,11 @@ class KINEMA_OT_browse_catalog(Operator):
         "no folder is set, the bundled list is searched, and a pick from it copies the "
         "git command to download it"
     )
-    # No UNDO or REGISTER, as for Import URDF File: build_robot owns the import's
-    # undo step, and the bundled list's pick changes nothing in the scene.
-    bl_options = set()
+    # UNDO, for the step a pick's import and the pick itself are undone in:
+    # build_robot's own is pushed only when it is run as a button is, and an
+    # operator called from Python isn't. No REGISTER, as for build_robot: a redo
+    # panel would import again on every change.
+    bl_options = {"UNDO"}
     # Makes invoke_search_popup show a fuzzy-searchable list of every robot.
     bl_property = "robot_key"
 
@@ -379,7 +381,8 @@ class KINEMA_OT_import_catalog_pick(Operator):
     bl_idname = "kinema.import_catalog_pick"
     bl_label = "Import"
     bl_description = "Import the picked robot from the Catalog Folder"
-    bl_options = set()
+    # As for KINEMA_OT_browse_catalog.
+    bl_options = {"UNDO"}
 
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
